@@ -165,6 +165,14 @@ it.layer(NodeServices.layer)("dispatch plan source", (it) => {
       expect(keys("dp wave set --status executing .claude/plans/x.md")).toEqual([
         "dispatch.plan /repo/.claude/plans/x.md",
       ]);
+      expect(keys("dp spec lint --foo bar x.md")).toEqual(["dispatch.plan /repo/x.md"]);
+      expect(keys("dp spec lint --foo x.md")).toEqual(["dispatch.plan /repo/x.md"]);
+      expect(keys("dp spec phases --json my-task")).toEqual([
+        "dispatch.plan /repo/.claude/plans/my-task.md",
+      ]);
+      expect(keys("dp wave set --last-updated 2026-11-21T12:00:00Z x.md")).toEqual([
+        "dispatch.plan /repo/x.md",
+      ]);
     }),
   );
 

@@ -21,7 +21,14 @@ const SPEC_WRITTEN = /^Spec written to:[ \t]*(.+?)[ \t]*$/gm;
 const WAVE_LABEL = /^\s*(\d+)\s+of\s+(\d+)\s*$/;
 const PLANS_DIR = "/.claude/plans/";
 const SPEC_VERBS = new Set(["lint", "phases", "frontmatter"]);
-const VALUE_FLAGS: ReadonlySet<string> = new Set(["--wave", "--status", "--phase", "--part"]);
+const VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--wave",
+  "--status",
+  "--phase",
+  "--part",
+  "--last-updated",
+]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["--json"]);
 
 const Frontmatter = Schema.Struct({
   task: Schema.String,
@@ -44,6 +51,32 @@ const Phases = Schema.Array(
 
 const unresolvable = (word: string) => word.startsWith("~") || /[$`]/.test(word);
 
+const looksLikeSpec = (word: string) => word.includes("/") || word.includes(".md");
+
+/** A flag dp does not list as taking a value still swallows the next word unless that word names a spec. */
+const withoutUnknownFlagValues = (words: ReadonlyArray<string>) => {
+  const kept: Array<string> = [];
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (word === "--") {
+      kept.push(...words.slice(index));
+      break;
+    }
+    const next = words[index + 1];
+    const unknownFlag =
+      word.startsWith("--") &&
+      !word.includes("=") &&
+      !VALUE_FLAGS.has(word) &&
+      !BOOLEAN_FLAGS.has(word);
+    if (unknownFlag && next !== undefined && !next.startsWith("-") && !looksLikeSpec(next)) {
+      index += 1;
+      continue;
+    }
+    kept.push(word);
+  }
+  return kept;
+};
+
 const specArgument = (words: ReadonlyArray<string>) => {
   if (!invokes(words, "dp")) return null;
   const group = words[1];
@@ -52,13 +85,16 @@ const specArgument = (words: ReadonlyArray<string>) => {
     (group === "spec" && verb !== undefined && SPEC_VERBS.has(verb)) ||
     (group === "wave" && verb === "set") ||
     (group === "phase" && verb === "complete");
-  return matches ? (positionals(words.slice(2), VALUE_FLAGS)[0] ?? null) : null;
+  return matches
+    ? (positionals(withoutUnknownFlagValues(words.slice(2)), VALUE_FLAGS)[0] ?? null)
+    : null;
 };
 
 const specPathFor = (cwd: string, argument: string) => {
   if (unresolvable(argument)) return null;
-  const named = argument.includes("/") || argument.includes(".md");
-  return named ? resolvePath(cwd, argument) : resolvePath(cwd, `.claude/plans/${argument}.md`);
+  return looksLikeSpec(argument)
+    ? resolvePath(cwd, argument)
+    : resolvePath(cwd, `.claude/plans/${argument}.md`);
 };
 
 const checkoutOf = (specPath: string, dirname: (path: string) => string) => {

@@ -189,6 +189,27 @@ describe("run progress mapping", () => {
     });
   });
 
+  it("reads a complete wave as settled while the run goes on with a later wave", () => {
+    const settled = (disposition: string) =>
+      part({
+        wave: 1,
+        alive: false,
+        complete: true,
+        children: [child({ id: "1", phase: "1", state: "settled", disposition })],
+      });
+    expect(toRunProgressData(snapshot([settled("settled")]), "ui", 1, "/w")).toMatchObject({
+      outcome: "passed",
+      reason: null,
+    });
+    expect(toRunProgressData(snapshot([settled("failed")]), "ui", 1, "/w")).toMatchObject({
+      outcome: "failed",
+      reason: null,
+    });
+    expect(toRunProgressData(snapshot([part({ complete: false })]), "ui", 2, "/w")).toMatchObject({
+      outcome: "running",
+    });
+  });
+
   it("reads a part from another run as running while alive, else as having no outcome", () => {
     const other = run({ id: "r-2", outcome: "passed", endedAt: "2026-11-21T12:00:00Z" });
     expect(

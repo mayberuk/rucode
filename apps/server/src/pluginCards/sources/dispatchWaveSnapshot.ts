@@ -146,9 +146,6 @@ export function toRunProgressData(
   const entry = findPart(snapshot, part, wave);
   if (entry === null) return null;
   const run = snapshot.run?.id === entry.runId ? snapshot.run : null;
-  const reported = run?.outcome ?? (entry.alive ? "running" : "unknown");
-  const outcome = RUN_OUTCOMES[reported] ?? "aborted";
-
   const phases = entry.phases
     .filter((phase) => phase.wave === entry.wave)
     .map((phase) => {
@@ -160,6 +157,15 @@ export function toRunProgressData(
         attempt: executor !== null && executor.attempt > 1 ? executor.attempt : null,
       };
     });
+  const runReported = run?.outcome ?? (entry.alive ? "running" : "unknown");
+  // The run stays "running" while later waves go on; a wave whose own record is complete is settled.
+  const reported =
+    runReported === "running" && entry.complete
+      ? phases.every((phase) => phase.state === "done")
+        ? "passed"
+        : "failed"
+      : runReported;
+  const outcome = RUN_OUTCOMES[reported] ?? "aborted";
   const costs = entry.children.flatMap((child) => (child.costUsd === null ? [] : [child.costUsd]));
 
   return {
