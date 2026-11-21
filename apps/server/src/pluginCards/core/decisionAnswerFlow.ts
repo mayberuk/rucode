@@ -8,8 +8,10 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -48,7 +50,7 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
   const env = yield* HostProcess.Environment;
   const platform = yield* HostProcess.Platform;
 
-  const claims = new Map<string, object>();
+  const claims = new Set<string>();
   // The message an answer already quoted, kept after dp refuses so a retry quotes it again.
   const quoted = new Map<string, QuotedTurn>();
   let sends = 0;
@@ -125,7 +127,7 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
 
   const startAnswer = Effect.fnUntraced(function* (
     input: PluginDecisionAnswerInput,
-    release: Effect.Effect<void>,
+    reply: Deferred.Deferred<PluginDecisionAnswerResult>,
   ) {
     const { cardId, optionKey } = input;
     const found = yield* decisions.findDecision(cardId);
@@ -144,15 +146,30 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
     );
     if (dp === null) return yield* refuse("dp-missing");
 
-    // Released before the final progress, so whoever sees it can answer again at once.
-    const background = (work: Effect.Effect<void, PluginCardError>) =>
-      work.pipe(
-        Effect.matchEffect({
-          onSuccess: () => Effect.andThen(release, decisions.setProgress(cardId, null)),
-          onFailure: (error) => Effect.andThen(release, failed(cardId, optionKey, error)),
-        }),
-        Effect.ensuring(release),
-        Effect.forkIn(scope),
+    const clearProgress = decisions.setProgress(cardId, null);
+    const finishAnswer = (
+      post: Effect.Effect<PluginDecisionAnswerResult, PluginCardError>,
+      work: Effect.Effect<void, PluginCardError>,
+    ) =>
+      post.pipe(
+        Effect.tap(() =>
+          decisions.setProgress(cardId, {
+            optionKey,
+            status: "recording",
+            reason: null,
+            detail: null,
+          }),
+        ),
+        Effect.tap((result) => Deferred.succeed(reply, result)),
+        Effect.andThen(
+          work.pipe(
+            Effect.matchEffect({
+              onSuccess: () => clearProgress,
+              onFailure: (error) => failed(cardId, optionKey, error),
+            }),
+          ),
+        ),
+        Effect.onInterrupt(() => clearProgress),
       );
 
     const earlier = quoted.get(cardId);
@@ -161,14 +178,10 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
       earlier.optionKey === optionKey &&
       earlier.transcriptPath === transcript.transcriptPath
     ) {
-      yield* decisions.setProgress(cardId, {
-        optionKey,
-        status: "recording",
-        reason: null,
-        detail: null,
-      });
-      yield* background(record(cardId, decision, dp, earlier));
-      return { delivery: "reused" } satisfies PluginDecisionAnswerResult;
+      return yield* finishAnswer(
+        Effect.succeed({ delivery: "reused" }),
+        record(cardId, decision, dp, earlier),
+      );
     }
     quoted.delete(cardId);
 
@@ -182,37 +195,37 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
     );
     const text = `Decision ${decision.id}: ${option.label} (${option.key})`;
     const attempt = `${yield* Clock.currentTimeMillis}-${++sends}`;
-    yield* decisions.setProgress(cardId, {
-      optionKey,
-      status: "posting",
-      reason: null,
-      detail: null,
-    });
-    const sent = yield* threadManagement
-      .sendToThread({
-        projectId: shell.projectId,
-        commandId: CommandId.make(`server:plugin-decision:${decision.id}:${attempt}`),
-        threadId: input.threadId,
-        messageId: MessageId.make(`message:plugin-decision:${decision.id}:${attempt}`),
-        text,
-        attachments: [],
-        mode: "auto",
-        createdBy: "user",
-        creationSource: "web",
+    const post = decisions
+      .setProgress(cardId, {
+        optionKey,
+        status: "posting",
+        reason: null,
+        detail: null,
       })
       .pipe(
+        Effect.andThen(
+          threadManagement.sendToThread({
+            projectId: shell.projectId,
+            commandId: CommandId.make(`server:plugin-decision:${decision.id}:${attempt}`),
+            threadId: input.threadId,
+            messageId: MessageId.make(`message:plugin-decision:${decision.id}:${attempt}`),
+            text,
+            attachments: [],
+            mode: "auto",
+            createdBy: "user",
+            creationSource: "web",
+          }),
+        ),
         Effect.mapError(
           (cause) => new PluginCardError({ reason: "unavailable", detail: cause.message, cause }),
         ),
-        Effect.tapError(() => decisions.setProgress(cardId, null)),
+        Effect.tapError(() => clearProgress),
+        Effect.map((sent): PluginDecisionAnswerResult => ({
+          delivery: sent.delivery === "queued" ? "queued" : "started",
+        })),
       );
-    yield* decisions.setProgress(cardId, {
-      optionKey,
-      status: "recording",
-      reason: null,
-      detail: null,
-    });
-    yield* background(
+    return yield* finishAnswer(
+      post,
       Effect.gen(function* () {
         const uuid = yield* awaitQuote(
           transcript.transcriptPath,
@@ -225,24 +238,25 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
         yield* record(cardId, decision, dp, turn);
       }),
     );
-    return {
-      delivery: sent.delivery === "queued" ? "queued" : "started",
-    } satisfies PluginDecisionAnswerResult;
   });
 
   const answer = Effect.fn("PluginCards.answerDecision")(
     function* (input: PluginDecisionAnswerInput) {
-      const claim = yield* Effect.sync(() => {
-        if (claims.has(input.cardId)) return null;
-        const token = {};
-        claims.set(input.cardId, token);
-        return token;
+      const { cardId } = input;
+      const reply = yield* Deferred.make<PluginDecisionAnswerResult>();
+      const claim = Effect.suspend(() => {
+        if (claims.has(cardId)) return refuse("answer-in-progress");
+        claims.add(cardId);
+        return Effect.void;
       });
-      if (claim === null) return yield* refuse("answer-in-progress");
-      const release = Effect.sync(() => {
-        if (claims.get(input.cardId) === claim) claims.delete(input.cardId);
-      });
-      return yield* startAnswer(input, release).pipe(Effect.onError(() => release));
+      // The send can commit before returning, so a disconnected client must leave its watcher running.
+      const worker = yield* Effect.acquireUseRelease(
+        claim,
+        () => startAnswer(input, reply),
+        () => Effect.sync(() => void claims.delete(cardId)),
+      ).pipe(Effect.forkIn(scope));
+      const delivery = Deferred.await(reply);
+      return yield* Effect.raceFirst(delivery, Fiber.join(worker).pipe(Effect.andThen(delivery)));
     },
     Effect.provideService(FileSystem.FileSystem, fs),
   );

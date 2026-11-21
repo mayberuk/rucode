@@ -465,6 +465,32 @@ it.effect("refuses a second answer while the first is in progress, and posts onc
   }),
 );
 
+it.effect("keeps watching for a posted answer after the request is interrupted", () =>
+  Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const h = yield* harness({
+      sendGate: gate,
+      appendOnSend: false,
+      dpResults: [QUOTE_INVALID, dpOutput(0)],
+    });
+    const request = yield* answer(h).pipe(Effect.forkChild);
+    yield* Queue.take(h.sendStarted);
+    yield* Fiber.interrupt(request);
+    assert.strictEqual(yield* failureOf(answer(h, "skip")), "answer-in-progress");
+
+    yield* Deferred.succeed(gate, undefined);
+    assert.strictEqual(yield* Queue.take(h.ready), h.transcriptPath);
+    yield* h.append(userLine("u-interrupted", ANSWER_TEXT, "2026-11-21T10:30:00Z"));
+    const first = yield* Queue.take(h.dpRuns);
+    assert.deepStrictEqual(first.args, expectedDpArgs(h, "retry", "u-interrupted"));
+    assert.strictEqual((yield* takeProgress(h, 3))[2]?.reason, "chat-quote-invalid");
+
+    assert.deepStrictEqual(yield* answer(h), { delivery: "reused" });
+    assert.deepStrictEqual((yield* Queue.take(h.dpRuns)).args, first.args);
+    assert.strictEqual(h.sends.length, 1);
+  }),
+);
+
 it.effect("frees the decision for another answer once a refusal or a recording ends", () =>
   Effect.gen(function* () {
     const h = yield* harness({ dpResults: [QUOTE_INVALID] });

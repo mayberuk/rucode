@@ -44,7 +44,6 @@ export function decisionAnswerView(
   if (progress !== null && progress.status !== "failed") {
     return { status: progress.status, optionKey: progress.optionKey };
   }
-  if (attempt?.status === "failed") return attempt;
   // The request returned, but the card has not moved since it was sent: the server is recording.
   if (attempt?.status === "sent" && decisionCardFingerprint(card) === attempt.cardAtSend) {
     return { status: "recording", optionKey: attempt.optionKey };
@@ -62,7 +61,7 @@ export function decisionAnswerView(
             }).message,
     };
   }
-  return { status: "idle" };
+  return attempt?.status === "failed" ? attempt : { status: "idle" };
 }
 
 const SHELL_SAFE = /^[\w@%+=:,./-]+$/;
