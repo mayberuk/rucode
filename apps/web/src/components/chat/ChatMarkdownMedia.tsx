@@ -6,6 +6,7 @@ import {
   createContext,
   memo,
   use,
+  useRef,
   useState,
   type ComponentProps,
   type CSSProperties,
@@ -20,6 +21,7 @@ import { useRightPanelStore } from "../../rightPanelStore";
 import { MediaActions, type MediaActionSource } from "../media/MediaActions";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
 import { Button } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { markdownImageGallery, markdownImageItems } from "./markdownImageGallery";
 
@@ -29,6 +31,10 @@ const CHAT_MARKDOWN_MEDIA_BOUNDS_CLASS_NAME = cn(
   CHAT_MARKDOWN_MEDIA_MAX_WIDTH_CLASS_NAME,
 );
 const CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME = "inline-block!";
+const CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME = cn(
+  CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME,
+  "rounded-md border border-border/40 bg-muted/40 px-2 py-1 text-xs text-muted-foreground",
+);
 const CHAT_MARKDOWN_MEDIA_FRAME_CLASS_NAME = "rounded-lg border border-border/40";
 const CHAT_MARKDOWN_IMAGE_SIZE_CLASS_NAME = cn(
   "h-auto w-auto object-contain",
@@ -144,13 +150,7 @@ export function ChatMarkdownImageFallback(props: {
   readonly detail?: string | undefined;
 }) {
   const content = (
-    <span
-      data-markdown-copy={props.copyMarkdown}
-      className={cn(
-        CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME,
-        "rounded-md border border-border/40 bg-muted/40 px-2 py-1 text-xs text-muted-foreground",
-      )}
-    >
+    <span data-markdown-copy={props.copyMarkdown} className={CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME}>
       <ChatMarkdownMediaUnavailableLabel alt={props.alt} kind={props.kind} detail={props.detail} />
     </span>
   );
@@ -187,35 +187,68 @@ export function ChatMarkdownRemoteMedia(props: {
   readonly children: ReactNode;
 }) {
   const [approved, setApproved] = useState(() => approvedRemoteMedia.has(props.src));
-  if (approved) return props.children;
+  const insideLink = use(MarkdownLinkContext);
+  const focusAfterApproval = useRef(false);
+  if (approved) {
+    // The pressed Load button unmounts; without a target, focus would fall back to the page.
+    return (
+      <span
+        tabIndex={-1}
+        className="outline-none"
+        ref={(element) => {
+          if (!element || !focusAfterApproval.current) return;
+          focusAfterApproval.current = false;
+          element.focus({ preventScroll: true });
+        }}
+      >
+        {props.children}
+      </span>
+    );
+  }
   const Icon = REMOTE_MEDIA_ICON[props.kind];
   const label = REMOTE_MEDIA_LABEL[props.kind];
+  const approve = (event: ReactMouseEvent) => {
+    // The placeholder can sit inside a link that wraps the image.
+    event.preventDefault();
+    event.stopPropagation();
+    focusAfterApproval.current = true;
+    approvedRemoteMedia.add(props.src);
+    setApproved(true);
+  };
   return (
     <span
       data-markdown-copy={props.copyMarkdown}
       data-thread-find-ignore
-      className={cn(
-        CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME,
-        "rounded-md border border-border/40 bg-muted/40 px-2 py-1 text-xs text-muted-foreground",
-      )}
+      className={cn(CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME, CHAT_MARKDOWN_MEDIA_MAX_WIDTH_CLASS_NAME)}
+      // A button inside the link would be nested interactive content, so the chip itself loads on click.
+      {...(insideLink ? { onClick: approve } : {})}
     >
-      <span className="inline-flex items-center gap-1.5">
+      <span className="inline-flex max-w-full items-center gap-1.5">
         <Icon aria-hidden className="size-3.5 shrink-0" />
-        {[`${label} from ${props.host}`, props.alt].filter(Boolean).join(" · ")}
-        <Button
-          variant="outline"
-          size="xs"
-          aria-label={`Load ${label.toLowerCase()} from ${props.host}`}
-          onClick={(event) => {
-            // The placeholder can sit inside a link that wraps the image.
-            event.preventDefault();
-            event.stopPropagation();
-            approvedRemoteMedia.add(props.src);
-            setApproved(true);
-          }}
-        >
-          Load
-        </Button>
+        <Tooltip>
+          <TooltipTrigger render={<span className="shrink-0 whitespace-nowrap" />}>
+            {`${label} from ${props.host}`}
+          </TooltipTrigger>
+          <TooltipPopup className="break-all">{props.src}</TooltipPopup>
+        </Tooltip>
+        {props.alt ? <span className="min-w-0 truncate">{` · ${props.alt}`}</span> : null}
+        {insideLink ? (
+          <span
+            aria-hidden
+            className="shrink-0 rounded-md border border-border px-1.5 text-foreground"
+          >
+            Load
+          </span>
+        ) : (
+          <Button
+            variant="outline"
+            size="xs"
+            aria-label={`Load ${label.toLowerCase()} from ${props.host}`}
+            onClick={approve}
+          >
+            Load
+          </Button>
+        )}
       </span>
     </span>
   );
@@ -239,6 +272,8 @@ export function ChatMarkdownImage(props: {
   readonly alt: string;
   readonly copyMarkdown: string | undefined;
   readonly standalone: boolean;
+  /** Set for a remote image the user chose to load: holds a chip, not a bare image, until it decodes. */
+  readonly remoteHost?: string | undefined;
   readonly className?: string | undefined;
   readonly style?: CSSProperties | undefined;
   readonly imageProps?:
@@ -252,7 +287,8 @@ export function ChatMarkdownImage(props: {
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const src = props.src ?? loadedSrc;
   const failed = props.sourceFailed === true || (src !== null && failedSrc === src);
-  const settled = src !== null && !failed && (!props.standalone || loadedSrc !== null);
+  const awaitsDecode = props.standalone || props.remoteHost !== undefined;
+  const settled = src !== null && !failed && (!awaitsDecode || loadedSrc !== null);
   // Cached images are complete before `onLoad` can fire.
   const markLoadedIfComplete = (image: HTMLImageElement | null) => {
     if (!image) return;
@@ -307,6 +343,29 @@ export function ChatMarkdownImage(props: {
         actionsSource={props.actionsSource}
         detail={props.unavailableDetail}
       />
+    ) : src !== null && props.remoteHost !== undefined ? (
+      <span
+        id={props.imageProps?.id}
+        data-markdown-copy={props.copyMarkdown}
+        data-thread-find-ignore
+        role="status"
+        className={cn(CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME, "relative")}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+          {`Loading image from ${props.remoteHost}`}
+        </span>
+        <img
+          ref={markLoadedIfComplete}
+          src={src}
+          alt={props.alt}
+          decoding="async"
+          loading="lazy"
+          draggable={false}
+          className="invisible absolute inset-0 size-full"
+          {...imageEvents(src)}
+        />
+      </span>
     ) : (
       <span
         id={props.imageProps?.id}
@@ -336,18 +395,31 @@ export function ChatMarkdownImage(props: {
           <span className="flex size-full items-center justify-center p-2 text-center text-xs text-muted-foreground">
             <ChatMarkdownMediaUnavailableLabel alt={props.alt} detail={props.unavailableDetail} />
           </span>
-        ) : src !== null ? (
-          <img
-            ref={markLoadedIfComplete}
-            src={src}
-            alt={props.alt}
-            decoding="async"
-            loading="lazy"
-            draggable={false}
-            className="invisible absolute inset-0 size-full"
-            {...imageEvents(src)}
-          />
-        ) : null}
+        ) : (
+          <>
+            <span
+              data-thread-find-ignore
+              className="flex size-full items-center justify-center p-2 text-center text-xs text-muted-foreground"
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+                Loading image
+              </span>
+            </span>
+            {src !== null ? (
+              <img
+                ref={markLoadedIfComplete}
+                src={src}
+                alt={props.alt}
+                decoding="async"
+                loading="lazy"
+                draggable={false}
+                className="invisible absolute inset-0 size-full"
+                {...imageEvents(src)}
+              />
+            ) : null}
+          </>
+        )}
       </span>
     </MediaActions>
   );
@@ -410,7 +482,6 @@ export function assetMediaActionsSource(input: {
   readonly src: string | null;
   readonly workspaceRoot?: string | undefined;
   readonly originalUrl?: string | undefined;
-  readonly downloadable?: boolean | undefined;
 }): MediaActionSource {
   const { environmentId, resource } = input;
   const path =
@@ -429,7 +500,7 @@ export function assetMediaActionsSource(input: {
     kind: input.kind,
     name: input.name,
     src: input.src,
-    ...(input.downloadable === false ? {} : { asset: { environmentId, resource } }),
+    asset: { environmentId, resource },
     ...(reference ? { reference } : {}),
     ...(relativePath && (resource._tag === "media-file" || resource._tag === "workspace-file")
       ? {
@@ -458,7 +529,6 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     | undefined;
   readonly originalUrl?: string | undefined;
   readonly framed?: boolean | undefined;
-  readonly fallbackSrc?: string | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly workspaceMutationId?: string | null | undefined;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
@@ -476,18 +546,10 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
       : undefined,
   );
   const refreshAssetUrl = useAssetUrlRefresh(props.environmentId, resource);
-  const fallbackSrc = assetUrl._tag === "Failure" ? props.fallbackSrc : undefined;
   const missingFileAccess =
-    assetUrl._tag === "Failure" &&
-    assetUrl.reason === "missing-file-access" &&
-    fallbackSrc === undefined;
+    assetUrl._tag === "Failure" && assetUrl.reason === "missing-file-access";
   const unavailableDetail = missingFileAccess ? MISSING_FILE_ACCESS_MESSAGE : undefined;
-  const src =
-    assetUrl._tag === "Success"
-      ? assetUrl.url + (props.srcFragment ?? "")
-      : fallbackSrc === undefined
-        ? null
-        : fallbackSrc + (props.srcFragment ?? "");
+  const src = assetUrl._tag === "Success" ? assetUrl.url + (props.srcFragment ?? "") : null;
   const knownSize = assetUrl._tag === "Success" ? assetUrl.imageDimensions : undefined;
   const maxHeightRem = props.maxHeightRem ?? 30;
   const style =
@@ -505,14 +567,13 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     src,
     workspaceRoot: props.workspaceRoot,
     originalUrl: props.originalUrl,
-    downloadable: fallbackSrc === undefined,
   });
 
   if (props.kind === "video") {
     return (
       <ChatMarkdownVideo
         src={src}
-        sourceFailed={assetUrl._tag === "Failure" && fallbackSrc === undefined}
+        sourceFailed={assetUrl._tag === "Failure"}
         unavailableDetail={unavailableDetail}
         alt={props.alt}
         copyMarkdown={props.copyMarkdown}
@@ -530,7 +591,7 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     <ChatMarkdownImage
       key={JSON.stringify([props.environmentId, props.resource, props.srcFragment])}
       src={src}
-      sourceFailed={assetUrl._tag === "Failure" && fallbackSrc === undefined}
+      sourceFailed={assetUrl._tag === "Failure"}
       unavailableDetail={unavailableDetail}
       alt={props.alt}
       copyMarkdown={props.copyMarkdown}

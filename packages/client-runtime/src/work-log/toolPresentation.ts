@@ -26,14 +26,13 @@ function trimmedString(value: unknown, maxLength: number): string | undefined {
   return trimmed && trimmed.length <= maxLength ? trimmed : undefined;
 }
 
+/** Inline icons only: a remote icon URL is chosen by the provider and would leak the user's IP and tool usage to a third party. */
 function imageUrl(value: unknown): string | undefined {
   const raw = trimmedString(value, 4096);
   if (!raw) return undefined;
   try {
     const url = new URL(raw);
-    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "data:"
-      ? url.href
-      : undefined;
+    return url.protocol === "data:" && url.pathname.startsWith("image/") ? url.href : undefined;
   } catch {
     return undefined;
   }

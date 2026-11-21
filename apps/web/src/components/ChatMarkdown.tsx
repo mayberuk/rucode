@@ -1618,7 +1618,6 @@ const CHAT_MARKDOWN_COMPONENTS = {
           srcFragment={markdownImageSourceFragment(classifiedSrc)}
           originalUrl={resolveProtocolRelativeMediaUrl(directUri)}
           framed={false}
-          fallbackSrc={hostMediaUrl}
           onImageExpand={imageExpand}
         />
       );
@@ -1652,6 +1651,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           <ChatMarkdownImage
             key={mediaSrc}
             src={mediaSrc}
+            remoteHost={host ?? undefined}
             alt={altText}
             copyMarkdown={copyMarkdown}
             standalone={standalone}
