@@ -13,7 +13,7 @@ import type {
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 import { useContext, useEffect, useState } from "react";
 
 import { toastManager } from "~/components/ui/toast";
@@ -91,7 +91,56 @@ export type PluginCardAssetState =
 
 const ASSET_LOADING: PluginCardAssetState = { status: "loading" };
 
-/** Reads the asset once per mount; a failure stays failed rather than retrying. */
+/**
+ * Decoded images outlive a mount, so a remount fetches nothing. The server resolves every card of
+ * the thread to serve one asset, so a refetch is costly there. Capped by size, oldest first.
+ */
+const MAX_CACHED_ASSET_BYTES = 16 * 1024 * 1024;
+const assetBlobs = new Map<string, Blob>();
+const assetReads = new Map<string, Promise<AssetBlobResult>>();
+let assetBlobBytes = 0;
+
+type AssetBlobResult =
+  | { readonly blob: Blob; readonly message?: undefined }
+  | { readonly blob?: undefined; readonly message: string };
+
+function rememberAssetBlob(key: string, blob: Blob) {
+  assetBlobs.set(key, blob);
+  assetBlobBytes += blob.size;
+  for (const [oldKey, oldBlob] of assetBlobs) {
+    if (assetBlobBytes <= MAX_CACHED_ASSET_BYTES) break;
+    assetBlobs.delete(oldKey);
+    assetBlobBytes -= oldBlob.size;
+  }
+}
+
+function readAssetBlob(
+  registry: AtomRegistry.AtomRegistry,
+  key: string,
+  request: Parameters<typeof readPluginCardAsset.run>[1],
+): Promise<AssetBlobResult> {
+  const cached = assetBlobs.get(key);
+  if (cached !== undefined) return Promise.resolve({ blob: cached });
+  const pending = assetReads.get(key);
+  if (pending !== undefined) return pending;
+  const read = runAtomCommand(registry, readPluginCardAsset, request, {
+    reportFailure: false,
+  }).then((result): AssetBlobResult => {
+    assetReads.delete(key);
+    if (result._tag === "Failure") {
+      return { message: failureMessage(result) ?? "The image could not be read." };
+    }
+    // Decoded from base64, so the bytes never sit on a SharedArrayBuffer.
+    const bytes = result.value.bytes as Uint8Array<ArrayBuffer>;
+    const blob = new Blob([bytes], { type: result.value.mediaType });
+    rememberAssetBlob(key, blob);
+    return { blob };
+  });
+  assetReads.set(key, read);
+  return read;
+}
+
+/** A failure stays failed for the mount rather than retrying. */
 export function usePluginCardAsset(
   threadRef: ScopedThreadRef,
   cardId: PluginCardId,
@@ -108,26 +157,16 @@ export function usePluginCardAsset(
   useEffect(() => {
     let active = true;
     let url: string | null = null;
-    void runAtomCommand(
-      registry,
-      readPluginCardAsset,
-      { environmentId, input: { threadId, cardId, assetId } },
-      { reportFailure: false },
-    ).then((result) => {
+    void readAssetBlob(registry, key, {
+      environmentId,
+      input: { threadId, cardId, assetId },
+    }).then((outcome) => {
       if (!active) return;
-      if (result._tag === "Failure") {
-        setLoaded({
-          key,
-          state: {
-            status: "failed",
-            message: failureMessage(result) ?? "The image could not be read.",
-          },
-        });
+      if (outcome.blob === undefined) {
+        setLoaded({ key, state: { status: "failed", message: outcome.message } });
         return;
       }
-      // Decoded from base64, so the bytes never sit on a SharedArrayBuffer.
-      const bytes = result.value.bytes as Uint8Array<ArrayBuffer>;
-      url = URL.createObjectURL(new Blob([bytes], { type: result.value.mediaType }));
+      url = URL.createObjectURL(outcome.blob);
       setLoaded({ key, state: { status: "ready", url } });
     });
     return () => {
