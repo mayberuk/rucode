@@ -103,6 +103,26 @@ function inTimeline(
 }
 
 describe("LivecheckResultCard", () => {
+  it("labels a finish under a minute ago as just now, not in seconds", async () => {
+    setup();
+    using _timers = fakeTimers();
+    vi.setSystemTime(new Date("2026-11-21T12:02:05.000Z"));
+    await using screen = await render(
+      inTimeline(
+        expandable(vi.fn()),
+        <LivecheckResultCard
+          card={resultCard({ finishedAt: "2026-11-21T12:01:30.000Z" })}
+          environmentId={threadRef.environmentId}
+          threadRef={threadRef}
+        />,
+      ),
+      { router: false },
+    );
+    const section = screen.getByRole("region", { name: "Live check result" }).element();
+    expect(section.textContent).toContain("run r14 · just now");
+    expect(section.textContent).not.toMatch(/\ds ago/);
+  });
+
   it("draws loaded, loading and failed thumbnails and marks the failed step", async () => {
     setup({
       "01-cart.png": { status: "ready", url: PIXEL },

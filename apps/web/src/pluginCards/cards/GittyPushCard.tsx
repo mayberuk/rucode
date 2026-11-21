@@ -12,7 +12,7 @@ import { PluginCardStep } from "../core/PluginCardStep";
 import type { PluginCardRendererProps } from "../core/types";
 import { mergeRequestLabel, pipelineLabel, pushSummary } from "./iter8GittyCards.logic";
 import { PluginCardActionButton } from "./shared/PluginCardActionButton";
-import { shortSha } from "./shared/cardFormat.logic";
+import { shortSha, withUniqueKeys } from "./shared/cardFormat.logic";
 
 const PIPELINE_DISPLAY = {
   running: { Icon: CircleDashedIcon, tone: "text-info-foreground" },
@@ -49,17 +49,19 @@ export function GittyPushCard({ card, threadRef }: PluginCardRendererProps<"gitt
     >
       {data.batches.length === 0 && data.mergeRequest === null ? null : (
         <div className="px-3 pb-2.5">
-          {data.batches.map((batch) => {
-            const sha = shortSha(batch.commit);
-            return (
-              <PluginCardStep
-                key={batch.commit ?? batch.label}
-                state={batch.state}
-                label={batch.label}
-                trailing={sha === null ? undefined : <span className="font-mono">{sha}</span>}
-              />
-            );
-          })}
+          {withUniqueKeys(data.batches, (batch) => batch.commit ?? batch.label).map(
+            ({ key, item: batch }) => {
+              const sha = shortSha(batch.commit);
+              return (
+                <PluginCardStep
+                  key={key}
+                  state={batch.state}
+                  label={batch.label}
+                  trailing={sha === null ? undefined : <span className="font-mono">{sha}</span>}
+                />
+              );
+            },
+          )}
           {data.mergeRequest === null ? null : (
             <MergeRequestRow mergeRequest={data.mergeRequest} onOpen={openUrl} />
           )}
@@ -82,8 +84,12 @@ function MergeRequestRow({
   const display = mergeRequest.pipeline === "none" ? null : PIPELINE_DISPLAY[mergeRequest.pipeline];
   return (
     <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/60 pt-2.5 text-xs">
-      <PullRequestGlyph.draft aria-hidden className="size-3.5 text-muted-foreground" />
-      {mergeRequest.draft ? <span className="text-foreground/80">Draft</span> : null}
+      {mergeRequest.draft ? (
+        <>
+          <PullRequestGlyph.draft aria-hidden className="size-3.5 text-muted-foreground" />
+          <span className="text-foreground/80">Draft</span>
+        </>
+      ) : null}
       {number === null ? null : url === null ? (
         <span className="text-foreground/80">{number}</span>
       ) : (

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { agoLabel, cardAction, countLabel, shortSha } from "./cardFormat.logic";
+import {
+  agoLabel,
+  agoLabelToMinute,
+  cardAction,
+  countLabel,
+  shortSha,
+  withUniqueKeys,
+} from "./cardFormat.logic";
 
 const NOW = Date.parse("2026-11-21T12:00:00.000Z");
 const before = (ms: number) => new Date(NOW - ms).toISOString();
@@ -25,6 +32,32 @@ describe("agoLabel", () => {
 
   it("is empty for a time that does not parse", () => {
     expect(agoLabel("not a time", NOW)).toBe("");
+  });
+});
+
+describe("agoLabelToMinute", () => {
+  it.each([
+    [999, "just now"],
+    [37_000, "just now"],
+    [59_999, "just now"],
+    [60_000, "1m ago"],
+    [125_000, "2m ago"],
+    [3_600_000, "1h ago"],
+    [-5_000, "just now"],
+  ])("labels a time %i ms before now as %s", (elapsedMs, label) => {
+    expect(agoLabelToMinute(before(elapsedMs), NOW)).toBe(label);
+  });
+
+  it("is empty for a time that does not parse", () => {
+    expect(agoLabelToMinute("not a time", NOW)).toBe("");
+  });
+});
+
+describe("withUniqueKeys", () => {
+  it("keeps distinct ids and suffixes the repeats of an id", () => {
+    const rows = withUniqueKeys(["a", "b", "a", "a"], (id) => id);
+    expect(rows.map((row) => row.key)).toEqual(["a", "b", "a#1", "a#2"]);
+    expect(rows.map((row) => row.item)).toEqual(["a", "b", "a", "a"]);
   });
 });
 

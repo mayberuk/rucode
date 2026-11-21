@@ -14,7 +14,7 @@ import {
   type VerdictPresentation,
 } from "./livecheckCards.logic";
 import { PluginCardActionButton } from "./shared/PluginCardActionButton";
-import { agoLabel } from "./shared/cardFormat.logic";
+import { agoLabelToMinute } from "./shared/cardFormat.logic";
 
 const VERDICT_ICONS = {
   check: CheckIcon,
@@ -30,7 +30,7 @@ const VERDICT_TONES = {
 
 function FinishedAgo({ iso }: { iso: string }) {
   const nowMs = Date.parse(`${useNowMinute()}:00Z`);
-  return <>{agoLabel(iso, nowMs)}</>;
+  return <>{agoLabelToMinute(iso, nowMs)}</>;
 }
 
 export function LivecheckResultCard({

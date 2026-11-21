@@ -10,6 +10,7 @@ import {
   toneClassName,
 } from "./dispatchCards.logic";
 import { PluginCardActionButton } from "./shared/PluginCardActionButton";
+import { withUniqueKeys } from "./shared/cardFormat.logic";
 
 export function DispatchPlanCard({ card, threadRef }: PluginCardRendererProps<"dispatch.plan">) {
   const data = card.data;
@@ -29,8 +30,8 @@ export function DispatchPlanCard({ card, threadRef }: PluginCardRendererProps<"d
           <div key={group.wave}>
             <h4 className="mb-1 text-xs font-medium text-muted-foreground">Wave {group.wave}</h4>
             <ul>
-              {group.phases.map((phase) => (
-                <li key={phase.id} className="flex items-center gap-2 py-1 text-sm">
+              {withUniqueKeys(group.phases, (phase) => phase.id).map(({ key, item: phase }) => (
+                <li key={key} className="flex items-center gap-2 py-1 text-sm">
                   <span className="min-w-0 truncate text-foreground/85">{phase.name}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">{phase.tier}</span>
                   {phase.risk ? (
