@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { ThreadId, TurnItemId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -368,6 +369,7 @@ interface Replies {
   readonly live: Reply;
   readonly evidence: Reply;
   readonly head: Reply;
+  readonly commonDir: Reply;
 }
 
 const command = (text: string, out: string | null = null, cwd = "/repo") => ({
@@ -399,13 +401,20 @@ const setup = Effect.fnUntraced(function* () {
     },
   } satisfies FileSystem.FileSystem;
 
-  let replies: Replies = { live: "missing", evidence: "missing", head: output(`${HEAD}\n`) };
+  let replies: Replies = {
+    live: "missing",
+    evidence: "missing",
+    head: output(`${HEAD}\n`),
+    commonDir: output("", 128),
+  };
   const calls: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> = [];
   const run: ProcessRunner.ProcessRunner["Service"]["run"] = (input) => {
     calls.push({ command: input.command, args: input.args });
     const reply =
       input.command === "git"
-        ? replies.head
+        ? input.args.includes("--git-common-dir")
+          ? replies.commonDir
+          : replies.head
         : input.args[0] === "verify"
           ? replies.evidence
           : replies.live;
@@ -508,18 +517,16 @@ it.layer(NodeServices.layer)("dispatch wave source", (it) => {
     }),
   );
 
-  it.effect("recognises dp verify only when the command names the part", () =>
+  it.effect("recognises no card for dp verify, which names no part", () =>
     Effect.gen(function* () {
       const { source } = yield* setup();
-      const refs = (text: string) =>
-        source.recognize(command(text)).map((ref) => `${ref.kind} ${ref.key}`);
-
-      expect(refs("dp verify evidence .claude/plans/x.md --part ui")).toEqual([
-        "dispatch.verify /repo#ui",
-      ]);
-      expect(refs("dp verify ears x.md --part ui --dir /w")).toEqual(["dispatch.verify /w#ui"]);
-      expect(refs("dp verify evidence .claude/plans/x.md")).toEqual([]);
-      expect(refs("dp verify log run --part ui")).toEqual([]);
+      for (const text of [
+        "dp verify evidence .claude/plans/x.md",
+        "dp verify ears x.md --dir /w",
+        "dp verify log run",
+      ]) {
+        expect(source.recognize(command(text)), text).toEqual([]);
+      }
     }),
   );
 
@@ -668,6 +675,83 @@ it.layer(NodeServices.layer)("dispatch wave source", (it) => {
     }),
   );
 
+  it.effect("reads and watches the gate attempts in the owning checkout of a linked worktree", () =>
+    Effect.gen(function* () {
+      const { resolve, reply, root, work, watched } = yield* setup();
+      const fs = yield* FileSystem.FileSystem;
+      const owner = yield* fs.makeTempDirectoryScoped({ prefix: "t3-wave-owner-" });
+      const ownerWork = `${owner}/.claude/work`;
+      yield* fs.makeDirectory(ownerWork, { recursive: true });
+      yield* fs.writeFileString(
+        `${ownerWork}/gate-attempts.jsonl`,
+        `${JSON.stringify({ part: "ui", wave: 2, revision: OLD })}\n`,
+      );
+      yield* fs.writeFileString(
+        `${work}/gate-attempts.jsonl`,
+        `${JSON.stringify({ part: "ui", wave: 2, revision: "e".repeat(40) })}\n`,
+      );
+      reply({
+        commonDir: output(`${owner}/.git\n`),
+        live: liveJson([
+          part({ gate: gate({ checks: [{ name: "unit", state: "PASS", reason: "" }] }) }),
+        ]),
+      });
+      const card = yield* resolve("dispatch.verify", `${root}#ui`);
+      expect(card?.data).toMatchObject({
+        revision: OLD,
+        checks: [{ name: "Unit", summary: "", state: "stale" }],
+      });
+      expect(watched).toContain(ownerWork);
+    }),
+  );
+
+  it.effect("reads only the last 256 KiB of the gate attempts, from a whole line", () =>
+    Effect.gen(function* () {
+      const { resolve, reply, root, work } = yield* setup();
+      const fs = yield* FileSystem.FileSystem;
+      const filler = `${JSON.stringify({ part: "api", wave: 2, revision: OLD, note: "x".repeat(1000) })}\n`;
+      yield* fs.writeFileString(
+        `${work}/gate-attempts.jsonl`,
+        [
+          JSON.stringify({ part: "ui", wave: 2, revision: OLD }),
+          filler.repeat(300),
+          JSON.stringify({ part: "ui", wave: 3, revision: HEAD }),
+          "",
+        ].join("\n"),
+      );
+      reply({ live: liveJson([part({ gate: gate() })]) });
+      expect((yield* resolve("dispatch.verify", `${root}#ui`))?.data).toMatchObject({
+        revision: null,
+      });
+      reply({ live: liveJson([part({ wave: 3, gate: gate() })]) });
+      yield* TestClock.adjust("1 second");
+      expect((yield* resolve("dispatch.verify", `${root}#ui`))?.data).toMatchObject({
+        revision: HEAD,
+      });
+    }),
+  );
+
+  it.effect("runs dp wave live once for the cards of one refresh and again after it", () =>
+    Effect.gen(function* () {
+      const { resolve, reply, root, calls } = yield* setup();
+      reply({ live: liveJson([part({ gate: gate() }), part({ wave: 3 })]) });
+      const live = () => calls.filter((call) => call.args[0] === "wave").length;
+      yield* Effect.all(
+        [
+          resolve("dispatch.runProgress", `${root}#ui#2`),
+          resolve("dispatch.runProgress", `${root}#ui#3`),
+          resolve("dispatch.verify", `${root}#ui`),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(live()).toBe(1);
+
+      yield* TestClock.adjust("1 second");
+      yield* resolve("dispatch.runProgress", `${root}#ui#2`);
+      expect(live()).toBe(2);
+    }),
+  );
+
   it.effect(
     "omits the acceptance row and the revision when dp and the attempt log yield nothing",
     () =>
@@ -731,8 +815,10 @@ it.layer(NodeServices.layer)("dispatch wave source", (it) => {
           part({ children: [child({ id: "2", phase: "2", disposition: "settled" })] }),
         ]),
       });
+      yield* TestClock.adjust("1 second");
+      const now = yield* DateTime.now;
       expect((yield* resolve("dispatch.runProgress", `${root}#ui#2`))?.updatedAt).toBe(
-        "1970-01-01T00:00:05.000Z",
+        DateTime.formatIso(now),
       );
     }),
   );
