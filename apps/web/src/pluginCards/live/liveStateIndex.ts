@@ -206,8 +206,8 @@ export function boardInitiatives(
 
 export function formatAsOf(asOf: string, now: string): string {
   const elapsed = Date.parse(now) - Date.parse(asOf);
-  if (!(elapsed >= MINUTE_MS)) return "as of just now";
-  if (elapsed < HOUR_MS) return `as of ${Math.floor(elapsed / MINUTE_MS)}m ago`;
-  if (elapsed < DAY_MS) return `as of ${Math.floor(elapsed / HOUR_MS)}h ago`;
-  return `as of ${Math.floor(elapsed / DAY_MS)}d ago`;
+  if (!(elapsed >= MINUTE_MS)) return "updated just now";
+  if (elapsed < HOUR_MS) return `updated ${Math.floor(elapsed / MINUTE_MS)}m ago`;
+  if (elapsed < DAY_MS) return `updated ${Math.floor(elapsed / HOUR_MS)}h ago`;
+  return `updated ${Math.floor(elapsed / DAY_MS)}d ago`;
 }

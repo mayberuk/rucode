@@ -277,17 +277,17 @@ it("board lists open initiatives across environments, active first then newest a
 });
 
 it.each([
-  ["2026-11-21T09:00:30Z", "as of just now"],
-  ["2026-11-21T09:00:59.999Z", "as of just now"],
-  ["2026-11-21T09:01:00Z", "as of 1m ago"],
-  ["2026-11-21T09:03:00Z", "as of 3m ago"],
-  ["2026-11-21T09:59:59Z", "as of 59m ago"],
-  ["2026-11-21T10:00:00Z", "as of 1h ago"],
-  ["2026-11-21T11:00:00Z", "as of 2h ago"],
-  ["2026-11-22T08:59:59Z", "as of 23h ago"],
-  ["2026-11-22T09:00:00Z", "as of 1d ago"],
-  ["2026-11-25T09:00:00Z", "as of 4d ago"],
-  ["2026-11-21T08:00:00Z", "as of just now"],
+  ["2026-11-21T09:00:30Z", "updated just now"],
+  ["2026-11-21T09:00:59.999Z", "updated just now"],
+  ["2026-11-21T09:01:00Z", "updated 1m ago"],
+  ["2026-11-21T09:03:00Z", "updated 3m ago"],
+  ["2026-11-21T09:59:59Z", "updated 59m ago"],
+  ["2026-11-21T10:00:00Z", "updated 1h ago"],
+  ["2026-11-21T11:00:00Z", "updated 2h ago"],
+  ["2026-11-22T08:59:59Z", "updated 23h ago"],
+  ["2026-11-22T09:00:00Z", "updated 1d ago"],
+  ["2026-11-25T09:00:00Z", "updated 4d ago"],
+  ["2026-11-21T08:00:00Z", "updated just now"],
 ])("formatAsOf at %s reads %s", (now, expected) => {
   expect(formatAsOf(at, now)).toBe(expected);
 });
