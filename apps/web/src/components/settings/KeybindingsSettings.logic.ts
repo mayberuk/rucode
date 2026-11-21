@@ -13,7 +13,12 @@ import {
   US_SHIFTED_TO_UNSHIFTED_KEYS,
 } from "@t3tools/shared/keybindings";
 
-import { shortcutConflictKey, shortcutKeyFromEvent } from "../../keybindings";
+import {
+  effectiveShortcutsForCommand,
+  formatShortcutLabel,
+  shortcutConflictKey,
+  shortcutKeyFromEvent,
+} from "../../keybindings";
 import { isMacPlatform } from "../../lib/utils";
 import { METRIC_OPTIONS, WINDOW_OPTIONS } from "../usage/usageShortcuts";
 
@@ -53,6 +58,7 @@ export interface KeybindingRow {
   readonly defaultWhen: string;
   readonly binding: ResolvedKeybindingRule;
   readonly conflicts: ReadonlyArray<string>;
+  readonly prefixShortcut: KeybindingShortcut | null;
 }
 
 export type WhenVariableOption = string;
@@ -256,10 +262,37 @@ export function groupKeybindingRows(
   });
 }
 
+// A negated or alternative `prefixActive` also matches outside the prefix, so it is no sequence.
+function whenRequiresPrefix(node: KeybindingWhenNode | undefined): boolean {
+  if (!node) return false;
+  switch (node.type) {
+    case "identifier":
+      return node.name === "prefixActive";
+    case "and":
+      return whenRequiresPrefix(node.left) || whenRequiresPrefix(node.right);
+    case "not":
+    case "or":
+      return false;
+  }
+}
+
+export function keybindingRowShortcutLabel(
+  row: KeybindingRow,
+  platform = navigator.platform,
+): string {
+  if (row.isUnassigned) return "Unassigned";
+  const label = formatShortcutLabel(row.binding.shortcut, platform);
+  return row.prefixShortcut
+    ? `${formatShortcutLabel(row.prefixShortcut, platform)}, ${label}`
+    : label;
+}
+
 export function buildKeybindingRows(
   keybindings: ResolvedKeybindingsConfig,
   platform = navigator.platform,
 ): ReadonlyArray<KeybindingRow> {
+  const prefixShortcut =
+    effectiveShortcutsForCommand(keybindings, "prefix.start", { platform })[0] ?? null;
   const rowsById = new Map<string, KeybindingRow>();
   for (const binding of keybindings) {
     const defaultBinding = defaultBindingForBinding(binding);
@@ -280,6 +313,7 @@ export function buildKeybindingRows(
       defaultWhen: whenAstToExpression(defaultBinding?.whenAst),
       binding,
       conflicts: [],
+      prefixShortcut: whenRequiresPrefix(binding.whenAst) ? prefixShortcut : null,
     });
   }
   const rows = [...rowsById.values()];

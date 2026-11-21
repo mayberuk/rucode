@@ -157,6 +157,22 @@ it("unassigns a default shortcut and restores its condition when one is assigned
   );
 });
 
+it.each([
+  { platform: "Linux x86_64", prefix: ["Ctrl", "Space"] },
+  { platform: "MacIntel", prefix: ["⌃", "Space"] },
+])("draws the prefix sequence as keycaps on $platform", async ({ platform, prefix }) => {
+  using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+  await using screen = await render(<KeybindingsSettingsPanel />);
+
+  const pill = screen.getByRole("button", { name: /^Edit shortcut for Thread: Next Waiting:/ });
+  await expect.element(pill).toBeVisible();
+  const caps = Array.from(
+    pill.element().querySelectorAll("kbd:not(:has(kbd))"),
+    (cap) => cap.textContent,
+  );
+  expect(caps).toEqual([...prefix, "A"]);
+});
+
 it("Esc in the keybindings search clears the query without closing Settings", async () => {
   const onOpenChange = vi.fn();
   await using _screen = await render(
