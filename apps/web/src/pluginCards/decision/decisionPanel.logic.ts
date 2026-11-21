@@ -23,7 +23,7 @@ export function openDecisionsForThread(
 /** This client's own answer request, kept apart from the progress the server reports on the card. */
 export type DecisionAnswerAttempt =
   | { readonly status: "sending"; readonly optionKey: string }
-  | { readonly status: "sent"; readonly optionKey: string; readonly cardAtSend: string }
+  | { readonly status: "sent"; readonly optionKey: string }
   | { readonly status: "failed"; readonly optionKey: string; readonly message: string };
 
 export type DecisionAnswerView =
@@ -31,22 +31,20 @@ export type DecisionAnswerView =
   | { readonly status: "posting" | "recording"; readonly optionKey: string }
   | { readonly status: "failed"; readonly optionKey: string; readonly message: string };
 
-export function decisionCardFingerprint(card: DispatchDecisionCard): string {
-  return JSON.stringify([card.updatedAt, card.data.answer]);
-}
-
 export function decisionAnswerView(
   card: DispatchDecisionCard,
   attempt: DecisionAnswerAttempt | null,
+  awaitingSnapshot = false,
 ): DecisionAnswerView {
+  if (card.data.state !== "open") return { status: "idle" };
   const progress = card.data.answer;
-  if (attempt?.status === "sending") return { status: "posting", optionKey: attempt.optionKey };
   if (progress !== null && progress.status !== "failed") {
     return { status: progress.status, optionKey: progress.optionKey };
   }
-  // The request returned, but the card has not moved since it was sent: the server is recording.
-  if (attempt?.status === "sent" && decisionCardFingerprint(card) === attempt.cardAtSend) {
-    return { status: "recording", optionKey: attempt.optionKey };
+  if (attempt?.status === "sending") return { status: "posting", optionKey: attempt.optionKey };
+  if (awaitingSnapshot) {
+    if (attempt?.status === "sent") return { status: "recording", optionKey: attempt.optionKey };
+    if (attempt?.status === "failed") return attempt;
   }
   if (progress?.status === "failed") {
     return {
@@ -59,6 +57,13 @@ export function decisionAnswerView(
               reason: progress.reason,
               ...(progress.detail === null ? {} : { detail: progress.detail }),
             }).message,
+    };
+  }
+  if (attempt?.status === "sent") {
+    return {
+      status: "failed",
+      optionKey: attempt.optionKey,
+      message: "The server is no longer recording this answer.",
     };
   }
   return attempt?.status === "failed" ? attempt : { status: "idle" };

@@ -3,16 +3,16 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { DispatchDecisionCard, ScopedThreadRef } from "@t3tools/contracts";
+import type { DispatchDecisionCard, PluginThreadCards, ScopedThreadRef } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { memo, use, useEffect, useEffectEvent, useState } from "react";
 
 import { isInSideChatPane } from "~/lib/sideChatPane";
 import { cn } from "~/lib/utils";
+import { usePluginThreadCards } from "~/pluginCards/core/usePluginCards";
 import {
   decisionAnswerCommand,
   decisionAnswerView,
-  decisionCardFingerprint,
   decisionContextLabel,
   type DecisionAnswerAttempt,
 } from "~/pluginCards/decision/decisionPanel.logic";
@@ -50,23 +50,30 @@ export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionP
   );
   const [pickedKey, setPickedKey] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const snapshot = usePluginThreadCards(threadRef);
+  // The RPC can finish before the card stream publishes the progress it recorded.
+  const [snapshotAtSend, setSnapshotAtSend] = useState<PluginThreadCards | null>(null);
   const answerDecision = useAtomCommand(answerPluginDecision, { reportFailure: false });
   const backgroundThread = use(BackgroundThreadContext);
-  const view = decisionAnswerView(decision, attempt);
+  const view = decisionAnswerView(
+    decision,
+    attempt,
+    snapshot !== null && snapshot === snapshotAtSend,
+  );
   const busy = view.status === "posting" || view.status === "recording";
   const selectedKey = busy
     ? view.optionKey
     : (pickedKey ?? (view.status === "failed" ? view.optionKey : null));
 
   const send = async (optionKey: string) => {
-    const cardAtSend = decisionCardFingerprint(decision);
+    setSnapshotAtSend(snapshot);
     setAttempt({ status: "sending", optionKey });
     const result = await answerDecision({
       environmentId: threadRef.environmentId,
       input: { threadId: threadRef.threadId, cardId: decision.id, optionKey },
     });
     if (result._tag === "Success") {
-      setAttempt({ status: "sent", optionKey, cardAtSend });
+      setAttempt({ status: "sent", optionKey });
       return;
     }
     const error = isAtomCommandInterrupted(result) ? null : squashAtomCommandFailure(result);

@@ -40,6 +40,7 @@ import {
   deriveMessagesTimelineRowsWithState,
   isTimelineMinimapTurnVisible,
   resolveAssistantMessageCopyState,
+  sameRowsInput,
   type MessagesTimelineRow,
   workEntryDisplayLabel,
 } from "./MessagesTimeline.logic";
@@ -5400,6 +5401,15 @@ describe("plugin card rows", () => {
   ] as const)("draws a timeline with a %s card snapshot exactly as without cards", (_l, cards) => {
     const plain = deriveMessagesTimelineRows(rowsInput());
     expect(deriveMessagesTimelineRows(rowsInput(cards))).toEqual(plain);
+  });
+
+  it("treats a copied card list as the same row input only if the cards stay the same", () => {
+    const first = decisionCard("d1", onItem("raise"));
+    const second = decisionCard("d2", onItem("answer"));
+    const input = rowsInput([first, second]);
+    expect(sameRowsInput(input, { ...input, pluginCards: [first, second] })).toBe(true);
+    expect(sameRowsInput(input, { ...input, pluginCards: [second, first] })).toBe(false);
+    expect(sameRowsInput(input, { ...input, pluginCards: [{ ...first }, second] })).toBe(false);
   });
 
   it("rebuilds only the changed card's row when one card's data changes", () => {

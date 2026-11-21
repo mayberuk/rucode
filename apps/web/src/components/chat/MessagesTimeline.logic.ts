@@ -3053,8 +3053,7 @@ export function handoffRunsSignature(runs: ReadonlyArray<HandoffTimelineRun>): s
     .join("\n");
 }
 
-// Expanded-id sets can be rebuilt during render; comparing them by content keeps
-// the render-time state update in useIncrementalTimelineRows from repeating forever.
+// Render can rebuild expanded-id sets and filter cards without changing the rows.
 export function sameRowsInput(
   left: MessagesTimelineRowsInput,
   right: MessagesTimelineRowsInput,
@@ -3064,6 +3063,18 @@ export function sameRowsInput(
     const next = right[key];
     if (Object.is(previous, next)) continue;
     if (previous instanceof Set && next instanceof Set && shallow(previous, next)) continue;
+    if (key === "pluginCards") {
+      const previousCards = left.pluginCards;
+      const nextCards = right.pluginCards;
+      if (
+        previousCards !== undefined &&
+        nextCards !== undefined &&
+        previousCards.length === nextCards.length &&
+        previousCards.every((card, index) => card === nextCards[index])
+      ) {
+        continue;
+      }
+    }
     return false;
   }
   return Object.keys(left).length === Object.keys(right).length;
