@@ -72,6 +72,40 @@ describe("readForegroundCommand", () => {
     }),
   );
 
+  it.effect.each([
+    {
+      program: "python3",
+      args: ["manage.py", "runserver"],
+      executable: "/usr/bin/python3.15",
+      line: "python3 manage.py runserver",
+    },
+    {
+      program: "sh",
+      args: ["./dev.sh", "two words"],
+      executable: "/usr/bin/bash",
+      line: "sh ./dev.sh 'two words'",
+    },
+    {
+      program: "/bin/bash",
+      args: ["./dev.sh"],
+      executable: "/usr/bin/bash",
+      line: "/bin/bash ./dev.sh",
+    },
+    { program: "node: worker", args: [], executable: "/usr/bin/node", line: null },
+  ])(
+    "on linux uses the original argv for $program when restorable",
+    ({ program, args, executable, line }) =>
+      Effect.gen(function* () {
+        const cwd = "/work/app";
+        const { sources } = fakeSources({
+          files: { "/proc/4242/cmdline": [program, ...args, ""].join("\0") },
+          links: { "/proc/4242/cwd": cwd, "/proc/4242/exe": executable },
+        });
+        const command = yield* readForegroundCommand(4242, "linux", sources);
+        expect(command).toEqual(line === null ? null : { line, cwd });
+      }),
+  );
+
   it.effect("on linux keeps an empty middle argument but drops the trailing terminator", () =>
     Effect.gen(function* () {
       const { sources } = fakeSources({

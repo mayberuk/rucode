@@ -1,6 +1,5 @@
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as NodePath from "node:path";
 
 import * as ProcessRunner from "../processRunner.ts";
 import type { RestorableTerminalCommand } from "./sessionHost.ts";
@@ -84,31 +83,20 @@ export const readProcessCwd = Effect.fn("terminal.readProcessCwd")(function* (
   return null;
 });
 
-/** Reads a process command. Rerun callers can require Linux argv to match the executable. */
 export const readForegroundCommand = Effect.fn("terminal.readForegroundCommand")(function* (
   pid: number,
   platform: NodeJS.Platform,
   sources: ForegroundCommandSources,
-  options?: { readonly verifyLinuxExecutable: boolean },
 ) {
   if (platform === "linux") {
     const cmdline = yield* sources.readText(`/proc/${pid}/cmdline`);
     const argv = cmdline === null ? [] : cmdline.split("\0");
     if (argv.at(-1) === "") argv.pop();
     const [program] = argv;
-    if (!program) return null;
+    // A process can replace argv[0] with a title such as "node: worker".
+    if (!program || /[\s\p{Cc}]/u.test(program)) return null;
     const cwd = yield* readProcessCwd(pid, platform, sources);
-    if (cwd === null) return null;
-    if (options?.verifyLinuxExecutable) {
-      // A process can overwrite argv, while the kernel's executable link still identifies it.
-      const executable = yield* sources.readLink(`/proc/${pid}/exe`);
-      if (executable === null) return null;
-      const matchesExecutable = program.includes("/")
-        ? NodePath.posix.resolve(cwd, program) === executable
-        : program === NodePath.posix.basename(executable);
-      if (!matchesExecutable) return null;
-    }
-    return restorableTerminalCommand(posixQuoteArgv(argv), cwd);
+    return cwd === null ? null : restorableTerminalCommand(posixQuoteArgv(argv), cwd);
   }
   if (platform === "darwin") {
     // ps joins argv with spaces, so an argument holding a space cannot be quoted back.
