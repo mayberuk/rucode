@@ -4,8 +4,11 @@ import { CSS } from "@dnd-kit/utilities";
 import { useNavigate } from "@tanstack/react-router";
 import { LayoutDashboardIcon } from "lucide-react";
 import { type ReactNode, useLayoutEffect } from "react";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import { cn } from "~/lib/utils";
+import { useAnyThreadHasOpenDecision } from "../../pluginCards/live/liveAtoms";
 import { animateSidebarLayoutChanges, sidebarMarkerId } from "../Sidebar.logic";
+import { FOLDER_DOT_CLASS_NAME, FOLDER_DOT_LABEL } from "./SidebarProjectFolderHeader";
 import { SIDEBAR_SORTABLE_DRAG_DISABLED } from "./SidebarThreadRow";
 
 function SortableSidebarMarker(props: {
@@ -163,8 +166,10 @@ export function InitiativeGroupHeader(props: {
   label: string;
   count: number;
   expanded: boolean;
+  hiddenThreads: ReadonlyArray<ScopedThreadRef>;
   onToggle: (groupKey: string) => void;
 }) {
+  const openDecision = useAnyThreadHasOpenDecision(props.expanded ? [] : props.hiddenThreads);
   return (
     <SortableSidebarMarker
       sortableId={initiativeGroupHeaderId(props.groupKey)}
@@ -175,7 +180,18 @@ export function InitiativeGroupHeader(props: {
         data-sidebar-row={initiativeGroupRowId(props.groupKey)}
         onClick={() => props.onToggle(props.groupKey)}
         expanded={props.expanded}
-        accessory={<span className="font-normal tabular-nums">{props.count}</span>}
+        accessory={
+          <span className="flex items-center gap-1.5">
+            {openDecision ? (
+              <span
+                className={cn("size-1.5 shrink-0 rounded-full", FOLDER_DOT_CLASS_NAME.attention)}
+              >
+                <span className="sr-only">{FOLDER_DOT_LABEL.attention}</span>
+              </span>
+            ) : null}
+            <span className="font-normal tabular-nums">{props.count}</span>
+          </span>
+        }
       >
         {props.label}
       </CollapsibleSectionHeader>
@@ -190,7 +206,7 @@ export function InitiativeGroupEnd(props: {
 }) {
   const navigate = useNavigate();
   return (
-    <SortableSidebarMarker sortableId={initiativeGroupEndId(props.groupKey)}>
+    <SortableSidebarMarker sortableId={initiativeGroupEndId(props.groupKey)} className="pb-2">
       <button
         type="button"
         data-sidebar-row={`${initiativeGroupRowId(props.groupKey)}:end`}

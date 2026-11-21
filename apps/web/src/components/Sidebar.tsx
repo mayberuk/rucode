@@ -3636,6 +3636,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               label={entry.group.label}
                               count={entry.members.length}
                               expanded={collapsedInitiatives[item.groupKey] !== true}
+                              hiddenThreads={entry.members
+                                .filter((member) => !entry.threads.includes(member))
+                                .map(({ thread }) =>
+                                  scopeThreadRef(thread.environmentId, thread.id),
+                                )}
                               onToggle={toggleInitiativeGroup}
                             />,
                           );

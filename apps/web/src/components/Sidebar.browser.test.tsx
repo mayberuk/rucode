@@ -436,6 +436,11 @@ describe("sidebar initiative groups", () => {
     __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, boringSidebarEnabled });
     stack.defer(() => window.localStorage.removeItem("t3code:sidebar:initiative-collapsed"));
     stack.use(vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([group]));
+    stack.use(
+      vi
+        .spyOn(liveAtoms, "useAnyThreadHasOpenDecision")
+        .mockImplementation((refs) => refs.some((ref) => ref.threadId === "part")),
+    );
     vi.mocked(useProjects).mockReturnValue([groupedProject]);
     vi.mocked(useQuietThreadShells).mockReturnValue(threads);
     vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef: routeThreadRef });
@@ -484,6 +489,8 @@ describe("sidebar initiative groups", () => {
     header.element().focus();
     await userEvent.keyboard("{Enter}");
     await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    // A hidden chat with an open decision shows the attention dot on the collapsed header.
+    expect(header.element().textContent).toBe("Nov 18 rollout, needs you2");
     await expect
       .element(screen.getByText("Orchestrator chat", { exact: true }))
       .not.toBeInTheDocument();
@@ -505,6 +512,7 @@ describe("sidebar initiative groups", () => {
     header.element().focus();
     await userEvent.keyboard("{Enter}");
     await expect.element(header).toHaveAttribute("aria-expanded", "true");
+    expect(header.element().textContent).toBe("Nov 18 rollout2");
     await expect.element(groupRow("Orchestrator chat")).toBeInTheDocument();
     await expect.element(groupRow("Part one chat")).toBeInTheDocument();
 
