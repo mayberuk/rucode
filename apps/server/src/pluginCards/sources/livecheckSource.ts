@@ -31,6 +31,8 @@ const RUNS_SEGMENT = "/.livecheck/runs/";
 const CHANGE_DEBOUNCE = Duration.millis(250);
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 const MAX_REMEMBERED_CHECKOUTS = 128;
+/** A listing such as `ls .livecheck/runs/` names every past run; only the newest are live candidates. */
+const MAX_OUTPUT_RUNS = 2;
 const RUN_PATH = /([^\s'"=:;|&<>]*)\.livecheck\/runs\/(\d{8}-\d{6}[A-Za-z0-9._-]*)/g;
 
 const MEDIA_TYPES: Record<string, string> = {
@@ -70,7 +72,11 @@ export const livecheckSource: PluginCardSourceFactory = Effect.gen(function* () 
       for (const word of segment.words) runDirsIn(word, segment.cwd, runDirs);
       lastCwd = segment.cwd;
     }
-    if (command.output !== null) runDirsIn(command.output, lastCwd, runDirs);
+    if (runDirs.size === 0 && command.output !== null) {
+      const listed = new Set<string>();
+      runDirsIn(command.output, lastCwd, listed);
+      for (const runDir of [...listed].slice(-MAX_OUTPUT_RUNS)) runDirs.add(runDir);
+    }
     return [...runDirs].flatMap((key) => [
       { kind: PROGRESS, key },
       { kind: RESULT, key },

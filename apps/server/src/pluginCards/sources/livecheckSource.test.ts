@@ -259,6 +259,29 @@ it.layer(NodeServices.layer)("livecheck source", (it) => {
     }),
   );
 
+  it.effect(
+    "takes only the newest two runs from a listing, and none when the command names one",
+    () =>
+      Effect.gen(function* () {
+        const { source } = yield* setup();
+        const keys = (text: string, output: string) =>
+          source
+            .recognize(command(text, output))
+            .flatMap((ref) => (ref.kind === "livecheck.progress" ? [ref.key] : []));
+        const listing = [1, 2, 3, 4]
+          .map((n) => `/repo/.livecheck/runs/2026112${n}-100000-run${n}`)
+          .join("\n");
+
+        expect(keys("ls -d /repo/.livecheck/runs/*", listing)).toEqual([
+          "/repo/.livecheck/runs/20261123-100000-run3",
+          "/repo/.livecheck/runs/20261124-100000-run4",
+        ]);
+        expect(keys(`cat /repo/.livecheck/runs/${RUN_ID}/result.json`, listing)).toEqual([
+          `/repo/.livecheck/runs/${RUN_ID}`,
+        ]);
+      }),
+  );
+
   it.effect("recognises nothing for commands that do not name a run", () =>
     Effect.gen(function* () {
       const { source } = yield* setup();
