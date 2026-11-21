@@ -4024,7 +4024,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       if (input.reply !== true) {
         const rerun = session.pendingRerun;
         session.pendingRerun = null;
-        if (rerun !== null) {
+        // Script runners share the input path and submit text with its Enter in the same write.
+        const submittedCommand = !binary && data.endsWith("\r") && /^[^\x00-\x1f\x7f]/.test(data);
+        if (rerun !== null && !submittedCommand) {
           // The key that answers the prompt is not shell input.
           if (data === "\x03") return;
           data = rerunInput(rerun, session.cwd);
