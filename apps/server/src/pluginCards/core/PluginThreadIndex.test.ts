@@ -33,8 +33,11 @@ const CLAUDE = ProviderDriverKind.make("claudeAgent");
 const SESSION = "0b7c2a1e-5f3d-4c1a-9e8b-1d2f3a4b5c6d";
 
 // Fixtures carry only the fields the index reads.
-const appThread = (id: ThreadId, deletedAt: DateTime.Utc | null) =>
-  ({ id, deletedAt }) as unknown as OrchestrationV2AppThread;
+const appThread = (
+  id: ThreadId,
+  deletedAt: DateTime.Utc | null,
+  providerInstanceId = ProviderInstanceId.make("codex"),
+) => ({ id, deletedAt, providerInstanceId }) as unknown as OrchestrationV2AppThread;
 const shellThread = (id: string, worktreePath: string | null) =>
   ({
     id: ThreadId.make(id),
@@ -68,7 +71,12 @@ const withIndex = <A, E>(
       findThread: (threadId) =>
         Effect.succeed(
           threadId === LIVE_THREAD
-            ? appThread(LIVE_THREAD, null)
+            ? appThread(
+                LIVE_THREAD,
+                null,
+                fixture.providerThread &&
+                  ProviderInstanceId.make(fixture.providerThread.instanceId),
+              )
             : threadId === DELETED_THREAD
               ? appThread(DELETED_THREAD, DateTime.makeUnsafe(0))
               : null,
@@ -80,12 +88,13 @@ const withIndex = <A, E>(
           threads: options?.location === "active" ? (fixture.activeThreads ?? []) : [],
           archivedThreads: [],
         }),
-      getThreadProviderContext: (threadId) =>
+      // Like the store, which reads provider threads only for a target instance.
+      getThreadProviderContext: (threadId, targetInstanceId) =>
         Effect.succeed({
           thread: { id: threadId, activeProviderThreadId } as unknown as OrchestrationV2AppThread,
           providerSessions: [],
           providerThreads:
-            fixture.providerThread === undefined
+            fixture.providerThread === undefined || targetInstanceId === undefined
               ? []
               : [
                   {

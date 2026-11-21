@@ -262,7 +262,12 @@ export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
   const claudeTranscript = Effect.fn("PluginThreadIndex.claudeTranscript")(function* (
     threadId: ThreadId,
   ) {
-    const context = yield* projection.getThreadProviderContext(threadId).pipe(Effect.option);
+    const known = yield* projection.findThread(threadId).pipe(Effect.option);
+    if (Option.isNone(known) || known.value === null) return null;
+    // The store reads provider threads only for a target instance.
+    const context = yield* projection
+      .getThreadProviderContext(threadId, known.value.providerInstanceId)
+      .pipe(Effect.option);
     if (Option.isNone(context)) return null;
     const { thread, providerThreads } = context.value;
     const providerThread = providerThreads.find(
