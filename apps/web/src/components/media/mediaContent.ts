@@ -6,6 +6,16 @@ export function resolveProtocolRelativeMediaUrl(src: string): string {
   return `${protocol}${src}`;
 }
 
+/** The host a remote media source would contact, or null when it names no network host. */
+export function remoteMediaHost(src: string): string | null {
+  try {
+    const url = new URL(resolveProtocolRelativeMediaUrl(src));
+    return (url.protocol === "http:" || url.protocol === "https:") && url.host ? url.host : null;
+  } catch {
+    return null;
+  }
+}
+
 // Data URL escapes are raw bytes, not UTF-8, so `%89` must stay one byte.
 function decodePercentBytes(payload: string) {
   const encoder = new TextEncoder();

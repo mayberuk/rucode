@@ -115,7 +115,7 @@ import {
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { markdownImageGallery } from "./chat/markdownImageGallery";
 import { type MediaActionSource } from "./media/MediaActions";
-import { resolveProtocolRelativeMediaUrl } from "./media/mediaContent";
+import { remoteMediaHost, resolveProtocolRelativeMediaUrl } from "./media/mediaContent";
 import {
   revealInFileExplorerLabelForKind,
   revealInFileExplorerLabelForOs,
@@ -211,6 +211,7 @@ import {
   ChatMarkdownAssetImage,
   ChatMarkdownImage,
   ChatMarkdownImageFallback,
+  ChatMarkdownRemoteMedia,
   ChatMarkdownVideo,
   MarkdownLinkContext,
   markdownImageCopy,
@@ -338,6 +339,8 @@ function CodexArtifactTemplateCard(props: {
 }
 
 const WINDOWS_DRIVE_PATH_REGEX = /^[A-Za-z]:[\\/]/;
+// A source that asks the network for media but names no host, such as `https://`.
+const NETWORK_MEDIA_SOURCE_PATTERN = /^(?:https?:|\/\/)/i;
 
 function orderedListGutterStyle(
   itemValues: ReadonlyArray<unknown>,
@@ -1538,7 +1541,12 @@ const CHAT_MARKDOWN_COMPONENTS = {
       if (imageSource._tag !== "Direct" && !(filePath && threadRef)) {
         return <ChatMarkdownImageFallback alt={altText} copyMarkdown={copyMarkdown} kind="audio" />;
       }
-      return (
+      const audioUri = imageSource._tag === "Direct" ? imageSource.uri : null;
+      const audioHost = audioUri === null ? null : remoteMediaHost(audioUri);
+      if (audioUri !== null && audioHost === null && NETWORK_MEDIA_SOURCE_PATTERN.test(audioUri)) {
+        return <ChatMarkdownImageFallback alt={altText} copyMarkdown={copyMarkdown} kind="audio" />;
+      }
+      const audio = (
         <InlineAudioPreview
           key={classifiedSrc}
           name={name}
@@ -1557,6 +1565,20 @@ const CHAT_MARKDOWN_COMPONENTS = {
               ? { src: resolveProtocolRelativeMediaUrl(imageSource.uri) }
               : {})}
         />
+      );
+      if (audioUri === null || audioHost === null) return audio;
+      const audioSrc = resolveProtocolRelativeMediaUrl(audioUri);
+      return (
+        <ChatMarkdownRemoteMedia
+          key={audioSrc}
+          src={audioSrc}
+          host={audioHost}
+          kind="audio"
+          alt={altText}
+          copyMarkdown={copyMarkdown}
+        >
+          {audio}
+        </ChatMarkdownRemoteMedia>
       );
     }
     if (mediaKind === null && imageSource._tag === "WorkspaceFile") {
@@ -1612,8 +1634,12 @@ const CHAT_MARKDOWN_COMPONENTS = {
         src: mediaSrc,
         ...(reference ? { reference } : {}),
       };
-      if (kind === "video") {
-        return (
+      const host = remoteMediaHost(imageSource.uri);
+      if (host === null && NETWORK_MEDIA_SOURCE_PATTERN.test(imageSource.uri)) {
+        return <ChatMarkdownImageFallback alt={altText} copyMarkdown={copyMarkdown} kind={kind} />;
+      }
+      const media =
+        kind === "video" ? (
           <ChatMarkdownVideo
             src={mediaSrc}
             alt={altText}
@@ -1622,22 +1648,33 @@ const CHAT_MARKDOWN_COMPONENTS = {
             style={authoredSizeStyle}
             actionsSource={actionsSource}
           />
+        ) : (
+          <ChatMarkdownImage
+            key={mediaSrc}
+            src={mediaSrc}
+            alt={altText}
+            copyMarkdown={copyMarkdown}
+            standalone={standalone}
+            className={className}
+            style={authoredSizeStyle}
+            imageProps={imageProps}
+            actionsSource={actionsSource}
+            originalUrl={originalUrl}
+            onImageExpand={imageExpand}
+          />
         );
-      }
+      if (host === null) return media;
       return (
-        <ChatMarkdownImage
+        <ChatMarkdownRemoteMedia
           key={mediaSrc}
           src={mediaSrc}
+          host={host}
+          kind={kind === "video" ? "video" : "image"}
           alt={altText}
           copyMarkdown={copyMarkdown}
-          standalone={standalone}
-          className={className}
-          style={authoredSizeStyle}
-          imageProps={imageProps}
-          actionsSource={actionsSource}
-          originalUrl={originalUrl}
-          onImageExpand={imageExpand}
-        />
+        >
+          {media}
+        </ChatMarkdownRemoteMedia>
       );
     }
     const hostImageUrl = use(HostImageUrlContext);

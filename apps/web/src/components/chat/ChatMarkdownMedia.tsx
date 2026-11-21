@@ -1,7 +1,7 @@
 import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
 import { mediaFileReference, mediaUrlReference } from "@t3tools/client-runtime/media-reference";
 import type { AssetResource, EnvironmentId, SOURCE_CONTROL_MEDIA_ASSET } from "@t3tools/contracts";
-import { TriangleAlertIcon } from "lucide-react";
+import { AudioLinesIcon, ImageIcon, TriangleAlertIcon, VideoIcon } from "lucide-react";
 import {
   createContext,
   memo,
@@ -11,6 +11,7 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 
 import { useAssetUrlRefresh, useAssetUrlState } from "../../assets/assetUrls";
@@ -18,6 +19,7 @@ import { cn } from "../../lib/utils";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { MediaActions, type MediaActionSource } from "../media/MediaActions";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
+import { Button } from "../ui/button";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { markdownImageGallery, markdownImageItems } from "./markdownImageGallery";
 
@@ -156,6 +158,66 @@ export function ChatMarkdownImageFallback(props: {
     <MediaActions source={props.actionsSource}>{content}</MediaActions>
   ) : (
     content
+  );
+}
+
+// Module-level because the timeline remounts rows as they scroll; per-instance state would ask
+// again for media the user already loaded. Not persisted: a reload starts gated.
+const approvedRemoteMedia = new Set<string>();
+
+const REMOTE_MEDIA_LABEL = {
+  image: "Image",
+  video: "Video",
+  audio: "Audio",
+} as const;
+
+const REMOTE_MEDIA_ICON = {
+  image: ImageIcon,
+  video: VideoIcon,
+  audio: AudioLinesIcon,
+} as const;
+
+/** Renders no request to `src` until the user clicks Load. Callers key it on `src`. */
+export function ChatMarkdownRemoteMedia(props: {
+  readonly src: string;
+  readonly host: string;
+  readonly kind: "image" | "video" | "audio";
+  readonly alt: string;
+  readonly copyMarkdown: string | undefined;
+  readonly children: ReactNode;
+}) {
+  const [approved, setApproved] = useState(() => approvedRemoteMedia.has(props.src));
+  if (approved) return props.children;
+  const Icon = REMOTE_MEDIA_ICON[props.kind];
+  const label = REMOTE_MEDIA_LABEL[props.kind];
+  return (
+    <span
+      data-markdown-copy={props.copyMarkdown}
+      data-thread-find-ignore
+      className={cn(
+        CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME,
+        "rounded-md border border-border/40 bg-muted/40 px-2 py-1 text-xs text-muted-foreground",
+      )}
+    >
+      <span className="inline-flex items-center gap-1.5">
+        <Icon aria-hidden className="size-3.5 shrink-0" />
+        {[`${label} from ${props.host}`, props.alt].filter(Boolean).join(" · ")}
+        <Button
+          variant="outline"
+          size="xs"
+          aria-label={`Load ${label.toLowerCase()} from ${props.host}`}
+          onClick={(event) => {
+            // The placeholder can sit inside a link that wraps the image.
+            event.preventDefault();
+            event.stopPropagation();
+            approvedRemoteMedia.add(props.src);
+            setApproved(true);
+          }}
+        >
+          Load
+        </Button>
+      </span>
+    </span>
   );
 }
 
