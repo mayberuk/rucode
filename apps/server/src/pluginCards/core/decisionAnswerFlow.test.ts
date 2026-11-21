@@ -127,11 +127,9 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-decision-answer-" });
     const checkout = path.join(root, "repo");
     const decisionsDir = path.join(checkout, ".claude", "work", "decisions");
+    const decisionPath = path.join(decisionsDir, "d-1.json");
     yield* fs.makeDirectory(decisionsDir, { recursive: true });
-    yield* fs.writeFileString(
-      path.join(decisionsDir, "d-1.json"),
-      JSON.stringify(decisionRecord(options.record)),
-    );
+    yield* fs.writeFileString(decisionPath, JSON.stringify(decisionRecord(options.record)));
     const transcriptPath = path.join(root, "projects", "repo", "s-1.jsonl");
     yield* fs.makeDirectory(path.dirname(transcriptPath), { recursive: true });
     // The same words, said before this answer was sent, must not be quoted.
@@ -190,7 +188,26 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
     const dpRuns = yield* Queue.unbounded<ProcessRunner.ProcessRunInput>();
     const dpResults = [...(options.dpResults ?? [])];
     const runner = Layer.mock(ProcessRunner.ProcessRunner)({
-      run: (input) => Queue.offer(dpRuns, input).pipe(Effect.as(dpResults.shift() ?? dpOutput(0))),
+      run: (input) =>
+        Effect.gen(function* () {
+          const result = dpResults.shift() ?? dpOutput(0);
+          if (result.code === 0) {
+            yield* fs.writeFileString(
+              decisionPath,
+              JSON.stringify(
+                decisionRecord({
+                  ...options.record,
+                  state: "answered",
+                  choice: input.args?.[3],
+                  chosenBy: "person",
+                  resolvedAt: "2026-11-21T10:30:00Z",
+                }),
+              ),
+            );
+          }
+          yield* Queue.offer(dpRuns, input);
+          return result;
+        }).pipe(Effect.orDie),
     });
 
     const services = Layer.mergeAll(index, threadManagement, runner);
@@ -262,6 +279,7 @@ const expectedDpArgs = (h: Harness, key: string, uuid: string) => [
 it.effect("posts one message naming the decision and option, then quotes its line to dp", () =>
   Effect.gen(function* () {
     const h = yield* harness();
+    assert.strictEqual((yield* h.card)?.data.state, "open");
     assert.deepStrictEqual(yield* answer(h), { delivery: "started" });
 
     const run = yield* Queue.take(h.dpRuns);
@@ -285,7 +303,9 @@ it.effect("posts one message naming the decision and option, then quotes its lin
       (yield* takeProgress(h, 3)).map((step) => step?.status ?? null),
       ["posting", "recording", null],
     );
-    assert.isNull((yield* h.card)?.data.answer);
+    const snapshot = yield* h.card;
+    assert.strictEqual(snapshot?.data.state, "answered");
+    assert.isNull(snapshot?.data.answer);
   }),
 );
 
@@ -380,10 +400,14 @@ it.effect("keeps the decision open and shows dp's reason when dp refuses the quo
       reason: "chat-quote-invalid",
       detail: "dp: line u-posted-1 in the transcript is marked isMeta",
     } as const;
-    assert.deepStrictEqual((yield* takeProgress(h, 3))[2], failed);
+    const [posting, recording, failure] = yield* takeProgress(h, 3);
+    const attemptId = posting?.attemptId;
+    if (attemptId === undefined) throw new Error("Missing posting attempt ID");
+    assert.strictEqual(recording?.attemptId, attemptId);
+    assert.deepStrictEqual(failure, { ...failed, attemptId });
     const card = yield* h.card;
     assert.strictEqual(card?.data.state, "open");
-    assert.deepStrictEqual(card?.data.answer, failed);
+    assert.deepStrictEqual(card?.data.answer, failure);
   }),
 );
 
@@ -399,22 +423,26 @@ it.effect("reports a dp that cannot be run as dp-failed", () =>
   }),
 );
 
-it.effect("retries a refused answer by quoting the same line again, without a second post", () =>
+it.effect("reports a new attempt when dp refuses the same quoted line again", () =>
   Effect.gen(function* () {
-    const h = yield* harness({ dpResults: [QUOTE_INVALID, dpOutput(0)] });
+    const h = yield* harness({ dpResults: [QUOTE_INVALID, QUOTE_INVALID] });
     yield* answer(h);
     const first = yield* Queue.take(h.dpRuns);
-    yield* takeProgress(h, 3);
+    const [, , firstFailure] = yield* takeProgress(h, 3);
 
     assert.deepStrictEqual(yield* answer(h), { delivery: "reused" });
     const second = yield* Queue.take(h.dpRuns);
     assert.deepStrictEqual(second.args, first.args);
     assert.deepStrictEqual(second.args, expectedDpArgs(h, "retry", "u-posted-1"));
     assert.strictEqual(h.sends.length, 1);
-    assert.deepStrictEqual(
-      (yield* takeProgress(h, 2)).map((step) => step?.status ?? null),
-      ["recording", null],
-    );
+    const [recording, secondFailure] = yield* takeProgress(h, 2);
+    assert.strictEqual(recording?.status, "recording");
+    assert.strictEqual(secondFailure?.status, "failed");
+    assert.strictEqual(secondFailure?.reason, firstFailure?.reason);
+    assert.strictEqual(secondFailure?.detail, firstFailure?.detail);
+    assert.isString(secondFailure?.attemptId);
+    assert.strictEqual(recording?.attemptId, secondFailure?.attemptId);
+    assert.notStrictEqual(secondFailure?.attemptId, firstFailure?.attemptId);
   }),
 );
 
@@ -473,7 +501,16 @@ it.effect("refuses a second answer while the first is in progress, and posts onc
     const first = yield* answer(h).pipe(Effect.forkChild);
     yield* Queue.take(h.sendStarted);
     assert.strictEqual(yield* failureOf(answer(h)), "answer-in-progress");
-    assert.strictEqual(yield* failureOf(answer(h, "abort")), "answer-in-progress");
+    assert.strictEqual(
+      yield* failureOf(
+        h.flow.answer({
+          threadId: THREAD,
+          cardId: `dispatch.decision:${h.checkout}/.#d-1`,
+          optionKey: "abort",
+        }),
+      ),
+      "answer-in-progress",
+    );
     yield* Deferred.succeed(gate, undefined);
     assert.deepStrictEqual(yield* Fiber.join(first), { delivery: "started" });
     yield* Queue.take(h.dpRuns);

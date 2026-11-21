@@ -32,7 +32,7 @@ const answerAttemptAtom = Atom.family((_key: string) =>
 );
 
 const UNCONFIRMED_ANSWER = "The connection dropped before the answer was confirmed.";
-// Recording times out server-side after 30 seconds, before the debounced snapshot is published.
+// Older servers can emit an identical failure after the 30-second recording window.
 const REUSED_RETRY_WAIT_MS = 31_000;
 
 export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionPanel({
@@ -75,7 +75,9 @@ export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionP
         optionKey,
         cardAtSend: decision,
         reusedRetryDeadline:
-          result.value.delivery === "reused" && data.answer?.status === "failed"
+          result.value.delivery === "reused" &&
+          data.answer?.status === "failed" &&
+          data.answer.attemptId === undefined
             ? Date.now() + REUSED_RETRY_WAIT_MS
             : null,
       });

@@ -107,6 +107,23 @@ it.each([
   },
 );
 
+it("shows a repeated failure as soon as the newer attempt arrives", () => {
+  const failedAttempt = (attemptId: string): DispatchDecisionCard => ({
+    ...failedCard,
+    data: {
+      ...failedCard.data,
+      answer: { status: "failed", optionKey: "keep", reason: "dp-failed", detail: null, attemptId },
+    },
+  });
+  const retry = { ...sent, cardAtSend: failedAttempt("first") };
+  expect(decisionAnswerView(retry.cardAtSend, retry).status).toBe("recording");
+  expect(decisionAnswerView(failedAttempt("second"), retry)).toEqual({
+    status: "failed",
+    optionKey: "keep",
+    message: "Couldn't record your answer.",
+  });
+});
+
 it("clears local progress when the snapshot shows the decision answered", () => {
   const answered = { ...card, data: { ...card.data, state: "answered" as const, choice: "keep" } };
   expect(decisionAnswerView(answered, sent)).toEqual({ status: "idle" });

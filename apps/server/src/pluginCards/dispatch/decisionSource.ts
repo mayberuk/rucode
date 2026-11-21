@@ -418,11 +418,17 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
       cardId: string,
       next: PluginDecisionAnswerProgress | null,
     ) =>
-      Effect.suspend(() => {
-        if (next === null) progress.delete(cardId);
-        else progress.set(cardId, next);
-        return PubSub.publish(progressEvents, threadId).pipe(Effect.asVoid);
-      });
+      // A successful dp write can precede the debounced file notification.
+      (next === null ? invalidate : Effect.void).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (next === null) progress.delete(cardId);
+            else progress.set(cardId, next);
+          }),
+        ),
+        Effect.andThen(PubSub.publish(progressEvents, threadId)),
+        Effect.asVoid,
+      );
 
     yield* Stream.merge(Stream.fromPubSub(diskEvents), index.decisionMappingChanges).pipe(
       Stream.debounce(CHANGE_DEBOUNCE),

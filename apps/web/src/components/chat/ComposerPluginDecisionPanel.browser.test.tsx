@@ -268,47 +268,66 @@ it("shows the oldest of several decisions with a count and moves on when it clos
   await expect.element(screen.getByText("1/2")).toBeVisible();
 });
 
-it("shows a failed answer's reason with Try again and keeps the decision in the panel", async () => {
-  using env = setup();
-  using answer = stubAnswer();
-  await using screen = await render(
-    <RegistryContext.Provider value={env.registry}>
-      <DecisionDrawer />
-    </RegistryContext.Provider>,
-  );
-  const card = decisionCard("d-1", {
-    answer: { optionKey: "keep", status: "failed", reason: "dp-failed", detail: "exit status 1" },
-  });
-  await env.publish([card]);
+it.each(["legacy", "versioned"] as const)(
+  "offers another retry after a %s refusal repeats",
+  async (server) => {
+    using env = setup();
+    using answer = stubAnswer();
+    await using screen = await render(
+      <RegistryContext.Provider value={env.registry}>
+        <DecisionDrawer />
+      </RegistryContext.Provider>,
+    );
+    const failure = {
+      optionKey: "keep",
+      status: "failed",
+      reason: "dp-failed",
+      detail: "exit status 1",
+    } as const;
+    const showFailure = (attemptId?: string) =>
+      decisionCard("d-1", {
+        answer: attemptId === undefined ? failure : { ...failure, attemptId },
+      });
+    const card = showFailure(server === "versioned" ? "attempt-1" : undefined);
+    await env.publish([card]);
 
-  await expect.element(screen.getByText("Couldn't record your answer.")).toBeVisible();
-  await expect.element(screen.getByText("Close the initiative without d-1?")).toBeVisible();
-  await expect.element(answerButton(screen)).not.toBeInTheDocument();
-  await screen.getByRole("button", { name: "Try again" }).click();
-  expect(answer.spy).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
-    environmentId: threadRef.environmentId,
-    input: { threadId: threadRef.threadId, cardId: card.id, optionKey: "keep" },
-  });
-
-  {
-    using _timers = fakeTimers();
-    await act(async () => {
-      answer.calls[0]!.resolve(AsyncResult.success({ delivery: "reused" }));
-    });
-    await expect.element(screen.getByRole("button", { name: "Recording answer…" })).toBeDisabled();
-    await act(() => vi.advanceTimersByTime(31_000));
     await expect.element(screen.getByText("Couldn't record your answer.")).toBeVisible();
-  }
+    await expect.element(screen.getByText("Close the initiative without d-1?")).toBeVisible();
+    await expect.element(answerButton(screen)).not.toBeInTheDocument();
+    await screen.getByRole("button", { name: "Try again" }).click();
+    expect(answer.spy).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId, cardId: card.id, optionKey: "keep" },
+    });
 
-  await screen.getByRole("button", { name: "Try again" }).click();
-  await act(async () => {
-    answer.calls[1]!.resolve(AsyncResult.fail(new PluginCardError({ reason: "decision-closed" })));
-  });
-  await expect
-    .element(screen.getByText("This decision was already answered or closed."))
-    .toBeVisible();
-  await expect.element(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
-});
+    {
+      using _timers = fakeTimers();
+      await act(async () => {
+        answer.calls[0]!.resolve(AsyncResult.success({ delivery: "reused" }));
+      });
+      await expect
+        .element(screen.getByRole("button", { name: "Recording answer…" }))
+        .toBeDisabled();
+      if (server === "legacy") {
+        await act(() => vi.advanceTimersByTime(31_000));
+      } else {
+        await env.publish([showFailure("attempt-2")]);
+      }
+      await expect.element(screen.getByText("Couldn't record your answer.")).toBeVisible();
+    }
+
+    await screen.getByRole("button", { name: "Try again" }).click();
+    await act(async () => {
+      answer.calls[1]!.resolve(
+        AsyncResult.fail(new PluginCardError({ reason: "decision-closed" })),
+      );
+    });
+    await expect
+      .element(screen.getByText("This decision was already answered or closed."))
+      .toBeVisible();
+    await expect.element(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+  },
+);
 
 it("shows the terminal command for the picked option when the chat cannot quote turns", async () => {
   using env = setup();

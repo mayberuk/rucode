@@ -215,6 +215,16 @@ describe("PluginCard", () => {
     expect(decoded.data.answer).toBeNull();
   });
 
+  it("round-trips an answer attempt ID when a server includes it", () => {
+    const card = {
+      ...base,
+      id: "dispatch.decision:/repo#d1",
+      kind: "dispatch.decision",
+      data: { ...decisionData, answer: { ...decisionData.answer, attemptId: "attempt-2" } },
+    } as const;
+    expect(decode(wire(encode(card)))).toEqual(card);
+  });
+
   it("rejects a kind outside the known list", () => {
     expect(Exit.isFailure(decodeExit(wire({ ...cardOfEachKind[0], kind: "dispatch.nope" })))).toBe(
       true,

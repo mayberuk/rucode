@@ -112,6 +112,7 @@ const cardBase = {
 };
 
 export const PluginDecisionAnswerProgress = Schema.Struct({
+  attemptId: Schema.optionalKey(Schema.String),
   optionKey: Schema.String,
   status: Schema.Literals(["posting", "recording", "failed"]),
   reason: Schema.NullOr(PluginCardErrorReason),

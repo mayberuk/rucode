@@ -4,7 +4,6 @@ import {
   PluginCardError,
   type PluginDecisionAnswerInput,
   type PluginDecisionAnswerResult,
-  type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
@@ -57,15 +56,7 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
   const claims = new Set<string>();
   // The message an answer already quoted, kept after dp refuses so a retry quotes it again.
   const quoted = new Map<string, QuotedTurn>();
-  let sends = 0;
-
-  const failed = (threadId: ThreadId, cardId: string, optionKey: string, error: PluginCardError) =>
-    decisions.setProgress(threadId, cardId, {
-      optionKey,
-      status: "failed",
-      reason: error.reason,
-      detail: error.detail ?? null,
-    });
+  let attempts = 0;
 
   const record = Effect.fnUntraced(function* (
     cardId: string,
@@ -151,6 +142,7 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
     );
     if (dp === null) return yield* refuse("dp-missing");
 
+    const attemptId = `${yield* Clock.currentTimeMillis}-${++attempts}`;
     const clearProgress = decisions.setProgress(threadId, cardId, null);
     const finishAnswer = (
       post: Effect.Effect<PluginDecisionAnswerResult, PluginCardError>,
@@ -159,6 +151,7 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
       post.pipe(
         Effect.tap(() =>
           decisions.setProgress(threadId, cardId, {
+            attemptId,
             optionKey,
             status: "recording",
             reason: null,
@@ -170,7 +163,14 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
           work.pipe(
             Effect.matchEffect({
               onSuccess: () => clearProgress,
-              onFailure: (error) => failed(threadId, cardId, optionKey, error),
+              onFailure: (error) =>
+                decisions.setProgress(threadId, cardId, {
+                  attemptId,
+                  optionKey,
+                  status: "failed",
+                  reason: error.reason,
+                  detail: error.detail ?? null,
+                }),
             }),
           ),
         ),
@@ -199,9 +199,9 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
       Effect.orElseSucceed(() => 0),
     );
     const text = `Decision ${decision.id}: ${option.label} (${option.key})`;
-    const attempt = `${yield* Clock.currentTimeMillis}-${++sends}`;
     const post = decisions
       .setProgress(threadId, cardId, {
+        attemptId,
         optionKey,
         status: "posting",
         reason: null,
@@ -211,9 +211,9 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
         Effect.andThen(
           threadManagement.sendToThread({
             projectId: shell.projectId,
-            commandId: CommandId.make(`server:plugin-decision:${decision.id}:${attempt}`),
+            commandId: CommandId.make(`server:plugin-decision:${decision.id}:${attemptId}`),
             threadId: input.threadId,
-            messageId: MessageId.make(`message:plugin-decision:${decision.id}:${attempt}`),
+            messageId: MessageId.make(`message:plugin-decision:${decision.id}:${attemptId}`),
             text,
             attachments: [],
             mode: "auto",
