@@ -3,6 +3,7 @@ import type {
   EnvironmentId,
   PluginLiveInitiative,
   PluginLiveState,
+  ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Equal from "effect/Equal";
@@ -60,6 +61,15 @@ const threadAtom = <A>(select: (state: PluginLiveState | null, threadId: ThreadI
 const threadHasOpenDecisionAtom = threadAtom(hasOpenDecision);
 const threadInitiativeAtom = threadAtom(initiativeForThread);
 
+const anyThreadHasOpenDecisionAtom = Atom.family((key: string) => {
+  const threads: ReadonlyArray<ScopedThreadRef> = JSON.parse(key);
+  return Atom.make((get) =>
+    threads.some(({ environmentId, threadId }) =>
+      get(threadHasOpenDecisionAtom(environmentId)(threadId)),
+    ),
+  );
+});
+
 function environmentStates(
   get: Atom.AtomContext,
   environmentIds: ReadonlyArray<EnvironmentId>,
@@ -110,6 +120,13 @@ export function useThreadHasOpenDecision(
   threadId: ThreadId,
 ): boolean {
   return useAtomValue(threadHasOpenDecisionAtom(environmentId)(threadId));
+}
+
+export function useAnyThreadHasOpenDecision(threads: ReadonlyArray<ScopedThreadRef>): boolean {
+  const key = JSON.stringify(
+    threads.map(({ environmentId, threadId }) => ({ environmentId, threadId })),
+  );
+  return useAtomValue(anyThreadHasOpenDecisionAtom(key));
 }
 
 export function useThreadInitiative(
