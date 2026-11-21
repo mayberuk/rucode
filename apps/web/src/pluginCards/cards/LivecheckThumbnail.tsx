@@ -1,5 +1,5 @@
 import type { PluginCardId, ScopedThreadRef } from "@t3tools/contracts";
-import { ImageOffIcon } from "lucide-react";
+import { ImageIcon, ImageOffIcon } from "lucide-react";
 import { useEffect } from "react";
 
 import { AttachmentImage } from "~/components/media/AttachmentImage";
@@ -42,7 +42,7 @@ export function LivecheckThumbnail({
         src={url}
         alt={caption}
         decoding="async"
-        className="block size-full object-cover"
+        className="block size-full object-cover object-top"
       />
     );
 
@@ -77,7 +77,11 @@ export function LivecheckThumbnail({
             <ImageOffIcon aria-hidden className="size-4 shrink-0" />
             <span className="line-clamp-3">{asset.message}</span>
           </div>
-        ) : null}
+        ) : (
+          <div className="flex size-full items-center justify-center">
+            <ImageIcon aria-hidden className="size-5 text-icon-muted" />
+          </div>
+        )}
       </div>
       <figcaption
         className={cn(

@@ -240,7 +240,7 @@ export const gittySource: PluginCardSourceFactory = Effect.gen(function* () {
       const [sha = "", ...subject] = line.split(FIELD_SEPARATOR);
       return {
         label: subject.join(FIELD_SEPARATOR),
-        state: unpushed === null || unpushed.has(sha) ? "running" : "done",
+        state: unpushed === null || unpushed.has(sha) ? "pending" : "done",
         commit: sha,
       };
     });
@@ -351,7 +351,10 @@ export const gittySource: PluginCardSourceFactory = Effect.gen(function* () {
       {
         key: "yours",
         label: "Keep yours",
-        predictedOutcome: `${base ?? "Their"} change to this file is dropped.`,
+        predictedOutcome:
+          base === null
+            ? "Their change to this file is dropped."
+            : `The change on ${base} is dropped.`,
       },
       {
         key: "theirs",

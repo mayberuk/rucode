@@ -103,7 +103,8 @@ const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 const runIdOf = (run: LivecheckRun) => run.result?.runId ?? run.meta?.runId ?? baseName(run.runDir);
 
-const targetOf = (run: LivecheckRun) => run.result?.task ?? run.meta?.slug ?? runIdOf(run);
+const targetOf = (run: LivecheckRun) =>
+  run.result?.task ?? run.meta?.slug?.replaceAll("-", " ") ?? runIdOf(run);
 
 function screenshotLabel(fileName: string): string {
   const stem = fileName.slice(0, fileName.lastIndexOf("."));

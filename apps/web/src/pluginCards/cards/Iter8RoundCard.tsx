@@ -30,13 +30,19 @@ export function Iter8RoundCard({ card, threadRef }: PluginCardRendererProps<"ite
       <PluginCardShell
         label="Review round"
         title={
-          <>
-            <span>Round {data.round}</span>
-            <span className="min-w-0 truncate font-normal text-muted-foreground">
-              {countLabel(data.notes.length, "note", "notes")} on{" "}
-              {pageLabel(data.page, data.pagePath)}
+          <span className="inline-flex min-w-0 items-center gap-x-3">
+            <span className="shrink-0">Round {data.round}</span>
+            <span className="shrink-0 font-normal text-muted-foreground">
+              {data.notes.length === 0
+                ? "No notes yet"
+                : countLabel(data.notes.length, "note", "notes")}
             </span>
-          </>
+            {isOpenablePage(data.page) ? (
+              <span className="min-w-0 truncate font-normal text-muted-foreground">
+                on {pageLabel(data.page, data.pagePath)}
+              </span>
+            ) : null}
+          </span>
         }
         actions={
           isOpenablePage(data.page) ? (

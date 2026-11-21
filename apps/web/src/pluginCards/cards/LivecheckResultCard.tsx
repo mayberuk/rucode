@@ -9,6 +9,7 @@ import type { PluginCardRendererProps } from "../core/types";
 import { LivecheckThumbnail } from "./LivecheckThumbnail";
 import {
   expandableImages,
+  resultSummary,
   thumbnailCaption,
   verdictPresentation,
   type VerdictPresentation,
@@ -41,6 +42,7 @@ export function LivecheckResultCard({
   const { onImageExpand } = use(TimelineRowCtx);
   const loadedUrls = useRef(new Map<string, string>());
   const verdict = verdictPresentation(data.verdict);
+  const summary = resultSummary(data);
   const VerdictIcon = VERDICT_ICONS[verdict.icon];
   const shots = data.steps.flatMap((step) =>
     step.assetId === null ? [] : [{ step, assetId: step.assetId }],
@@ -64,22 +66,20 @@ export function LivecheckResultCard({
     <PluginCardShell
       label="Live check result"
       title={
-        <>
-          <span className={cn("inline-flex items-center gap-1.5", VERDICT_TONES[verdict.tone])}>
+        <span className="inline-flex min-w-0 items-center gap-x-3">
+          <span
+            className={cn("inline-flex shrink-0 items-center gap-1.5", VERDICT_TONES[verdict.tone])}
+          >
             <VerdictIcon aria-hidden className="size-3.5" />
             {verdict.label}
           </span>
           <span className="min-w-0 truncate font-normal">{data.target}</span>
-          <span className="font-normal text-muted-foreground">
-            run {data.runId}
-            {data.finishedAt === null ? null : (
-              <>
-                {" · "}
-                <FinishedAgo iso={data.finishedAt} />
-              </>
-            )}
-          </span>
-        </>
+          {data.finishedAt === null ? null : (
+            <span className="shrink-0 font-normal text-muted-foreground">
+              <FinishedAgo iso={data.finishedAt} />
+            </span>
+          )}
+        </span>
       }
       actions={
         <>
@@ -99,11 +99,9 @@ export function LivecheckResultCard({
         </>
       }
     >
-      {data.summary === "" && data.judge === null && shots.length === 0 ? null : (
+      {summary === "" && data.judge === null && shots.length === 0 ? null : (
         <div className="px-3 pb-3">
-          {data.summary === "" ? null : (
-            <p className="text-sm text-foreground/85">{data.summary}</p>
-          )}
+          {summary === "" ? null : <p className="text-sm text-foreground/85">{summary}</p>}
           {data.judge === null ? null : (
             <p className="mt-1 text-xs text-muted-foreground">{data.judge}</p>
           )}

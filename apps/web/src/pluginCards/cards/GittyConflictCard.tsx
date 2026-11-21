@@ -1,25 +1,34 @@
 import { CircleAlertIcon } from "lucide-react";
 
+import { splitPath } from "./iter8GittyCards.logic";
 import { PluginCardShell } from "../core/PluginCardShell";
 import type { PluginCardRendererProps } from "../core/types";
 import { PluginCardActionButton } from "./shared/PluginCardActionButton";
 
 export function GittyConflictCard({ card, threadRef }: PluginCardRendererProps<"gitty.conflict">) {
   const data = card.data;
+  const file = splitPath(data.file);
   return (
     <PluginCardShell
       label="Merge conflict"
       title={
-        <>
-          <span className="inline-flex items-center gap-1.5 text-warning-foreground">
+        <span className="inline-flex min-w-0 items-center gap-x-3">
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-warning-foreground">
             <CircleAlertIcon aria-hidden className="size-3.5" />
             Conflict
           </span>
-          <span className="min-w-0 truncate font-mono font-normal">{data.file}</span>
-        </>
+          <span className="flex min-w-0 font-mono font-normal" title={data.file}>
+            {file.folder === "" ? null : (
+              <span className="min-w-0 truncate text-muted-foreground">{file.folder}</span>
+            )}
+            <span className="max-w-full shrink-0 truncate">{file.name}</span>
+          </span>
+        </span>
       }
     >
-      {data.sides.length === 0 && data.resolutions.length === 0 ? null : (
+      {data.sides.length === 0 && data.resolutions.length === 0 ? (
+        <p className="px-3 pb-2.5 text-xs text-muted-foreground">Resolve it in your editor</p>
+      ) : (
         <div className="px-3 pb-2.5">
           {data.sides.length === 0 ? null : (
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
