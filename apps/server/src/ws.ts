@@ -1,4 +1,4 @@
-import { OrchestrationDispatchCommandError, PluginCardError } from "@t3tools/contracts";
+import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -127,6 +127,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
+import * as PluginCards from "./pluginCards/core/PluginCards.ts";
 import {
   bufferShellLiveStream,
   coalesceShellApplicationEvents,
@@ -1482,6 +1483,11 @@ export const layerWsRpc = (
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
+      // Optional so a host composed without plugin cards still serves every other method.
+      const pluginCards = Option.getOrElse(
+        yield* Effect.serviceOption(PluginCards.PluginCards),
+        () => PluginCards.unavailable,
+      );
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
       const issueTrackers = yield* IssueTrackerConnections.IssueTrackerConnections;
@@ -2351,14 +2357,12 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(secretRequests.answer(input)),
           ),
-        [WS_METHODS.pluginCardsSubscribeThread]: (_input) => Stream.empty,
-        [WS_METHODS.pluginCardsSubscribeLive]: (_input) => Stream.empty,
-        [WS_METHODS.pluginCardsAnswerDecision]: (_input) =>
-          Effect.fail(new PluginCardError({ reason: "unavailable" })),
-        [WS_METHODS.pluginCardsRunAction]: (_input) =>
-          Effect.fail(new PluginCardError({ reason: "unavailable" })),
-        [WS_METHODS.pluginCardsReadAsset]: (_input) =>
-          Effect.fail(new PluginCardError({ reason: "unavailable" })),
+        [WS_METHODS.pluginCardsSubscribeThread]: (input) =>
+          pluginCards.subscribeThread(input.threadId),
+        [WS_METHODS.pluginCardsSubscribeLive]: (_input) => pluginCards.subscribeLive,
+        [WS_METHODS.pluginCardsAnswerDecision]: (input) => pluginCards.answerDecision(input),
+        [WS_METHODS.pluginCardsRunAction]: (input) => pluginCards.runAction(input),
+        [WS_METHODS.pluginCardsReadAsset]: (input) => pluginCards.readAsset(input),
         [WS_METHODS.scheduledTasksListWebhookDeliveries]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.listWebhookDeliveries(input)),
