@@ -5480,48 +5480,50 @@ describe("plugin card rows", () => {
     expect(neighbours(next.rows, "plugin-card:dispatch.decision:d1")).toEqual(["answer", "final"]);
   });
 
-  it("keeps streaming text updates incremental while the card list is unchanged", () => {
-    const source = makeStreamingTimelineFixture("Hel");
-    const cards = [
-      decisionCard("d1", { type: "time", at: source.time(1) }),
-    ] satisfies ReadonlyArray<PluginCard>;
-    const input = (entries: ReadonlyArray<TimelineEntry>) => ({
-      timelineEntries: entries,
-      latestRun: {
-        runId: source.runId,
-        status: "running" as const,
-        startedAt: source.time(5),
-        completedAt: null,
-      },
-      runningRunId: source.runId,
-      isWorking: true,
-      activeTurnStartedAt: source.time(5),
-      turnDiffSummaries: [],
-      supportsConversationRollback: false,
-      pluginCards: cards,
-    });
-    const timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState({
-      visibleTurnItems: source.visibleTurnItems,
-      optimisticMessages: [],
-    });
-    const previous = deriveMessagesTimelineRowsWithState(input(timeline.entries));
-    const streamed = deriveTimelineEntriesFromVisibleTurnItemsWithState(
-      {
-        visibleTurnItems: source.visibleTurnItems.map((row) =>
-          row.item.type === "assistant_message" && row.item.streaming
-            ? { ...row, item: { ...row.item, text: "Hello" } }
-            : row,
-        ),
+  it.each([false, true])(
+    "keeps streaming updates incremental with a copied card list: %s",
+    (copyCards) => {
+      const source = makeStreamingTimelineFixture("Hel");
+      const cards = [
+        decisionCard("d1", { type: "time", at: source.time(1) }),
+      ] satisfies ReadonlyArray<PluginCard>;
+      const input = (entries: ReadonlyArray<TimelineEntry>) => ({
+        timelineEntries: entries,
+        latestRun: {
+          runId: source.runId,
+          status: "running" as const,
+          startedAt: source.time(5),
+          completedAt: null,
+        },
+        runningRunId: source.runId,
+        isWorking: true,
+        activeTurnStartedAt: source.time(5),
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        pluginCards: copyCards ? [...cards] : cards,
+      });
+      const timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState({
+        visibleTurnItems: source.visibleTurnItems,
         optimisticMessages: [],
-      },
-      timeline,
-    );
-    const next = deriveMessagesTimelineRowsWithState(input(streamed.entries), previous);
-    const card = previous.rows.find((row) => row.kind === "plugin-card");
-    expect(card).toBeDefined();
-    expect(next.rows.find((row) => row.kind === "plugin-card")).toBe(card);
-    expect(next.rows.find((row) => row.id === "history-user")).toBe(
-      previous.rows.find((row) => row.id === "history-user"),
-    );
-  });
+      });
+      const previous = deriveMessagesTimelineRowsWithState(input(timeline.entries));
+      const streamed = deriveTimelineEntriesFromVisibleTurnItemsWithState(
+        {
+          visibleTurnItems: source.visibleTurnItems.map((row) =>
+            row.item.type === "assistant_message" && row.item.streaming
+              ? { ...row, item: { ...row.item, text: "Hello" } }
+              : row,
+          ),
+          optimisticMessages: [],
+        },
+        timeline,
+      );
+      const next = deriveMessagesTimelineRowsWithState(input(streamed.entries), previous);
+      expect(previous.rows.some((row) => row.kind === "plugin-card")).toBe(true);
+      expect(next.rows).toEqual(deriveMessagesTimelineRows(input(streamed.entries)));
+      expect(
+        next.rows.filter((row, index) => row !== previous.rows[index]).map((row) => row.id),
+      ).toEqual(["live-assistant"]);
+    },
+  );
 });

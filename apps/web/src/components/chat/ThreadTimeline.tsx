@@ -38,9 +38,8 @@ export function ThreadTimeline({
   detailLoading: boolean;
 }) {
   const visibleTurnItems = useTimelineVisibleTurnItems(threadDetailRef);
-  const pluginCards = usePluginThreadCards(threadDetailRef)?.cards.filter(
-    (card) => pluginCardRenderer(card.kind) !== null,
-  );
+  const snapshotCards = usePluginThreadCards(threadDetailRef)?.cards;
+  const pluginCards = snapshotCards?.filter((card) => pluginCardRenderer(card.kind) !== null);
   const serverEntries = useIncrementalTimelineEntries(activeThreadKey, {
     ...entriesInput,
     visibleTurnItems,

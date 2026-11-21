@@ -2641,6 +2641,7 @@ function replaceStreamingMessageRows(
     expandedWorkGroupIds: previousExpandedGroups,
     pendingApprovalRequestIds: previousPendingApprovalRequestIds,
     availableRevertTurnCounts: previousAvailableRevertTurnCounts,
+    pluginCards: previousCards,
     ...previousContext
   } = previous.input;
   const {
@@ -2652,12 +2653,14 @@ function replaceStreamingMessageRows(
     expandedWorkGroupIds,
     pendingApprovalRequestIds,
     availableRevertTurnCounts,
+    pluginCards,
     ...context
   } = input;
   // Shell/checkpoint selectors rebuild summaries per event; compare contents.
   if (
     timelineEntries.length !== previousEntries.length ||
     !shallow(previousContext, context) ||
+    !shallow(previousCards, pluginCards) ||
     !shallow(previousRun, latestRun) ||
     !shallow(previousExpandedRuns, expandedRunIds) ||
     !shallow(previousExpandedAttempts, expandedAttemptIds) ||
