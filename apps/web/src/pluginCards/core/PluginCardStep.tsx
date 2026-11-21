@@ -29,7 +29,7 @@ function stepTone(state: PluginStepState): string {
     case "stale":
       return "text-warning-foreground";
     case "pending":
-      return "text-secondary-label opacity-40";
+      return "text-muted-foreground";
     case "running":
     case "done":
       return "text-secondary-label";
@@ -49,7 +49,7 @@ export function PluginCardStep({
     <WorkLogRow
       data-plugin-step-state={state}
       icon={
-        <span className={cn("text-icon-muted", state === "pending" && "opacity-40")}>
+        <span className="text-icon-muted">
           <StepIcon state={state} />
         </span>
       }
