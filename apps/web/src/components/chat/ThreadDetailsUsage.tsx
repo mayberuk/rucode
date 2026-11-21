@@ -37,7 +37,7 @@ export interface ThreadDetailsUsageInput {
   readonly contextWindow: ContextWindowSnapshot | null;
 }
 
-type UsageTone = "error" | "warning" | null;
+export type UsageTone = "error" | "warning" | null;
 
 /** The selected provider's limit windows. Each row reads as room left. */
 export function ThreadDetailsUsage({
@@ -175,7 +175,7 @@ function LimitRow({
 }
 
 /** One label, hairline, and value row; the whole row opens the details tooltip. */
-function UsageRow({
+export function UsageRow({
   label,
   fill,
   tone,

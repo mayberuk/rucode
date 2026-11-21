@@ -7,6 +7,7 @@ import { memo } from "react";
 import { cn } from "~/lib/utils";
 import { contextMenuSourceOf } from "../../contextMenuSource";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
+import { useAnyThreadHasOpenDecision } from "../../pluginCards/live/liveAtoms";
 import { useUiStateStore } from "../../uiStateStore";
 import { resolveSidebarFolderDot, resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -52,6 +53,9 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   const { group, collapsed, hiddenThreads } = props;
   const rowId = sidebarFolderRowId(group.projectKey);
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
+  const openDecision = useAnyThreadHasOpenDecision(
+    collapsed ? hiddenThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)) : [],
+  );
   const dot = collapsed
     ? resolveSidebarFolderDot(
         hiddenThreads.map((thread) => ({
@@ -63,6 +67,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
             ],
           ),
         })),
+        { openDecision },
       )
     : null;
   return (

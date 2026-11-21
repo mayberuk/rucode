@@ -886,6 +886,7 @@ export function resolveAdjacentThreadId<T>(input: {
 export type SidebarThreadStatus =
   | "approval"
   | "input"
+  | "decision"
   | "request"
   | "preparing"
   | "working"
@@ -893,6 +894,10 @@ export type SidebarThreadStatus =
   | "failed"
   | "limited"
   | "ready";
+
+export interface SidebarStatusContext {
+  readonly openDecision?: boolean;
+}
 
 export function shouldRecedeSidebarThread(input: {
   status: SidebarThreadStatus;
@@ -905,6 +910,7 @@ export function shouldRecedeSidebarThread(input: {
     input.isActive ||
     input.isSelected ||
     input.status === "input" ||
+    input.status === "decision" ||
     input.status === "request"
   ) {
     return false;
@@ -928,13 +934,18 @@ type SidebarThreadStatusInput = Pick<
   | "blockedOnThreadWait"
 >;
 
-export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
+export function resolveSidebarThreadStatus(
+  thread: SidebarThreadStatusInput,
+  context: SidebarStatusContext = {},
+): SidebarThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
   }
   if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
     return "input";
   }
+  // Above working: a `dp decision wait` keeps the turn running while it waits on the user.
+  if (context.openDecision === true) return "decision";
   // A guest is waiting on the owner; the agent's own requests come first.
   if ((thread.pendingGuestMessageCount ?? 0) > 0) {
     return "request";
@@ -963,8 +974,9 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
 /** Sidebar row status: a failure the user has already opened settles to ready, like Done. */
 export function resolveSidebarRowStatus(
   thread: ThreadStatusInput & SidebarThreadStatusInput,
+  context: SidebarStatusContext = {},
 ): SidebarThreadStatus {
-  const status = resolveSidebarThreadStatus(thread);
+  const status = resolveSidebarThreadStatus(thread, context);
   // A runtime failure without a failed run has nothing to date it, so it stays.
   if (status !== "failed" || thread.latestRun?.status !== "failed") return status;
   return hasUnseenRunFailure(thread) ? status : "ready";
@@ -991,13 +1003,16 @@ export function resolveWindowTitleThreadStatus(thread: SidebarThreadStatusInput)
 
 /**
  * The dot on a closed boring-sidebar folder: the most urgent state among its
- * hidden threads. Waiting threads stay quiet, like their rows.
+ * hidden threads. Waiting threads stay quiet, like their rows. `openDecision` is true
+ * when any hidden thread has an open decision.
  */
 export function resolveSidebarFolderDot(
   threads: ReadonlyArray<ThreadStatusInput & SidebarThreadStatusInput>,
+  context: SidebarStatusContext = {},
 ): "attention" | "failed" | "unread" | "working" | null {
-  const statuses = new Set(threads.map(resolveSidebarRowStatus));
+  const statuses = new Set(threads.map((thread) => resolveSidebarRowStatus(thread)));
   if (
+    context.openDecision === true ||
     statuses.has("input") ||
     statuses.has("approval") ||
     statuses.has("request") ||
@@ -1067,6 +1082,7 @@ export function groupSidebarThreadsByProject<
 
 export type SidebarV2TopStatusKind =
   | "approval"
+  | "decision"
   | "done"
   | "failed"
   | "limited"

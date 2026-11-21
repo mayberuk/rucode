@@ -219,6 +219,51 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("input");
   });
 
+  it("shows an open decision above Request, Waiting and Working but below the agent's own asks", () => {
+    const openDecision = { openDecision: true };
+    expect(resolveSidebarThreadStatus(idle, openDecision)).toBe("decision");
+    expect(resolveSidebarThreadStatus({ ...idle, runtime }, openDecision)).toBe("decision");
+    expect(resolveSidebarThreadStatus({ ...idle, pendingGuestMessageCount: 1 }, openDecision)).toBe(
+      "decision",
+    );
+    expect(
+      resolveSidebarThreadStatus({ ...idle, runtime, blockedOnThreadWait: true }, openDecision),
+    ).toBe("decision");
+    expect(
+      resolveSidebarThreadStatus(
+        { ...idle, runtime: { ...runtime, status: "idle" as const } },
+        openDecision,
+      ),
+    ).toBe("decision");
+    expect(
+      resolveSidebarThreadStatus(
+        { ...idle, runtime: { ...runtime, status: "failed" as const, lastError: "boom" } },
+        openDecision,
+      ),
+    ).toBe("decision");
+    expect(
+      resolveSidebarThreadStatus({ ...idle, hasPendingApprovals: true, runtime }, openDecision),
+    ).toBe("approval");
+    expect(
+      resolveSidebarThreadStatus({ ...idle, pendingSubagentRequest: "approval" }, openDecision),
+    ).toBe("approval");
+    expect(
+      resolveSidebarThreadStatus({ ...idle, hasPendingUserInput: true, runtime }, openDecision),
+    ).toBe("input");
+    expect(
+      resolveSidebarThreadStatus({ ...idle, pendingSubagentRequest: "user_input" }, openDecision),
+    ).toBe("input");
+  });
+
+  it("leaves the ordinary status alone without an open decision", () => {
+    expect(resolveSidebarThreadStatus({ ...idle, runtime })).toBe("working");
+    expect(resolveSidebarThreadStatus({ ...idle, runtime }, {})).toBe("working");
+    expect(resolveSidebarThreadStatus({ ...idle, runtime }, { openDecision: false })).toBe(
+      "working",
+    );
+    expect(resolveSidebarThreadStatus(idle, { openDecision: false })).toBe("ready");
+  });
+
   it("keeps usage-limit stops Limited and visible until the thread recovers", () => {
     const limited = {
       ...runtime,
@@ -242,6 +287,22 @@ describe("resolveSidebarThreadStatus", () => {
         isSelected: false,
       }),
     ).toBe(false);
+  });
+
+  it("never recedes a decision row, however quiet it otherwise is", () => {
+    for (const isUnread of [false, true]) {
+      for (const isWoke of [false, true]) {
+        expect(
+          shouldRecedeSidebarThread({
+            status: "decision",
+            isUnread,
+            isWoke,
+            isActive: false,
+            isSelected: false,
+          }),
+        ).toBe(false);
+      }
+    }
   });
 
   it("reports worktree setup as preparing, and failed only while the latest run failed", () => {
@@ -316,6 +377,18 @@ describe("resolveSidebarRowStatus", () => {
     expect(hasUnseenCompletion(opened)).toBe(false);
     // A runtime failure without a failed run has no date, so a visit cannot settle it.
     expect(resolveSidebarRowStatus({ ...opened, latestRun: null })).toBe("failed");
+  });
+
+  it("shows an open decision even on a failure the user already opened", () => {
+    const opened = { ...failed, lastVisitedAt: "2026-03-09T10:06:00.000Z" };
+    expect(resolveSidebarRowStatus(opened, { openDecision: true })).toBe("decision");
+    expect(
+      resolveSidebarRowStatus({ ...failed, lastVisitedAt: undefined }, { openDecision: true }),
+    ).toBe("decision");
+    expect(resolveSidebarRowStatus(opened, { openDecision: false })).toBe("ready");
+    expect(
+      resolveSidebarRowStatus({ ...opened, hasPendingApprovals: true }, { openDecision: true }),
+    ).toBe("approval");
   });
 
   it("does not show a stopped run as an unseen completion", () => {
@@ -1670,6 +1743,13 @@ describe("resolveSidebarFolderDot", () => {
     expect(resolveSidebarFolderDot([idle, working])).toBe("working");
     expect(resolveSidebarFolderDot([working, unread])).toBe("unread");
     expect(resolveSidebarFolderDot([unread, limited])).toBe("attention");
+
+    expect(resolveSidebarFolderDot([idle], { openDecision: true })).toBe("attention");
+    expect(resolveSidebarFolderDot([], { openDecision: true })).toBe("attention");
+    expect(resolveSidebarFolderDot([working, unread], { openDecision: true })).toBe("attention");
+    expect(resolveSidebarFolderDot([idle, working], { openDecision: false })).toBe("working");
+    expect(resolveSidebarFolderDot([idle], { openDecision: false })).toBeNull();
+    expect(resolveSidebarFolderDot([idle], {})).toBeNull();
   });
 });
 
