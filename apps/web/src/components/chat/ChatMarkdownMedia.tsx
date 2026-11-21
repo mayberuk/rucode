@@ -482,6 +482,7 @@ export function assetMediaActionsSource(input: {
   readonly src: string | null;
   readonly workspaceRoot?: string | undefined;
   readonly originalUrl?: string | undefined;
+  readonly downloadable?: boolean | undefined;
 }): MediaActionSource {
   const { environmentId, resource } = input;
   const path =
@@ -500,7 +501,7 @@ export function assetMediaActionsSource(input: {
     kind: input.kind,
     name: input.name,
     src: input.src,
-    asset: { environmentId, resource },
+    ...(input.downloadable === false ? {} : { asset: { environmentId, resource } }),
     ...(reference ? { reference } : {}),
     ...(relativePath && (resource._tag === "media-file" || resource._tag === "workspace-file")
       ? {
@@ -529,6 +530,7 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     | undefined;
   readonly originalUrl?: string | undefined;
   readonly framed?: boolean | undefined;
+  readonly fallbackSrc?: string | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly workspaceMutationId?: string | null | undefined;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
@@ -546,10 +548,18 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
       : undefined,
   );
   const refreshAssetUrl = useAssetUrlRefresh(props.environmentId, resource);
+  const fallbackSrc = assetUrl._tag === "Failure" ? props.fallbackSrc : undefined;
   const missingFileAccess =
-    assetUrl._tag === "Failure" && assetUrl.reason === "missing-file-access";
+    assetUrl._tag === "Failure" &&
+    assetUrl.reason === "missing-file-access" &&
+    fallbackSrc === undefined;
   const unavailableDetail = missingFileAccess ? MISSING_FILE_ACCESS_MESSAGE : undefined;
-  const src = assetUrl._tag === "Success" ? assetUrl.url + (props.srcFragment ?? "") : null;
+  const src =
+    assetUrl._tag === "Success"
+      ? assetUrl.url + (props.srcFragment ?? "")
+      : fallbackSrc === undefined
+        ? null
+        : fallbackSrc + (props.srcFragment ?? "");
   const knownSize = assetUrl._tag === "Success" ? assetUrl.imageDimensions : undefined;
   const maxHeightRem = props.maxHeightRem ?? 30;
   const style =
@@ -567,13 +577,14 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     src,
     workspaceRoot: props.workspaceRoot,
     originalUrl: props.originalUrl,
+    downloadable: fallbackSrc === undefined,
   });
 
   if (props.kind === "video") {
     return (
       <ChatMarkdownVideo
         src={src}
-        sourceFailed={assetUrl._tag === "Failure"}
+        sourceFailed={assetUrl._tag === "Failure" && fallbackSrc === undefined}
         unavailableDetail={unavailableDetail}
         alt={props.alt}
         copyMarkdown={props.copyMarkdown}
@@ -591,7 +602,7 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     <ChatMarkdownImage
       key={JSON.stringify([props.environmentId, props.resource, props.srcFragment])}
       src={src}
-      sourceFailed={assetUrl._tag === "Failure"}
+      sourceFailed={assetUrl._tag === "Failure" && fallbackSrc === undefined}
       unavailableDetail={unavailableDetail}
       alt={props.alt}
       copyMarkdown={props.copyMarkdown}

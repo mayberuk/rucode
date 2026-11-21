@@ -1618,6 +1618,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           srcFragment={markdownImageSourceFragment(classifiedSrc)}
           originalUrl={resolveProtocolRelativeMediaUrl(directUri)}
           framed={false}
+          fallbackSrc={hostMediaUrl}
           onImageExpand={imageExpand}
         />
       );
