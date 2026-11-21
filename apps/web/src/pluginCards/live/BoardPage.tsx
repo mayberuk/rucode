@@ -1,4 +1,4 @@
-import type { EnvironmentId, PluginLiveInitiative } from "@t3tools/contracts";
+import type { EnvironmentId, PluginLiveInitiative, ThreadId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { LayoutDashboardIcon } from "lucide-react";
 import { useState } from "react";
@@ -29,10 +29,11 @@ import { WorkspacePageContainer } from "~/components/WorkspacePageContainer";
 import { WorkspacePageHeader } from "~/components/WorkspacePageHeader";
 import { isElectron } from "~/env";
 import { useNowMinute } from "~/hooks/useNowMinute";
+import { useThreadShell } from "~/state/entities";
 import { useConnectedEnvironmentIds, useEnvironments } from "~/state/environments";
 
 import { useBoardInitiatives } from "./liveAtoms";
-import { formatAsOf, type BoardInitiative } from "./liveStateIndex";
+import { formatAsOf, partStatusLabel, type BoardInitiative } from "./liveStateIndex";
 
 type Part = PluginLiveInitiative["parts"][number];
 
@@ -50,6 +51,28 @@ function partStatusVariant(status: string) {
   }
 }
 
+function PartChatLink({
+  environmentId,
+  threadId,
+  fallback,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly fallback: string;
+}) {
+  const shell = useThreadShell({ environmentId, threadId });
+  return (
+    <Link
+      to="/$environmentId/$threadId"
+      params={{ environmentId, threadId }}
+      title={threadId}
+      className="min-w-0 truncate text-info-foreground underline-offset-4 hover:underline"
+    >
+      {shell?.title?.trim() || fallback}
+    </Link>
+  );
+}
+
 function PartsTable({
   environmentId,
   parts,
@@ -58,13 +81,13 @@ function PartsTable({
   readonly parts: ReadonlyArray<Part>;
 }) {
   return (
-    <Table>
+    <Table className="table-fixed">
       <TableHeader>
         <TableRow>
           <TableHead>Part</TableHead>
-          <TableHead>Wave</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Chats</TableHead>
+          <TableHead className="w-16">Wave</TableHead>
+          <TableHead className="w-28">Status</TableHead>
+          <TableHead className="w-1/3">Chats</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -73,20 +96,17 @@ function PartsTable({
             <TableCell>{part.title ?? part.id}</TableCell>
             <TableCell>{part.wave}</TableCell>
             <TableCell>
-              <Badge variant={partStatusVariant(part.status)}>{part.status}</Badge>
+              <Badge variant={partStatusVariant(part.status)}>{partStatusLabel(part.status)}</Badge>
             </TableCell>
             <TableCell>
               <span className="flex gap-2">
                 {part.threadIds.map((threadId, index) => (
-                  <Link
+                  <PartChatLink
                     key={threadId}
-                    to="/$environmentId/$threadId"
-                    params={{ environmentId, threadId }}
-                    title={threadId}
-                    className="text-info-foreground underline-offset-4 hover:underline"
-                  >
-                    Chat {index + 1}
-                  </Link>
+                    environmentId={environmentId}
+                    threadId={threadId}
+                    fallback={`Chat ${index + 1}`}
+                  />
                 ))}
               </span>
             </TableCell>
@@ -97,7 +117,7 @@ function PartsTable({
   );
 }
 
-function InitiativeSection({
+export function InitiativeSection({
   item,
   environmentLabel,
   now,
@@ -106,22 +126,26 @@ function InitiativeSection({
   readonly environmentLabel: string | null;
   readonly now: string;
 }) {
-  const [open, setOpen] = useState(item.active);
+  // Follows the initiative's activity until the user toggles the section.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? item.active;
   const { initiative } = item;
   const partsUnavailable = initiative.title === null && initiative.parts.length === 0;
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
+    <Collapsible open={open} onOpenChange={setUserOpen}>
       <CollapsibleSectionHeader
         expanded={open}
         tone="emphasized"
         variant="panel"
-        onClick={() => setOpen(!open)}
+        onClick={() => setUserOpen(!open)}
         accessory={
-          <span className="shrink-0 text-3xs leading-none">{formatAsOf(initiative.asOf, now)}</span>
+          <span className="shrink-0 text-3xs leading-none">
+            {environmentLabel === null ? null : `${environmentLabel} · `}
+            {formatAsOf(initiative.asOf, now)}
+          </span>
         }
       >
         {initiative.title ?? initiative.slug}
-        {environmentLabel === null ? null : ` · ${environmentLabel}`}
       </CollapsibleSectionHeader>
       <CollapsiblePanel>
         <div className="flex flex-col gap-3 pt-2">
@@ -208,7 +232,7 @@ function BoardBody() {
     );
   }
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       {board.initiatives.map((item) => (
         <InitiativeSection
           key={item.key}
