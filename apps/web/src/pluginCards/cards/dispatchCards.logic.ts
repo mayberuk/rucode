@@ -33,12 +33,34 @@ export function phasesByWave(
 }
 
 export function planSummary(data: { readonly phases: ReadonlyArray<PlanPhase> }): string {
+  if (data.phases.length === 0) return "No phases yet";
   const waves = new Set(data.phases.map((phase) => phase.wave)).size;
   return `${countLabel(data.phases.length, "phase", "phases")} in ${countLabel(waves, "wave", "waves")}`;
 }
 
-export function phaseStatusTone(status: string): CardTone {
-  return status === "failed" ? "destructive" : "muted";
+export function isDraftPlan(data: { readonly status: string }): boolean {
+  return data.status === "draft";
+}
+
+export function phaseStatus(status: string): {
+  icon: CheckIconName;
+  tone: CardTone;
+  label: string;
+} {
+  switch (status) {
+    case "done":
+    case "complete":
+      return { icon: "check", tone: "success", label: "Done" };
+    case "failed":
+      return { icon: "x", tone: "destructive", label: "Failed" };
+    case "running":
+    case "executing":
+      return checkTone("running");
+    case "pending":
+      return checkTone("pending");
+    default:
+      return { icon: "minus", tone: "muted", label: status };
+  }
 }
 
 export function hasPlanFooter(card: {
@@ -118,6 +140,14 @@ export function attemptLabel(attempt: number | null): string | null {
   return attempt !== null && attempt > 1 ? `attempt ${attempt}` : null;
 }
 
+export function runStepTrailing(
+  phase: Pick<DispatchRunProgressCardData["phases"][number], "state" | "attempt">,
+): string | null {
+  const parts = [phase.state === "stale" ? "no heartbeat" : null, attemptLabel(phase.attempt)];
+  const label = parts.filter((part) => part !== null).join(" · ");
+  return label === "" ? null : label;
+}
+
 export function toneClassName(tone: CardTone): string {
   switch (tone) {
     case "destructive":
@@ -125,6 +155,7 @@ export function toneClassName(tone: CardTone): string {
     case "warning":
       return "text-warning-foreground";
     case "success":
+      return "text-success-foreground";
     case "muted":
       return "text-secondary-label";
   }

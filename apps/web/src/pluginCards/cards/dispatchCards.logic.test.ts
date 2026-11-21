@@ -7,11 +7,14 @@ import {
   hasPlanFooter,
   outcomeLabel,
   outcomeTone,
-  phaseStatusTone,
+  isDraftPlan,
+  phaseStatus,
   phasesByWave,
   planSummary,
+  runStepTrailing,
   runSummary,
   settledReason,
+  toneClassName,
 } from "./dispatchCards.logic";
 
 const phase = (id: string, wave: number) => ({
@@ -57,7 +60,7 @@ describe("phasesByWave", () => {
 
 describe("planSummary", () => {
   it.each([
-    [[], "0 phases in 0 waves"],
+    [[], "No phases yet"],
     [[phase("1", 1)], "1 phase in 1 wave"],
     [[phase("1", 1), phase("2", 1)], "2 phases in 1 wave"],
     [[phase("1", 1), phase("2", 2), phase("3", 2)], "3 phases in 2 waves"],
@@ -196,11 +199,42 @@ describe("hasPlanFooter", () => {
   });
 });
 
-describe("phaseStatusTone", () => {
-  it("marks failed in the destructive tone and everything else muted", () => {
-    expect(phaseStatusTone("failed")).toBe("destructive");
-    expect(phaseStatusTone("pending")).toBe("muted");
-    expect(phaseStatusTone("complete")).toBe("muted");
-    expect(phaseStatusTone("")).toBe("muted");
+describe("phaseStatus", () => {
+  it.each([
+    ["pending", "circle", "muted", "Pending"],
+    ["running", "dashed", "muted", "Running"],
+    ["done", "check", "success", "Done"],
+    ["failed", "x", "destructive", "Failed"],
+    ["blocked", "minus", "muted", "blocked"],
+  ] as const)("maps %s to icon %s, tone %s and label %s", (status, icon, tone, label) => {
+    expect(phaseStatus(status)).toEqual({ icon, tone, label });
+  });
+
+  it("says pending the way the verify card does", () => {
+    expect(phaseStatus("pending")).toEqual(checkTone("pending"));
+  });
+});
+
+describe("isDraftPlan", () => {
+  it("is true only for a draft plan", () => {
+    expect(isDraftPlan({ status: "draft" })).toBe(true);
+    expect(isDraftPlan({ status: "executing" })).toBe(false);
+  });
+});
+
+describe("runStepTrailing", () => {
+  it.each([
+    ["done", null, null],
+    ["stale", null, "no heartbeat"],
+    ["running", 2, "attempt 2"],
+    ["stale", 3, "no heartbeat · attempt 3"],
+  ] as const)("reads a %s step on attempt %s as %s", (state, attempt, expected) => {
+    expect(runStepTrailing({ state, attempt })).toBe(expected);
+  });
+});
+
+describe("toneClassName", () => {
+  it("shows success in the same green as the livecheck verdict", () => {
+    expect(toneClassName("success")).toBe("text-success-foreground");
   });
 });

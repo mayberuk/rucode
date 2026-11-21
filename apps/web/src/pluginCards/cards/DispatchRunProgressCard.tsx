@@ -3,9 +3,9 @@ import { PluginCardShell } from "../core/PluginCardShell";
 import { PluginCardStep } from "../core/PluginCardStep";
 import type { PluginCardRendererProps } from "../core/types";
 import {
-  attemptLabel,
   outcomeLabel,
   outcomeTone,
+  runStepTrailing,
   runSummary,
   settledReason,
   toneClassName,
@@ -18,13 +18,13 @@ export function DispatchRunProgressCard({ card }: PluginCardRendererProps<"dispa
     <PluginCardShell
       label="Run"
       title={
-        <>
-          <span>Run</span>
-          <span className="font-normal text-muted-foreground">
+        <span className="inline-flex min-w-0 items-center gap-x-3">
+          <span className="shrink-0">Run</span>
+          <span className="min-w-0 truncate font-normal text-muted-foreground">
             {data.part} · wave {data.wave}
           </span>
-          <span className="font-normal text-muted-foreground">{runSummary(data)}</span>
-        </>
+          <span className="shrink-0 font-normal text-muted-foreground">{runSummary(data)}</span>
+        </span>
       }
       actions={
         <span className={cn("text-xs font-medium", toneClassName(outcomeTone(data.outcome)))}>
@@ -38,7 +38,7 @@ export function DispatchRunProgressCard({ card }: PluginCardRendererProps<"dispa
             key={phase.id}
             state={phase.state}
             label={phase.name}
-            trailing={attemptLabel(phase.attempt)}
+            trailing={runStepTrailing(phase)}
           />
         ))}
       </div>

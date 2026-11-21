@@ -1,28 +1,29 @@
 import { Badge } from "~/components/ui/badge";
-import { cn } from "~/lib/utils";
 import { PluginCardShell } from "../core/PluginCardShell";
 import type { PluginCardRendererProps } from "../core/types";
 import {
   hasPlanFooter,
-  phaseStatusTone,
+  isDraftPlan,
+  phaseStatus,
   phasesByWave,
   planSummary,
-  toneClassName,
 } from "./dispatchCards.logic";
+import { CardStatusLabel } from "./shared/CardStatusLabel";
 import { PluginCardActionButton } from "./shared/PluginCardActionButton";
 import { withUniqueKeys } from "./shared/cardFormat.logic";
 
 export function DispatchPlanCard({ card, threadRef }: PluginCardRendererProps<"dispatch.plan">) {
   const data = card.data;
+  const showStatus = !isDraftPlan(data);
   return (
     <PluginCardShell
       label="Plan"
       title={
-        <>
-          <Badge variant="secondary">Plan</Badge>
+        <span className="inline-flex min-w-0 items-center gap-x-3">
+          <span className="shrink-0">Plan</span>
           <span className="min-w-0 truncate font-mono font-normal">{data.task}</span>
-          <span className="font-normal text-muted-foreground">{planSummary(data)}</span>
-        </>
+          <span className="shrink-0 font-normal text-muted-foreground">{planSummary(data)}</span>
+        </span>
       }
     >
       <div className="flex flex-col gap-3 px-3 pb-2.5">
@@ -33,20 +34,16 @@ export function DispatchPlanCard({ card, threadRef }: PluginCardRendererProps<"d
               {withUniqueKeys(group.phases, (phase) => phase.id).map(({ key, item: phase }) => (
                 <li key={key} className="flex items-center gap-2 py-1 text-sm">
                   <span className="min-w-0 truncate text-foreground/85">{phase.name}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">{phase.tier}</span>
                   {phase.risk ? (
                     <Badge variant="warning" size="sm">
                       Risk
                     </Badge>
                   ) : null}
-                  <span
-                    className={cn(
-                      "ml-auto shrink-0 text-xs",
-                      toneClassName(phaseStatusTone(phase.status)),
-                    )}
-                  >
-                    {phase.status}
-                  </span>
+                  {showStatus ? (
+                    <span className="ml-auto shrink-0 text-xs">
+                      <CardStatusLabel {...phaseStatus(phase.status)} />
+                    </span>
+                  ) : null}
                 </li>
               ))}
             </ul>
