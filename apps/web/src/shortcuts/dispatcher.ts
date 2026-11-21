@@ -1,5 +1,6 @@
 import type { KeybindingCommand, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 
+import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { resolveShortcutCommand, type ShortcutMatchContext } from "../keybindings";
 import { isEditableFocused } from "../lib/editableFocus";
 import { isPreviewFocused } from "../lib/previewFocus";
@@ -43,6 +44,7 @@ interface CommandScope {
 const globalScopes: CommandScope[] = [];
 const captureScopes: CommandScope[] = [];
 const observerScopes: CommandScope[] = [];
+let prefixArmed = false;
 
 function readFocusContext(event: KeyboardEvent): Partial<ShortcutMatchContext> {
   return {
@@ -101,7 +103,64 @@ function runScopes(scopes: readonly CommandScope[], event: KeyboardEvent): boole
   return false;
 }
 
+function handlePrefixKeyDown(event: KeyboardEvent): boolean {
+  if (
+    event.isComposing ||
+    (event.target instanceof Element && event.target.closest("[data-keybinding-capture]"))
+  ) {
+    prefixArmed = false;
+    return false;
+  }
+
+  const keybindings = appAtomRegistry.get(primaryServerKeybindingsAtom);
+  const context = readFocusContext(event);
+  const command = resolveShortcutCommand(event, keybindings, { context });
+  if (!prefixArmed) {
+    if (command !== "prefix.start" || event.repeat) return false;
+    prefixArmed = true;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return false;
+  if (command === "prefix.start") {
+    if (!event.repeat) {
+      prefixArmed = false;
+      return false;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  prefixArmed = false;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === "Escape") return true;
+
+  const action = resolveShortcutCommand(event, keybindings, {
+    context: { ...context, prefixActive: true },
+  });
+  if (action === null) return true;
+  for (const scopes of [captureScopes, globalScopes]) {
+    for (let index = scopes.length - 1; index >= 0; index -= 1) {
+      const scope = scopes[index];
+      if (!scope || (scope.options.when && !scope.options.when(event))) continue;
+      const handler = scope.commands[action];
+      if (handler === undefined) continue;
+      handler(event);
+      return true;
+    }
+  }
+  toastManager.add(
+    stackedThreadToast({ type: "info", title: "That shortcut can't follow the prefix" }),
+  );
+  return true;
+}
+
 function dispatchCaptureKeyDown(event: KeyboardEvent): void {
+  if (handlePrefixKeyDown(event)) return;
   runScopes(captureScopes, event);
 }
 
@@ -116,6 +175,9 @@ function ensureKeydownListener() {
   keydownInstalled = true;
   window.addEventListener("keydown", dispatchCaptureKeyDown, true);
   window.addEventListener("keydown", dispatchKeyDown);
+  window.addEventListener("blur", () => {
+    prefixArmed = false;
+  });
 }
 
 function pushScope(list: CommandScope[], scope: CommandScope): () => void {

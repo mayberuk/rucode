@@ -46,6 +46,7 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.regenerateTitle",
   "thread.undo",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
+  "thread.nextWaiting",
 ] as const;
 
 const MODEL_PICKER_KEYBINDING_COMMANDS = [
@@ -116,6 +117,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "usage.period.quarter",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
   ...THREAD_KEYBINDING_COMMANDS,
+  "prefix.start",
 ] as const;
 
 export const SCRIPT_RUN_COMMAND_PATTERN = Schema.TemplateLiteral([

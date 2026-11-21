@@ -24,6 +24,7 @@ import {
   terminalNavigationShortcutData,
   type ShortcutEventLike,
 } from "./keybindings";
+import { buildKeybindingRows, commandLabel } from "./components/settings/KeybindingsSettings.logic";
 
 function event(overrides: Partial<ShortcutEventLike> = {}): ShortcutEventLike {
   return {
@@ -302,6 +303,17 @@ describe("split/new/close terminal shortcuts", () => {
 });
 
 describe("shortcutLabelForCommand", () => {
+  it.each([
+    ["Linux", "Ctrl+N"],
+    ["Win32", "Ctrl+N"],
+    ["MacIntel", "⌘N"],
+  ])("keeps the New chat label on mod+n on %s", (platform, label) => {
+    assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_RESOLVED_KEYBINDINGS, "chat.new", platform),
+      label,
+    );
+  });
+
   it("returns null for commands shadowed by a later conflicting shortcut", () => {
     const bindings = compile([
       { shortcut: modShortcut("1", { shiftKey: true }), command: "thread.jump.1" },
@@ -341,6 +353,63 @@ describe("shortcutLabelForCommand", () => {
         context: { terminalFocus: true },
       }),
       "Ctrl+D",
+    );
+  });
+});
+
+describe("prefix defaults", () => {
+  it.each([
+    { key: "a", context: {}, command: null },
+    { key: "c", context: {}, command: null },
+    { key: "a", context: { prefixActive: false }, command: null },
+    { key: "c", context: { prefixActive: false }, command: null },
+    { key: "a", context: { prefixActive: true }, command: "thread.nextWaiting" },
+    { key: "c", context: { prefixActive: true }, command: "chat.new" },
+  ])("resolves $key with $context to $command", ({ key, context, command }) => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context,
+      }),
+      command,
+    );
+  });
+
+  it.each([
+    { command: "prefix.start", label: "Prefix: Start", key: "ctrl+space", when: "" },
+    {
+      command: "thread.nextWaiting",
+      label: "Thread: Next Waiting",
+      key: "a",
+      when: "prefixActive",
+    },
+  ] as const)("exposes a configurable $label Settings row", ({ command, label, key, when }) => {
+    const row = buildKeybindingRows(DEFAULT_RESOLVED_KEYBINDINGS, "Linux").find(
+      (row) => row.command === command,
+    );
+    assert.strictEqual(commandLabel(command), label);
+    assert.deepInclude(row, { key, when, source: "Default", isUnassigned: false });
+  });
+
+  it.each([
+    { command: "prefix.start", key: "ctrl+p", when: undefined, prefixActive: false },
+    { command: "thread.nextWaiting", key: "w", when: "prefixActive", prefixActive: true },
+  ] as const)("rebinds $command through the existing rule format", (rule) => {
+    const bindings = mergeWithDefaultKeybindings(compileResolvedKeybindingsConfig([rule]));
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: rule.command === "prefix.start" ? "p" : "w", ctrlKey: !rule.prefixActive }),
+        bindings,
+        { platform: "Linux", context: { prefixActive: rule.prefixActive } },
+      ),
+      rule.command,
+    );
+    assert.isNull(
+      resolveShortcutCommand(
+        event({ key: rule.command === "prefix.start" ? " " : "a", ctrlKey: !rule.prefixActive }),
+        bindings,
+        { platform: "Linux", context: { prefixActive: rule.prefixActive } },
+      ),
     );
   });
 });
