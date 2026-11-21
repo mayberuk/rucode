@@ -53,6 +53,7 @@ export function usePluginLiveState(environmentId: EnvironmentId | null): PluginL
   ).data;
 }
 
+/** @public Runs a card's server-handled action and reports failures to the user. */
 export function useRunPluginCardAction(threadRef: ScopedThreadRef) {
   const runAction = useAtomCommand(runPluginCardAction, { reportFailure: false });
   return async (cardId: PluginCardId, actionId: string): Promise<boolean> => {
@@ -126,7 +127,7 @@ export function usePluginCardAsset(
   return loaded !== null && loaded.key === key ? loaded.state : ASSET_LOADING;
 }
 
-/** Posts as the person through the same path an app's message takes: queued behind a running turn. */
+/** @public Posts a message as the user and queues it behind any running turn. */
 export function usePostPluginCardMessage(threadRef: ScopedThreadRef) {
   const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
