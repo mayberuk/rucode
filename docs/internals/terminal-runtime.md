@@ -1,7 +1,11 @@
 # Terminal runtime
 
-The environment server owns PTYs, session lifetime, and retained output. Every
-client, including the desktop renderer, attaches through the environment connection.
+Where the platform allows it, a terminal-host process per user and state directory owns
+the PTYs, so shells keep running while the environment server stops or restarts. The
+server owns session lifetime and retained output, and reattaches to the host's sessions
+when it starts. After the host itself is lost, as on a reboot, a reopened terminal shows
+its history and reruns the interrupted command only after a keypress. Every client,
+including the desktop renderer, attaches through the environment connection.
 This lets clients reconnect or share a running session. Renderer choices stay local
 to each client and do not change terminal contracts.
 

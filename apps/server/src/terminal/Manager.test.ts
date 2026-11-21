@@ -49,9 +49,11 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as TerminalManager from "./Manager.ts";
+import type { ForegroundCommandSources } from "./foregroundCommand.ts";
 import type {
   AdoptedTerminalSession,
   HostedPtyProcess,
+  RestorableTerminalCommand,
   TerminalLaunchRecord,
   TerminalSessionHostShape,
   TerminalSessionKey,
@@ -208,16 +210,33 @@ class FakeSessionHost implements TerminalSessionHostShape {
     readonly input: PtyAdapter.PtySpawnInput;
     readonly process: FakeHostedPtyProcess;
   }> = [];
+  readonly commands: Array<{
+    readonly key: TerminalSessionKey;
+    readonly command: RestorableTerminalCommand | null;
+  }> = [];
+  private readonly restorable: RestorableTerminalCommand | undefined;
+  private readonly commandWaiters: Array<{ count: number; done: Deferred.Deferred<void> }> = [];
   private nextPid = 7000;
 
   constructor(
     options: {
       readonly persistent?: boolean;
       readonly adoptAll?: Effect.Effect<ReadonlyArray<AdoptedTerminalSession>>;
+      readonly restorable?: RestorableTerminalCommand;
     } = {},
   ) {
     this.persistent = options.persistent ?? true;
     this.adoptAll = options.adoptAll ?? Effect.succeed([]);
+    this.restorable = options.restorable;
+  }
+
+  awaitCommands(count: number): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.commands.length >= count) return Effect.void;
+      const done = Deferred.makeUnsafe<void>();
+      this.commandWaiters.push({ count, done });
+      return Deferred.await(done);
+    });
   }
 
   readonly spawn = (
@@ -231,9 +250,41 @@ class FakeSessionHost implements TerminalSessionHostShape {
       return process;
     });
 
-  readonly restorableCommand = () => Effect.succeedNone;
+  readonly restorableCommand = () => Effect.succeed(Option.fromNullishOr(this.restorable));
 
-  readonly recordCommand = () => Effect.void;
+  readonly recordCommand = (key: TerminalSessionKey, command: RestorableTerminalCommand | null) =>
+    Effect.sync(() => {
+      this.commands.push({ key, command });
+      for (const waiter of this.commandWaiters) {
+        if (this.commands.length >= waiter.count) Deferred.doneUnsafe(waiter.done, Effect.void);
+      }
+    });
+}
+
+// Fixture pids are not real processes, so unrelated tests read nothing from the machine.
+const unreadableProcessSources: ForegroundCommandSources = {
+  readText: () => Effect.succeed(null),
+  readLink: () => Effect.succeed(null),
+  run: () => Effect.succeed(null),
+};
+
+function procSources(
+  processes: Readonly<
+    Record<number, { readonly argv: ReadonlyArray<string>; readonly cwd: string }>
+  >,
+): ForegroundCommandSources {
+  return {
+    readText: (path) => {
+      const match = /^\/proc\/(\d+)\/cmdline$/.exec(path);
+      const process = match ? processes[Number(match[1])] : undefined;
+      return Effect.succeed(process ? `${process.argv.join("\0")}\0` : null);
+    },
+    readLink: (path) => {
+      const match = /^\/proc\/(\d+)\/cwd$/.exec(path);
+      return Effect.succeed(match ? (processes[Number(match[1])]?.cwd ?? null) : null);
+    },
+    run: () => Effect.succeed(null),
+  };
 }
 
 function adoptedTerminal(input: {
@@ -336,6 +387,7 @@ interface CreateManagerOptions {
     never
   >;
   foregroundProcessGroup?: (terminalPid: number) => Effect.Effect<number | null>;
+  foregroundCommandSources?: ForegroundCommandSources;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   registerTerminalProcesses?: Parameters<
@@ -398,6 +450,7 @@ const createManager = (
         ...(options.processTable !== undefined ? { processTable: options.processTable } : {}),
         // Fixture pids are not real processes; default to a shell idle at its prompt.
         foregroundProcessGroup: options.foregroundProcessGroup ?? ((pid) => Effect.succeed(pid)),
+        foregroundCommandSources: options.foregroundCommandSources ?? unreadableProcessSources,
         ...(options.subprocessPollIntervalMs !== undefined
           ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
           : {}),
@@ -3599,6 +3652,258 @@ it.layer(
       expect(opened).toMatchObject({ pid: 7000, status: "running" });
       expect(sessionHost.spawns).toHaveLength(1);
       expect(missing._tag).toBe("TerminalSessionLookupError");
+    }),
+  );
+
+  const threadKey = { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID };
+  const restoreNoticeFor = (line: string) =>
+    `\r\n[terminal] Restored after a restart. Press any key to rerun: ${line}  (Ctrl+C skips)\r\n`;
+  const writeInput = (data: string, reply?: boolean) => ({
+    ...threadKey,
+    data,
+    ...(reply === undefined ? {} : { reply }),
+  });
+
+  // The shell is the host's first spawn (pid 7000); the foreground job is pid 4242.
+  const SHELL_PID = 7000;
+  const JOB_PID = 4242;
+  const createRecordingFixture = (foregroundGroup: number = JOB_PID) =>
+    Effect.gen(function* () {
+      const busy = { value: false, label: "node" };
+      const polls = yield* Queue.unbounded<boolean>();
+      const sessionHost = new FakeSessionHost();
+      const fixture = yield* createManager(5, {
+        sessionHost,
+        subprocessPollIntervalMs: 1_000,
+        subprocessInspector: () =>
+          Effect.sync(() => {
+            Queue.offerUnsafe(polls, busy.value);
+            return {
+              hasRunningSubprocess: busy.value,
+              childCommand: busy.value ? busy.label : null,
+              processIds: [],
+            };
+          }),
+        foregroundProcessGroup: () => Effect.succeed(foregroundGroup),
+        foregroundCommandSources: procSources({
+          [SHELL_PID]: { argv: ["-zsh"], cwd: "/work/app" },
+          [JOB_PID]: {
+            argv: ["node", "/app/server.js", "--name", "my app"],
+            cwd: "/work/app/sub",
+          },
+        }),
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+      yield* fixture.manager.open(openInput());
+      // One poll tick, after which the inspector has read `busy` for that tick.
+      const tick = TestClock.adjust("1 second").pipe(Effect.andThen(Queue.take(polls)));
+      return { ...fixture, sessionHost, busy, tick };
+    });
+
+  const jobCommand = { line: "node /app/server.js --name 'my app'", cwd: "/work/app/sub" };
+
+  it.effect(
+    "records a whole script line and the shell's directory when the shell starts a subprocess",
+    () =>
+      Effect.gen(function* () {
+        const { manager, sessionHost, busy, tick } = yield* createRecordingFixture();
+        yield* manager.write(writeInput(" npm run dev\r"));
+        busy.value = true;
+        yield* tick;
+        yield* sessionHost.awaitCommands(1);
+
+        expect(sessionHost.commands).toEqual([
+          { key: threadKey, command: { line: "npm run dev", cwd: "/work/app" } },
+        ]);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect.each([
+    { label: "single characters", writes: ["l", "s", "\r"] },
+    { label: "a line followed by another keystroke", writes: [" echo hi\r", "x"] },
+    { label: "a line followed by a lone Enter", writes: [" echo hi\r", "\r"] },
+    { label: "a multi-line paste", writes: ["a\rb\r"] },
+    { label: "a line with an escape sequence", writes: ["ls\u001b[A\r"] },
+    { label: "a line ended by a line feed", writes: ["echo hi\n"] },
+    { label: "a line with no terminator", writes: ["echo hi"] },
+  ])("records the foreground argv after typed input: $label", ({ writes }) =>
+    Effect.gen(function* () {
+      const { manager, sessionHost, busy, tick } = yield* createRecordingFixture();
+      for (const data of writes) yield* manager.write(writeInput(data));
+      busy.value = true;
+      yield* tick;
+      yield* sessionHost.awaitCommands(1);
+
+      expect(sessionHost.commands).toEqual([{ key: threadKey, command: jobCommand }]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("keeps a script line across a terminal reply written before the subprocess", () =>
+    Effect.gen(function* () {
+      const { manager, sessionHost, busy, tick } = yield* createRecordingFixture();
+      yield* manager.write(writeInput(" npm test\r"));
+      yield* manager.write(writeInput("\u001b[?1;2c", true));
+      busy.value = true;
+      yield* tick;
+      yield* sessionHost.awaitCommands(1);
+
+      expect(sessionHost.commands[0]?.command).toEqual({ line: "npm test", cwd: "/work/app" });
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect(
+    "records once per transition, not per label change, and clears when the prompt returns",
+    () =>
+      Effect.gen(function* () {
+        const { manager, sessionHost, busy, tick } = yield* createRecordingFixture();
+        yield* manager.write(writeInput("x"));
+        busy.value = true;
+        yield* tick;
+        busy.label = "vite";
+        yield* tick;
+        busy.value = false;
+        yield* tick;
+        yield* sessionHost.awaitCommands(2);
+
+        expect(sessionHost.commands).toEqual([
+          { key: threadKey, command: jobCommand },
+          { key: threadKey, command: null },
+        ]);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("records nothing for a background job that leaves the shell in the foreground", () =>
+    Effect.gen(function* () {
+      const { manager, sessionHost, busy, tick } = yield* createRecordingFixture(SHELL_PID);
+      yield* manager.write(writeInput("x"));
+      busy.value = true;
+      yield* tick;
+      yield* sessionHost.awaitCommands(1);
+
+      expect(sessionHost.commands).toEqual([{ key: threadKey, command: null }]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  const createRestoreFixture = (restorable?: RestorableTerminalCommand) =>
+    Effect.gen(function* () {
+      const sessionHost = new FakeSessionHost(restorable ? { restorable } : {});
+      const fixture = yield* createManager(5, { sessionHost, initialHistory: "saved output\n" });
+      const noticed = yield* Deferred.make<void>();
+      const unsubscribe = yield* fixture.manager.subscribe((event) =>
+        event.type === "output"
+          ? Deferred.succeed(noticed, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      yield* fixture.manager.open(openInput());
+      return { ...fixture, sessionHost, noticed, shell: sessionHost.spawns[0]!.process };
+    });
+
+  it.effect("shows the saved history and then the restore line for a restorable command", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, noticed } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      const outputs = (yield* getEvents).flatMap((event) =>
+        event.type === "output" ? [event.data] : [],
+      );
+      expect(outputs).toEqual([restoreNoticeFor("npm run dev")]);
+      const { history } = yield* manager.open(openInput());
+      expect(history.indexOf("saved output")).toBe(0);
+      expect(history.endsWith(restoreNoticeFor("npm run dev"))).toBe(true);
+    }),
+  );
+
+  it.effect("reruns the command from its directory on the next key, without sending the key", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("x"));
+      expect(shell.writes).toEqual(["cd -- '/other/dir' && npm run dev\r"]);
+
+      yield* manager.write(writeInput("y"));
+      expect(shell.writes).toEqual(["cd -- '/other/dir' && npm run dev\r", "y"]);
+    }),
+  );
+
+  it.effect("quotes a single quote in the directory it changes to", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "make",
+        cwd: "/it's here",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("x"));
+
+      expect(shell.writes).toEqual([`cd -- '/it'\\''s here' && make\r`]);
+    }),
+  );
+
+  it.effect("reruns without a cd when the command's directory is the terminal's", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: process.cwd(),
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("\r"));
+
+      expect(shell.writes).toEqual(["npm run dev\r"]);
+    }),
+  );
+
+  it.effect("skips the rerun on Ctrl+C and passes later keys through", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("\u0003"));
+      expect(shell.writes).toEqual([]);
+
+      yield* manager.write(writeInput("a"));
+      expect(shell.writes).toEqual(["a"]);
+    }),
+  );
+
+  it.effect("keeps waiting through terminal replies and resizes", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("\u001b[?1;2c", true));
+      yield* manager.resize({ ...threadKey, cols: 120, rows: 30 });
+      expect(shell.writes).toEqual(["\u001b[?1;2c"]);
+
+      yield* manager.write(writeInput("x"));
+      expect(shell.writes).toEqual(["\u001b[?1;2c", "cd -- '/other/dir' && npm run dev\r"]);
+    }),
+  );
+
+  it.effect("shows only the saved history and passes keys through with nothing to restore", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, shell } = yield* createRestoreFixture();
+
+      yield* manager.write(writeInput("x"));
+
+      expect(shell.writes).toEqual(["x"]);
+      expect((yield* getEvents).some((event) => event.type === "output")).toBe(false);
+      const { history } = yield* manager.open(openInput());
+      expect(history).not.toContain("Restored after a restart");
+      expect(history.startsWith("saved output")).toBe(true);
     }),
   );
 });

@@ -80,9 +80,17 @@ import * as PortScanner from "../preview/PortScanner.ts";
 import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
 import { terminalOutputStream } from "./OutputProtocol.ts";
 import {
+  makeForegroundCommandSources,
+  readForegroundCommand,
+  readProcessCwd,
+  restorableTerminalCommand,
+  type ForegroundCommandSources,
+} from "./foregroundCommand.ts";
+import {
   inProcessTerminalSessionHost,
   type AdoptedTerminalSession,
   type HostedPtyProcess,
+  type RestorableTerminalCommand,
   type TerminalLaunchRecord,
   type TerminalSessionHostShape,
 } from "./sessionHost.ts";
@@ -303,6 +311,8 @@ interface TerminalStartInput {
   readonly worktreePath?: string | null;
   readonly cols: number;
   readonly rows: number;
+  /** The command the previous shell was running; the next keypress offers to rerun it. */
+  readonly restore?: RestorableTerminalCommand;
 }
 
 interface TerminalSessionState {
@@ -333,6 +343,10 @@ interface TerminalSessionState {
   runtimeEnv: Record<string, string> | null;
   stopOnSettle: boolean;
   startupError: string | null;
+  /** The last input that was one whole command line, until the shell starts a subprocess. */
+  pendingCommandLine: string | null;
+  /** Set while the restore prompt waits for the key that decides the rerun. */
+  pendingRerun: RestorableTerminalCommand | null;
 }
 
 interface TerminalGrid {
@@ -1671,6 +1685,24 @@ function launchRecordOf(session: TerminalSessionState, shell: string): TerminalL
   };
 }
 
+/** The text of an input that is one whole command line, as a script writes it; else null. */
+function wholeCommandLine(data: string): string | null {
+  if (data.length <= 1 || !data.endsWith("\r") || data.indexOf("\r") !== data.length - 1) {
+    return null;
+  }
+  const line = data.slice(0, -1).replace(/^ +/, "");
+  return line.length > 0 ? line : null;
+}
+
+function restoreNotice(command: RestorableTerminalCommand): string {
+  return `\r\n[terminal] Restored after a restart. Press any key to rerun: ${command.line}  (Ctrl+C skips)\r\n`;
+}
+
+function rerunInput(command: RestorableTerminalCommand, sessionCwd: string): string {
+  if (command.cwd === sessionCwd) return `${command.line}\r`;
+  return `cd -- '${command.cwd.replaceAll("'", `'\\''`)}' && ${command.line}\r`;
+}
+
 function normalizedRuntimeEnv(
   env: Record<string, string> | undefined,
 ): Record<string, string> | null {
@@ -1696,6 +1728,7 @@ interface TerminalManagerOptions {
     TerminalSubprocessCheckError
   >;
   foregroundProcessGroup?: (terminalPid: number) => Effect.Effect<number | null>;
+  foregroundCommandSources?: ForegroundCommandSources;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
@@ -1903,6 +1936,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               }),
               Effect.orElseSucceed(() => null),
             ));
+  const foregroundCommandSources =
+    options.foregroundCommandSources ?? (yield* makeForegroundCommandSources());
   const customSubprocessInspector = options.subprocessInspector;
   const acquireSubprocessInspector = (
     fallbackTimeout: Duration.Input,
@@ -2858,6 +2893,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       session.exitSignal = null;
       session.hasRunningSubprocess = false;
       session.childCommandLabel = null;
+      session.pendingCommandLine = null;
+      session.pendingRerun = null;
       session.pendingProcessEvents = [];
       session.pendingProcessEventIndex = 0;
       session.processEventDrainRunning = false;
@@ -2945,6 +2982,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 }
                 if (eventsActivated) runFork(drainProcessEvents(session, processPid));
               });
+              // Queued in the same turn as the subscription, so it precedes the shell's own output.
+              if (input.restore !== undefined) {
+                session.pendingRerun = input.restore;
+                enqueueProcessEvent(session, processPid, {
+                  type: "output",
+                  data: restoreNotice(input.restore),
+                });
+              }
               eventStamp = advanceEventSequence(session);
               return [undefined, state] as const;
             });
@@ -3068,6 +3113,38 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
   };
 
+  // Run once per idle-to-busy transition, so a command that finishes between ticks goes unrecorded.
+  const recordStartedCommand = Effect.fn("terminal.recordStartedCommand")(function* (
+    session: TerminalSessionState,
+    terminalPid: number,
+    process: HostedPtyProcess | null,
+  ) {
+    const line = session.pendingCommandLine;
+    session.pendingCommandLine = null;
+    let command: RestorableTerminalCommand | null = null;
+    if (line !== null) {
+      const cwd =
+        (yield* readProcessCwd(terminalPid, platform, foregroundCommandSources)) ?? session.cwd;
+      command = restorableTerminalCommand(line, cwd);
+    }
+    if (command === null) {
+      const group = yield* foregroundProcessGroup(terminalPid);
+      if (group !== null) {
+        command = yield* readForegroundCommand(group, platform, foregroundCommandSources);
+      }
+      // A background job leaves the shell as foreground group; recording it would rerun the shell.
+      const name = command?.line.split(" ")[0]?.replace(/^.*\//, "").replace(/^-/, "");
+      if (group === terminalPid && name !== undefined && INTERACTIVE_SHELL_NAMES.has(name)) {
+        command = null;
+      }
+    }
+    if (session.process !== process || session.status !== "running") return;
+    yield* sessionHost.recordCommand(
+      { threadId: session.threadId, terminalId: session.terminalId },
+      command,
+    );
+  });
+
   const pollSubprocessActivity = Effect.fn("terminal.pollSubprocessActivity")(function* () {
     const state = yield* readManagerState;
     const runningSessions = [...state.sessions.values()]
@@ -3157,6 +3234,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           return [Option.none(), state] as const;
         }
 
+        const wasRunning = liveSession.value.hasRunningSubprocess;
         liveSession.value.hasRunningSubprocess = next.hasRunningSubprocess;
         liveSession.value.childCommandLabel = nextChildLabel;
         const eventStamp = advanceEventSequence(liveSession.value);
@@ -3165,19 +3243,33 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
         return [
           Option.some({
-            type: "activity" as const,
-            threadId: liveSession.value.threadId,
-            terminalId: liveSession.value.terminalId,
-            sequence: eventStamp.sequence,
-            hasRunningSubprocess: next.hasRunningSubprocess,
-            label: terminalWireLabel(liveSession.value),
+            event: {
+              type: "activity" as const,
+              threadId: liveSession.value.threadId,
+              terminalId: liveSession.value.terminalId,
+              sequence: eventStamp.sequence,
+              hasRunningSubprocess: next.hasRunningSubprocess,
+              label: terminalWireLabel(liveSession.value),
+            },
+            started: !wasRunning && next.hasRunningSubprocess,
+            ended: wasRunning && !next.hasRunningSubprocess,
           }),
           state,
         ] as const;
       });
 
       if (Option.isSome(event)) {
-        yield* publishEvent(event.value);
+        yield* publishEvent(event.value.event);
+        if (event.value.started) {
+          yield* recordStartedCommand(session, terminalPid, process).pipe(
+            Effect.ignoreCause({ log: true }),
+          );
+        } else if (event.value.ended) {
+          session.pendingCommandLine = null;
+          yield* sessionHost
+            .recordCommand({ threadId: session.threadId, terminalId: session.terminalId }, null)
+            .pipe(Effect.ignoreCause({ log: true }));
+        }
       }
 
       if (
@@ -3324,6 +3416,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       runtimeEnv: normalizedRuntimeEnv(launch.runtimeEnv ?? undefined),
       stopOnSettle: launch.stopOnSettle,
       startupError: null,
+      pendingCommandLine: null,
+      pendingRerun: null,
     };
     const backlog = sanitizeTerminalHistoryChunk("", adopted.backlog);
     if (backlog.visibleText.length > 0) history.append(backlog.visibleText);
@@ -3437,6 +3531,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         runtimeEnv: normalizedRuntimeEnv(input.env),
         stopOnSettle: input.stopOnSettle ?? false,
         startupError: null,
+        pendingCommandLine: null,
+        pendingRerun: null,
       };
 
       const createdSession = session;
@@ -3448,6 +3544,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       });
 
       yield* evictInactiveSessionsIfNeeded();
+      const restorable = yield* sessionHost.restorableCommand({
+        threadId: input.threadId,
+        terminalId,
+      });
       yield* startSession(
         session,
         {
@@ -3455,6 +3555,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
           cols,
           rows,
+          ...(Option.isSome(restorable) ? { restore: restorable.value } : {}),
         },
         "started",
       );
@@ -3918,8 +4019,23 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         return;
       }
       session.inputCount += 1;
+      let data = input.data;
+      let binary = input.binary;
+      if (input.reply !== true) {
+        const rerun = session.pendingRerun;
+        session.pendingRerun = null;
+        if (rerun !== null) {
+          // The key that answers the prompt is not shell input.
+          if (data === "\x03") return;
+          data = rerunInput(rerun, session.cwd);
+          binary = false;
+          session.pendingCommandLine = rerun.line;
+        } else {
+          session.pendingCommandLine = wholeCommandLine(data);
+        }
+      }
       yield* Effect.try({
-        try: () => process.write(PtyAdapter.ptyInput(input.data, input.binary)),
+        try: () => process.write(PtyAdapter.ptyInput(data, binary)),
         catch: (cause) =>
           new TerminalWriteError({
             threadId: input.threadId,
