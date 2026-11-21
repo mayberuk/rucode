@@ -311,7 +311,7 @@ it.layer(NodeServices.layer)("livecheck source", (it) => {
         data: {
           runId: RUN_ID,
           runDir,
-          target: "login-flow",
+          target: "login flow",
           steps: [
             { index: 1, label: "open login page", state: "done", durationMs: 30_000 },
             { index: 2, label: "logged in", state: "done", durationMs: 30_000 },

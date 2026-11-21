@@ -305,7 +305,7 @@ it.layer(NodeServices.layer)("gitty source", (it) => {
     }),
   );
 
-  it.effect("lists committed batches as done or running, then uncommitted files as pending", () =>
+  it.effect("lists committed batches as done or pending, then uncommitted files as pending", () =>
     Effect.gen(function* () {
       const { resolve, root, calls, unexpected } = yield* setup();
       const card = yield* resolve(pushKey(root));
@@ -317,7 +317,7 @@ it.layer(NodeServices.layer)("gitty source", (it) => {
           batches: [
             { label: "first", state: "done", commit: "aaa" },
             { label: "second", state: "done", commit: "bbb" },
-            { label: "third", state: "running", commit: "ccc" },
+            { label: "third", state: "pending", commit: "ccc" },
             { label: "2 uncommitted files", state: "pending", commit: null },
           ],
           mergeRequest: null,
@@ -364,9 +364,9 @@ it.layer(NodeServices.layer)("gitty source", (it) => {
       git["status --porcelain"] = output("");
       const card = yield* resolve(pushKey(root));
       expect(card?.kind === "gitty.push" && card.data.batches.map((batch) => batch.state)).toEqual([
-        "running",
-        "running",
-        "running",
+        "pending",
+        "pending",
+        "pending",
       ]);
       expect(card?.actions.map((action) => action.id)).toEqual(["push-next"]);
     }),
@@ -422,7 +422,7 @@ it.layer(NodeServices.layer)("gitty source", (it) => {
       expect(card?.kind === "gitty.push" && card.data.batches.map((batch) => batch.state)).toEqual([
         "done",
         "done",
-        "running",
+        "pending",
       ]);
       expect(calls.some((args) => args[3] === "status")).toBe(false);
     }),
@@ -677,7 +677,7 @@ it.layer(NodeServices.layer)("gitty source", (it) => {
             {
               key: "yours",
               label: "Keep yours",
-              predictedOutcome: "origin/Release-2 change to this file is dropped.",
+              predictedOutcome: "The change on origin/Release-2 is dropped.",
             },
             {
               key: "theirs",
