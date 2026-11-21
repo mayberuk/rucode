@@ -4,6 +4,7 @@ import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 
 import type {
   PluginCardRef,
@@ -29,6 +30,7 @@ const RESULT = "livecheck.result";
 const RUNS_SEGMENT = "/.livecheck/runs/";
 const CHANGE_DEBOUNCE = Duration.millis(250);
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
+const MAX_REMEMBERED_CHECKOUTS = 128;
 const RUN_PATH = /([^\s'"=:;|&<>]*)\.livecheck\/runs\/(\d{8}-\d{6}[A-Za-z0-9._-]*)/g;
 
 const MEDIA_TYPES: Record<string, string> = {
@@ -57,6 +59,7 @@ export const livecheckSource: PluginCardSourceFactory = Effect.gen(function* () 
   const stamp = yield* makeUpdatedAtStamper;
   const located = new Map<string, string>();
   const produced = new Map<string, string>();
+  const mainCheckouts = new Map<string, string | null>();
 
   const recognize = (command: RecognizableCommand): ReadonlyArray<PluginCardRef> => {
     const text = command.command;
@@ -80,6 +83,26 @@ export const livecheckSource: PluginCardSourceFactory = Effect.gen(function* () 
       Effect.orElseSucceed(() => false),
     );
 
+  /** Remembers a failed lookup too, so a run that is missing does not start git on every refresh. */
+  const mainCheckoutOf = Effect.fn("PluginCards.livecheck.mainCheckoutOf")(function* (
+    checkout: string,
+  ) {
+    const remembered = mainCheckouts.get(checkout);
+    if (remembered !== undefined) return remembered;
+    const git = yield* runLocalCommand({
+      command: "git",
+      args: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      cwd: checkout,
+    });
+    const commonDir = git?.exitCode === 0 ? git.stdout.trim() : "";
+    const main = commonDir.startsWith("/") ? resolvePath(commonDir, "..") : null;
+    if (mainCheckouts.size >= MAX_REMEMBERED_CHECKOUTS) {
+      mainCheckouts.delete(mainCheckouts.keys().next().value!);
+    }
+    mainCheckouts.set(checkout, main);
+    return main;
+  });
+
   /** Runs land in the main checkout, so a path named from a linked worktree is looked up there. */
   const locate = Effect.fn("PluginCards.livecheck.locate")(function* (key: string) {
     const known = located.get(key);
@@ -89,17 +112,8 @@ export const livecheckSource: PluginCardSourceFactory = Effect.gen(function* () 
     else {
       const cut = key.lastIndexOf(RUNS_SEGMENT);
       const checkout = cut > 0 ? key.slice(0, cut) : null;
-      const git =
-        checkout === null
-          ? null
-          : yield* runLocalCommand({
-              command: "git",
-              args: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-              cwd: checkout,
-            });
-      const commonDir = git?.exitCode === 0 ? git.stdout.trim() : "";
-      if (commonDir.startsWith("/")) {
-        const main = resolvePath(commonDir, "..");
+      const main = checkout === null ? null : yield* mainCheckoutOf(checkout);
+      if (main !== null) {
         const candidate = `${main}${key.slice(cut)}`;
         if (candidate !== key && (yield* isDirectory(candidate))) runDir = candidate;
       }
@@ -173,13 +187,22 @@ export const livecheckSource: PluginCardSourceFactory = Effect.gen(function* () 
     },
   );
 
+  /** `noFollow` covers only the last path component, so the opened file is checked to sit in the run's own screenshots directory. */
   const readScreenshot = Effect.fn("PluginCards.livecheck.readScreenshot")(function* (
-    path: string,
+    runDir: string,
+    assetId: string,
   ) {
     const platform = yield* HostProcess.Platform;
+    const path = `${runDir}/screenshots/${assetId}`;
     const file = yield* fs.open(path, { flag: "r", noFollow: platform !== "win32" });
     const info = yield* file.stat;
     if (info.type !== "File" || info.size > BigInt(MAX_SCREENSHOT_BYTES)) return null;
+    const [realRunDir, realPath] = yield* Effect.all([fs.realPath(runDir), fs.realPath(path)]);
+    if (realPath !== `${realRunDir}/screenshots/${assetId}`) return null;
+    const placed = yield* fs.stat(realPath);
+    if (placed.dev !== info.dev || Option.getOrNull(placed.ino) !== Option.getOrNull(info.ino)) {
+      return null;
+    }
     const bytes = new Uint8Array(Number(info.size));
     let offset = 0;
     while (offset < bytes.length) {
@@ -205,21 +228,17 @@ export const livecheckSource: PluginCardSourceFactory = Effect.gen(function* () 
         : card.data.latestAssetId === assetId;
     if (!listed) return yield* unknownAsset();
 
-    const screenshotsDir = `${runDir}/screenshots`;
-    const path = `${screenshotsDir}/${assetId}`;
+    const path = `${runDir}/screenshots/${assetId}`;
     const readFailed = (cause: unknown) =>
       new PluginCardError({ reason: "source-failed", detail: path, cause });
-    const [dirInfo, fileInfo] = yield* Effect.all([
-      fs.lstat(screenshotsDir).pipe(Effect.mapError(readFailed)),
-      fs.lstat(path).pipe(Effect.mapError(readFailed)),
-    ]);
-    if (dirInfo.type !== "Directory" || fileInfo.type !== "File") {
+    const fileInfo = yield* fs.lstat(path).pipe(Effect.mapError(readFailed));
+    if (fileInfo.type !== "File") {
       return yield* unknownAsset("It is not a regular file in the run directory.");
     }
     if (fileInfo.size > BigInt(MAX_SCREENSHOT_BYTES)) {
       return yield* unknownAsset("It is larger than 4 MiB.");
     }
-    const bytes = yield* readScreenshot(path).pipe(Effect.mapError(readFailed));
+    const bytes = yield* readScreenshot(runDir, assetId).pipe(Effect.mapError(readFailed));
     if (bytes === null) return yield* unknownAsset("It is not a regular file under 4 MiB.");
     return { mediaType: MEDIA_TYPES[extension]!, bytes } satisfies PluginCardAsset;
   });

@@ -519,27 +519,47 @@ it.layer(NodeServices.layer)("livecheck source", (it) => {
     }),
   );
 
+  it.effect("reads only the last 256 KiB of an oversized steps.log, from a whole line", () =>
+    Effect.gen(function* () {
+      const { writeRun, resolve } = yield* setup();
+      const filler = `2026-11-21T09:00:00Z progress ${"x".repeat(60)}\n`.repeat(6_000);
+      const runDir = yield* writeRun({
+        steps: `2026-11-21T08:00:00Z step dropped with the head\n${filler}${RUNNING_LOG}`,
+      });
+
+      const card = yield* resolve("livecheck.progress", runDir);
+      expect(
+        card?.kind === "livecheck.progress" && card.data.steps.map((step) => step.label),
+      ).toEqual(["open login page", "logged in", "open cart"]);
+    }),
+  );
+
   it.effect("draws no card for a finished run without result.json, or a missing run", () =>
     Effect.gen(function* () {
-      const { writeRun, both, root } = yield* setup();
+      const { writeRun, both, root, gitCalls } = yield* setup();
       const runDir = yield* writeRun({ steps: FAIL_LOG });
       expect(yield* both(runDir)).toEqual({ progress: null, result: null });
       expect(yield* both(`${root}/.livecheck/runs/20261121-000000-gone`)).toEqual({
         progress: null,
         result: null,
       });
+      expect(yield* both(`${root}/.livecheck/runs/20261121-000000-gone`)).toEqual({
+        progress: null,
+        result: null,
+      });
+      expect(gitCalls).toEqual([root]);
     }),
   );
 
   it.effect("finds a run named from a linked worktree in the main checkout", () =>
     Effect.gen(function* () {
       const { writeRun, resolve, gitCalls } = yield* setup({ gitKnowsMainCheckout: true });
+      const key = `/worktrees/feature/.livecheck/runs/${RUN_ID}`;
+
+      expect(yield* resolve("livecheck.progress", key)).toBeNull();
       const runDir = yield* writeRun({});
 
-      const card = yield* resolve(
-        "livecheck.progress",
-        `/worktrees/feature/.livecheck/runs/${RUN_ID}`,
-      );
+      const card = yield* resolve("livecheck.progress", key);
       expect(card?.kind === "livecheck.progress" && card.data.runDir).toBe(runDir);
       expect(gitCalls).toEqual(["/worktrees/feature"]);
     }),

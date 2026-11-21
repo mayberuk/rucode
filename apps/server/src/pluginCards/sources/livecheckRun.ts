@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 /** livecheck's own watchdog (`scripts/run-dir/watchdog.sh`) calls a run stale past this. */
 export const HEARTBEAT_STALE_MS = 360_000;
 const MAX_RECORD_BYTES = 1024 * 1024;
+const MAX_STEPS_LOG_BYTES = 256 * 1024;
 
 /** The only screenshot names listed or served; it admits no path separator. */
 export const SCREENSHOT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpe?g|webp)$/;
@@ -204,6 +205,30 @@ const readRecord = Effect.fn("PluginCards.livecheck.readRecord")(function* <
   return null;
 });
 
+/** The end of the log is the live part of a run, so an oversized log keeps its last 256 KiB, from a whole line. */
+const readStepsLog = Effect.fn("PluginCards.livecheck.readStepsLog")(
+  function* (path: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const file = yield* fs.open(path, { flag: "r" });
+    const { size } = yield* file.stat;
+    const start = Math.max(0, Number(size) - MAX_STEPS_LOG_BYTES);
+    if (start > 0) yield* file.seek(BigInt(start), "start");
+    const bytes = new Uint8Array(Number(size) - start);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = yield* file.read(bytes.subarray(offset));
+      if (read === 0) break;
+      offset += read;
+    }
+    const text = new TextDecoder().decode(bytes.subarray(0, offset));
+    if (start === 0) return text;
+    const firstLineEnd = text.indexOf("\n");
+    return firstLineEnd < 0 ? "" : text.slice(firstLineEnd + 1);
+  },
+  Effect.scoped,
+  Effect.orElseSucceed(() => ""),
+);
+
 export const readRun = Effect.fn("PluginCards.livecheck.readRun")(function* (runDir: string) {
   const fs = yield* FileSystem.FileSystem;
   const info = yield* fs.stat(runDir).pipe(Effect.option);
@@ -212,7 +237,7 @@ export const readRun = Effect.fn("PluginCards.livecheck.readRun")(function* (run
   const [meta, stepsText, result, heartbeat, entries] = yield* Effect.all(
     [
       readRecord(RunMeta, `${runDir}/meta.json`),
-      fs.readFileString(`${runDir}/steps.log`).pipe(Effect.orElseSucceed(() => "")),
+      readStepsLog(`${runDir}/steps.log`),
       readRecord(RunResult, `${runDir}/result.json`),
       fs.stat(`${runDir}/heartbeat`).pipe(Effect.option),
       fs
