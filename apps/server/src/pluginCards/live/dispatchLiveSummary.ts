@@ -9,7 +9,7 @@ import type { DispatchRunFeedRow } from "../dispatch/runFeed.ts";
 type RunOpened = Extract<DispatchRunFeedRow, { readonly event: "run-opened" }>;
 type RunSettled = Extract<DispatchRunFeedRow, { readonly event: "run-settled" }>;
 
-export interface FoldedRun {
+interface FoldedRun {
   readonly opened: RunOpened;
   readonly settled: RunSettled | null;
 }
@@ -67,7 +67,7 @@ const childState = (
   }
 };
 
-export interface LiveRunOptions {
+interface LiveRunOptions {
   readonly now: number;
   readonly pidAlive: (pid: number) => boolean;
 }
