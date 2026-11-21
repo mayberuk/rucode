@@ -1,4 +1,6 @@
 import { AuthPreviewOperateScope, type EnvironmentId } from "@t3tools/contracts";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import type { AnyRouter } from "@tanstack/react-router";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -20,16 +22,22 @@ import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/pro
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
-import { readProjects, readThreadShell } from "../state/entities";
+import { readProjects, readThreadShell, readThreadShells } from "../state/entities";
 import { defaultProjectFallbackReadyAtom } from "../state/projects";
 import { environmentPresentations } from "../state/presentation";
 import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { readEnvironmentScope } from "../state/session";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
-import { resolveThreadRouteTarget } from "../threadRoutes";
+import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import { type CommandHandler, registerCommands } from "./dispatcher";
+import {
+  isThreadWaiting,
+  nextWaitingThread,
+  orderJumpCandidates,
+  threadShellKey,
+} from "./waitingThreads";
 
 const CHAT_ROUTE_ID = "/_chat";
 
@@ -117,6 +125,35 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
     });
   };
 
+  const jumpToNextWaiting: CommandHandler = (event) => {
+    claim(event);
+    const localLastVisitedAtById = useUiStateStore.getState().threadLastVisitedAtById;
+    const isWaiting = (thread: EnvironmentThreadShell) =>
+      isThreadWaiting(thread, {
+        localLastVisitedAt: localLastVisitedAtById[threadShellKey(thread)],
+      });
+    const currentRef = readRouteThreadRef();
+    const currentKey = currentRef ? scopedThreadKey(currentRef) : null;
+    const ordered = orderJumpCandidates(readThreadShells());
+    const next = nextWaitingThread(ordered, isWaiting, currentKey);
+    if (next) {
+      void router.navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(scopeThreadRef(next.environmentId, next.id)),
+      });
+      return;
+    }
+    const currentIsWaiting = ordered.some(
+      (thread) => threadShellKey(thread) === currentKey && isWaiting(thread),
+    );
+    toastManager.add(
+      stackedThreadToast({
+        type: "info",
+        title: currentIsWaiting ? "No other chat waiting" : "No chat waiting",
+      }),
+    );
+  };
+
   const previewCommand =
     (action: PreviewAction): CommandHandler =>
     (event) => {
@@ -137,6 +174,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
         claim(event);
         void scratch.startScratchThread(environmentId);
       },
+      "thread.nextWaiting": jumpToNextWaiting,
       "chat.new": (event) => {
         const groups = readProjectGroups();
         if (

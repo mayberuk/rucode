@@ -40,7 +40,6 @@ import {
 
 import { isElectron } from "../../env";
 import { useOpenInPreferredEditor } from "../../editorPreferences";
-import { formatShortcutLabel } from "../../keybindings";
 import { cn } from "../../lib/utils";
 import { serverEnvironment } from "../../state/server";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -64,6 +63,7 @@ import {
   isKnownWhenVariable,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
+  keybindingRowShortcutLabel,
   parseWhenExpressionDraft,
   groupKeybindingRows,
   type KeybindingCommandOption,
@@ -71,6 +71,7 @@ import {
   type KeybindingRow,
   type WhenVariableOption,
   unknownWhenVariables,
+  shortcutToKeybindingInput,
   whenAstToExpression,
   whenNodeRemoveLabel,
 } from "./KeybindingsSettings.logic";
@@ -853,7 +854,7 @@ function KeybindingKeyControl({
           ref={pillRef}
           type="button"
           onClick={() => setDraft({ isRecording: true })}
-          aria-label={`Edit shortcut for ${commandLabel(row.command)}: ${row.isUnassigned ? "Unassigned" : formatShortcutLabel(row.binding.shortcut)}`}
+          aria-label={`Edit shortcut for ${commandLabel(row.command)}: ${keybindingRowShortcutLabel(row)}`}
           className={cn(
             "inline-flex h-8 cursor-pointer items-center rounded-md border border-transparent px-1.5 sm:h-7 outline-none transition-colors hover:border-border/70 hover:bg-accent focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-inset focus-visible:ring-ring/24",
             pillClassName,
@@ -861,6 +862,12 @@ function KeybindingKeyControl({
         >
           {row.isUnassigned ? (
             <span className="text-sm text-muted-foreground">Unassigned</span>
+          ) : row.prefixShortcut ? (
+            <span className="inline-flex items-center gap-1">
+              <KeybindingPill value={shortcutToKeybindingInput(row.prefixShortcut)} />
+              <span className="text-sm text-muted-foreground">,</span>
+              <KeybindingPill value={row.key} />
+            </span>
           ) : (
             <KeybindingPill value={row.key} />
           )}
