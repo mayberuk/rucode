@@ -4,6 +4,7 @@ import { ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
@@ -382,6 +383,95 @@ it.layer(NodeServices.layer)("dispatch live source", (it) => {
           children.map((child) => child.state),
           ["running"],
         );
+      }),
+    ),
+  );
+
+  it.effect.each([
+    { name: "a parent directory", slug: "../../elsewhere" },
+    { name: "a path separator", slug: "alpha/beta" },
+    { name: "a leading dash", slug: "-rf" },
+    { name: "a leading dot", slug: ".hidden" },
+    { name: "more than 128 characters", slug: "a".repeat(129) },
+  ])("skips a registry entry whose slug has $name", ({ slug }) =>
+    withSource((fixture, source) =>
+      Effect.gen(function* () {
+        yield* writeRegistry(fixture, "alpha.json", registryEntry("alpha"));
+        yield* writeRegistry(fixture, "bad.json", registryEntry(slug));
+        fixture.shows.set("alpha", initiativeShow("alpha"));
+        fixture.shows.set(slug, initiativeShow(slug));
+
+        const { initiatives } = yield* source.snapshot;
+        assert.deepStrictEqual(
+          initiatives.map((initiative) => initiative.slug),
+          ["alpha"],
+        );
+        assert.deepStrictEqual(fixture.dpCalls, ["alpha"]);
+      }),
+    ),
+  );
+
+  it.effect("retries a failed dp read after a backoff even when the ledger is unchanged", () =>
+    withSource((fixture, source) =>
+      Effect.gen(function* () {
+        yield* writeRegistry(fixture, "alpha.json", registryEntry("alpha"));
+        yield* writeLedger(fixture, "alpha", "{}\n");
+
+        const first = (yield* source.snapshot).initiatives[0];
+        assert.strictEqual(first?.title, null);
+
+        fixture.shows.set("alpha", initiativeShow("alpha"));
+        const early = (yield* source.snapshot).initiatives[0];
+        assert.strictEqual(early?.title, null);
+        assert.deepStrictEqual(fixture.dpCalls, ["alpha"]);
+
+        yield* TestClock.adjust("60 seconds");
+        const later = (yield* source.snapshot).initiatives[0];
+        assert.strictEqual(later?.title, "Title of alpha");
+        assert.deepStrictEqual(fixture.dpCalls, ["alpha", "alpha"]);
+
+        yield* TestClock.adjust("10 minutes");
+        yield* source.snapshot;
+        assert.deepStrictEqual(fixture.dpCalls, ["alpha", "alpha"]);
+      }),
+    ),
+  );
+
+  it.effect("re-checks liveness on a timer while a run is recorded as running", () =>
+    withSource((fixture, source) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fs.writeFileString(fixture.runFeed, openedRow("r-1", ALIVE_PID));
+        yield* markAlive(fixture, ALIVE_PID);
+        const states = (snapshot: Effect.Success<typeof source.snapshot>) =>
+          snapshot.children.map((child) => child.state);
+        assert.deepStrictEqual(states(yield* source.snapshot), ["running"]);
+
+        const signal = yield* Effect.forkChild(Stream.runHead(source.changes));
+        yield* Effect.yieldNow;
+        yield* fs.remove(path.join(fixture.procRoot, String(ALIVE_PID)), { recursive: true });
+
+        yield* TestClock.adjust("29 seconds");
+        assert.isUndefined(signal.pollUnsafe());
+        yield* TestClock.adjust("1 second");
+        yield* TestClock.adjust("250 millis");
+        yield* Fiber.join(signal);
+        assert.deepStrictEqual(states(yield* source.snapshot), ["aborted"]);
+      }),
+    ),
+  );
+
+  it.effect("does not wake on a timer once nothing is running", () =>
+    withSource((fixture, source) =>
+      Effect.gen(function* () {
+        yield* writeRegistry(fixture, "alpha.json", registryEntry("alpha"));
+        fixture.shows.set("alpha", initiativeShow("alpha"));
+        yield* source.snapshot;
+        const signal = yield* Effect.forkChild(Stream.runHead(source.changes));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("10 minutes");
+        assert.isUndefined(signal.pollUnsafe());
       }),
     ),
   );

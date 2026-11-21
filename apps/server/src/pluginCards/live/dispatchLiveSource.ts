@@ -26,6 +26,7 @@ import { mapRunToThread } from "../dispatch/threadMapping.ts";
 import {
   type FoldedRuns,
   foldRunRows,
+  isInitiativeSlug,
   isRegistryFileName,
   isRunFeedFileName,
   keptRuns,
@@ -42,11 +43,16 @@ export interface DispatchLiveSourceOptions {
 
 const LEDGER_FILE = "ledger.jsonl";
 const CHANGE_QUIET_PERIOD = Duration.millis(250);
+// Liveness expires with time or a process exit, neither of which touches a watched file.
+const RECHECK_INTERVAL = Duration.seconds(30);
+// A failed `dp initiative show` is retried on a later refresh, but not on every one.
+const UNAVAILABLE_RETRY_MS = 60_000;
 
 interface CachedInitiative {
   readonly ledgerSize: number | null;
   readonly ledgerMtime: number | null;
   readonly state: DispatchInitiativeState | null;
+  readonly readAt: number;
 }
 
 interface SourceState {
@@ -75,7 +81,9 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
     initiatives: new Map(),
   });
   const openSlugs = yield* SubscriptionRef.make<ReadonlyArray<string>>([]);
+  const needsRecheck = yield* SubscriptionRef.make(false);
   const unavailableSlugs = new Set<string>();
+  const rejectedSlugs = new Set<string>();
 
   const pidAliveSet = Effect.fnUntraced(function* (runs: FoldedRuns) {
     const procPresent = yield* fs.exists(options.procRoot).pipe(Effect.orElseSucceed(() => false));
@@ -106,12 +114,14 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
   const initiativeState = Effect.fn("DispatchLive.initiativeState")(function* (
     slug: string,
     cached: CachedInitiative | undefined,
+    now: number,
   ) {
     const stat = yield* ledgerStat(slug);
     if (
       cached !== undefined &&
       cached.ledgerSize === stat.ledgerSize &&
-      cached.ledgerMtime === stat.ledgerMtime
+      cached.ledgerMtime === stat.ledgerMtime &&
+      (cached.state !== null || now - cached.readAt < UNAVAILABLE_RETRY_MS)
     ) {
       return cached;
     }
@@ -122,7 +132,7 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
     } else if (read !== null) {
       unavailableSlugs.delete(slug);
     }
-    return { ...stat, state: read } satisfies CachedInitiative;
+    return { ...stat, state: read, readAt: now } satisfies CachedInitiative;
   });
 
   const openDecisionCount = Effect.fn("DispatchLive.openDecisionCount")(function* (
@@ -182,13 +192,26 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
         threadIdFor: (key) => threads.get(key) ?? null,
       });
 
-      const open = (yield* listLiveInitiatives(options.initiativesRoot)).filter(
-        (entry) => !entry.closed,
-      );
+      const open: Array<DispatchLiveInitiative> = [];
+      for (const entry of yield* listLiveInitiatives(options.initiativesRoot)) {
+        if (entry.closed) continue;
+        if (isInitiativeSlug(entry.slug)) {
+          open.push(entry);
+        } else if (!rejectedSlugs.has(entry.slug)) {
+          rejectedSlugs.add(entry.slug);
+          yield* Effect.logWarning("dispatch live registry entry has an invalid slug", {
+            slug: entry.slug,
+          });
+        }
+      }
       const cache = new Map<string, CachedInitiative>();
       const initiatives: Array<PluginLiveInitiative> = [];
       for (const entry of open) {
-        const cached = yield* initiativeState(entry.slug, previous.initiatives.get(entry.slug));
+        const cached = yield* initiativeState(
+          entry.slug,
+          previous.initiatives.get(entry.slug),
+          now,
+        );
         cache.set(entry.slug, cached);
         if (cached.state?.closed === true) continue;
         initiatives.push(
@@ -210,6 +233,12 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
       yield* SubscriptionRef.set(
         openSlugs,
         open.map((entry) => entry.slug).toSorted(compareStrings),
+      );
+      yield* SubscriptionRef.set(
+        needsRecheck,
+        kept.some(({ state: runState }) => runState === "running") ||
+          initiatives.some((initiative) => initiative.running > 0) ||
+          [...cache.values()].some((cached) => cached.state === null),
       );
 
       return {
@@ -245,6 +274,12 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
     ),
   );
 
+  // Card-core republishes only when the derived state differs, so a quiet tick costs one snapshot.
+  const rechecks = SubscriptionRef.changes(needsRecheck).pipe(
+    Stream.changesWith((left, right) => left === right),
+    Stream.switchMap((needed) => (needed ? Stream.tick(RECHECK_INTERVAL) : Stream.empty)),
+  );
+
   const changes = Stream.mergeAll(
     [
       watchDirectory(path.join(options.initiativesRoot, ".live"), isRegistryFileName),
@@ -254,7 +289,7 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
       ledgerWatches,
     ],
     { concurrency: "unbounded" },
-  ).pipe(Stream.debounce(CHANGE_QUIET_PERIOD), Stream.as(undefined));
+  ).pipe(Stream.as(undefined), Stream.merge(rechecks), Stream.debounce(CHANGE_QUIET_PERIOD));
 
   return { id: "dispatch.live", snapshot, changes } satisfies PluginLiveSource;
 });

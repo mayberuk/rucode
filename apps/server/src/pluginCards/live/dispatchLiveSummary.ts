@@ -20,7 +20,7 @@ export type FoldedRuns = ReadonlyMap<string, FoldedRun>;
 const SETTLED_RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_CHILDREN = 100;
 const SETTLED_PART_STATUSES = new Set(["merged", "gate-pass"]);
-const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const REGISTRY_SUFFIX = ".json";
 
 const runKey = (row: { readonly run: string; readonly pid: number }) => `${row.run}:${row.pid}`;
@@ -194,8 +194,10 @@ export const summarizeInitiative = (
   };
 };
 
+export const isInitiativeSlug = (slug: string) => SLUG_PATTERN.test(slug);
+
 export const isRegistryFileName = (name: string) =>
-  name.endsWith(REGISTRY_SUFFIX) && SLUG_PATTERN.test(name.slice(0, -REGISTRY_SUFFIX.length));
+  name.endsWith(REGISTRY_SUFFIX) && isInitiativeSlug(name.slice(0, -REGISTRY_SUFFIX.length));
 
 /** `feedName` is the feed's own file name, which `DP_RUN_FEED` can change. */
 export const isRunFeedFileName = (name: string, feedName = "runs.jsonl") =>
