@@ -3860,6 +3860,22 @@ it.layer(
     }),
   );
 
+  it.effect("passes a submitted script through and disarms the restore prompt", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("echo hi\r"));
+      expect(shell.writes).toEqual(["echo hi\r"]);
+
+      yield* manager.write(writeInput("\r"));
+      expect(shell.writes).toEqual(["echo hi\r", "\r"]);
+    }),
+  );
+
   it.effect("skips the rerun on Ctrl+C and passes later keys through", () =>
     Effect.gen(function* () {
       const { manager, noticed, shell } = yield* createRestoreFixture({
