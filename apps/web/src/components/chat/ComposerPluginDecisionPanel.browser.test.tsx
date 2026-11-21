@@ -18,7 +18,7 @@ import { composerDrawerContent } from "~/pendingUserInput";
 import { usePluginThreadCards } from "~/pluginCards/core/usePluginCards";
 import { pluginCardRenderer } from "~/pluginCards/registry";
 import * as pluginCardsRpc from "~/rpc/pluginCards";
-import { act, render, type Screen } from "../../../test/render";
+import { act, fakeTimers, render, type Screen } from "../../../test/render";
 import { ComposerPluginDecisionPanel } from "./ComposerPluginDecisionPanel";
 import { usePendingPluginDecisions } from "./usePendingThreadRequests";
 
@@ -188,12 +188,16 @@ it("answers the picked option in two steps and shows recording until the decisio
     environmentId: threadRef.environmentId,
     input: { threadId: threadRef.threadId, cardId: card.id, optionKey: "keep" },
   });
-  await expect.element(screen.getByRole("button", { name: "Posting…" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Recording answer…" })).toBeDisabled();
 
+  await env.publish([
+    { ...card, data: { ...card.data } },
+    decisionCard("d-answered", { state: "answered", choice: "keep" }),
+  ]);
   await act(async () => {
     answer.calls[0]!.resolve(AsyncResult.success({ delivery: "started" }));
   });
-  await expect.element(screen.getByRole("button", { name: "Posting…" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Recording answer…" })).toBeDisabled();
 
   await env.publish([
     {
@@ -205,7 +209,7 @@ it("answers the picked option in two steps and shows recording until the decisio
       },
     },
   ]);
-  await expect.element(screen.getByRole("button", { name: "Posting…" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Recording answer…" })).toBeDisabled();
   await expect
     .element(screen.getByRole("button", { name: /Keep it open/ }))
     .toHaveAttribute("aria-pressed", "true");
@@ -286,8 +290,19 @@ it("shows a failed answer's reason with Try again and keeps the decision in the 
     input: { threadId: threadRef.threadId, cardId: card.id, optionKey: "keep" },
   });
 
+  {
+    using _timers = fakeTimers();
+    await act(async () => {
+      answer.calls[0]!.resolve(AsyncResult.success({ delivery: "reused" }));
+    });
+    await expect.element(screen.getByRole("button", { name: "Recording answer…" })).toBeDisabled();
+    await act(() => vi.advanceTimersByTime(31_000));
+    await expect.element(screen.getByText("Couldn't record your answer.")).toBeVisible();
+  }
+
+  await screen.getByRole("button", { name: "Try again" }).click();
   await act(async () => {
-    answer.calls[0]!.resolve(AsyncResult.fail(new PluginCardError({ reason: "decision-closed" })));
+    answer.calls[1]!.resolve(AsyncResult.fail(new PluginCardError({ reason: "decision-closed" })));
   });
   await expect
     .element(screen.getByText("This decision was already answered or closed."))

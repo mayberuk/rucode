@@ -5,6 +5,7 @@ import {
   type PluginThreadCards,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Equal from "effect/Equal";
 
 const NO_DECISIONS: ReadonlyArray<DispatchDecisionCard> = [];
 
@@ -23,8 +24,19 @@ export function openDecisionsForThread(
 /** This client's own answer request, kept apart from the progress the server reports on the card. */
 export type DecisionAnswerAttempt =
   | { readonly status: "sending"; readonly optionKey: string }
-  | { readonly status: "sent"; readonly optionKey: string }
-  | { readonly status: "failed"; readonly optionKey: string; readonly message: string };
+  | {
+      readonly status: "sent";
+      readonly optionKey: string;
+      readonly cardAtSend: DispatchDecisionCard;
+      readonly reusedRetryDeadline: number | null;
+    }
+  | { readonly status: "reported"; readonly optionKey: string }
+  | {
+      readonly status: "failed";
+      readonly optionKey: string;
+      readonly message: string;
+      readonly cardAtSend: DispatchDecisionCard;
+    };
 
 export type DecisionAnswerView =
   | { readonly status: "idle" }
@@ -34,7 +46,7 @@ export type DecisionAnswerView =
 export function decisionAnswerView(
   card: DispatchDecisionCard,
   attempt: DecisionAnswerAttempt | null,
-  awaitingSnapshot = false,
+  reusedRetryDeadlinePassed = false,
 ): DecisionAnswerView {
   if (card.data.state !== "open") return { status: "idle" };
   const progress = card.data.answer;
@@ -42,9 +54,15 @@ export function decisionAnswerView(
     return { status: progress.status, optionKey: progress.optionKey };
   }
   if (attempt?.status === "sending") return { status: "posting", optionKey: attempt.optionKey };
-  if (awaitingSnapshot) {
-    if (attempt?.status === "sent") return { status: "recording", optionKey: attempt.optionKey };
-    if (attempt?.status === "failed") return attempt;
+  if (attempt?.status === "failed" && Equal.equals(card, attempt.cardAtSend)) {
+    return { status: "failed", optionKey: attempt.optionKey, message: attempt.message };
+  }
+  if (
+    attempt?.status === "sent" &&
+    Equal.equals(card, attempt.cardAtSend) &&
+    !(progress?.status === "failed" && reusedRetryDeadlinePassed)
+  ) {
+    return { status: "recording", optionKey: attempt.optionKey };
   }
   if (progress?.status === "failed") {
     return {
@@ -56,14 +74,16 @@ export function decisionAnswerView(
           : new PluginCardError({ reason: progress.reason }).message,
     };
   }
-  if (attempt?.status === "sent") {
+  if (attempt?.status === "sent" || attempt?.status === "reported") {
     return {
       status: "failed",
       optionKey: attempt.optionKey,
       message: "The server is no longer recording this answer.",
     };
   }
-  return attempt?.status === "failed" ? attempt : { status: "idle" };
+  return attempt?.status === "failed"
+    ? { status: "failed", optionKey: attempt.optionKey, message: attempt.message }
+    : { status: "idle" };
 }
 
 const SHELL_SAFE = /^[\w@%+=:,./-]+$/;

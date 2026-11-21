@@ -3,13 +3,13 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { DispatchDecisionCard, PluginThreadCards, ScopedThreadRef } from "@t3tools/contracts";
+import type { DispatchDecisionCard, ScopedThreadRef } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { memo, use, useEffect, useEffectEvent, useState } from "react";
 
+import { useDeadlinePassed } from "~/hooks/useDeadline";
 import { isInSideChatPane } from "~/lib/sideChatPane";
 import { cn } from "~/lib/utils";
-import { usePluginThreadCards } from "~/pluginCards/core/usePluginCards";
 import {
   decisionAnswerCommand,
   decisionAnswerView,
@@ -32,6 +32,8 @@ const answerAttemptAtom = Atom.family((_key: string) =>
 );
 
 const UNCONFIRMED_ANSWER = "The connection dropped before the answer was confirmed.";
+// Recording times out server-side after 30 seconds, before the debounced snapshot is published.
+const REUSED_RETRY_WAIT_MS = 31_000;
 
 export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionPanel({
   decision,
@@ -50,42 +52,60 @@ export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionP
   );
   const [pickedKey, setPickedKey] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
-  const snapshot = usePluginThreadCards(threadRef);
-  // The RPC can finish before the card stream publishes the progress it recorded.
-  const [snapshotAtSend, setSnapshotAtSend] = useState<PluginThreadCards | null>(null);
   const answerDecision = useAtomCommand(answerPluginDecision, { reportFailure: false });
   const backgroundThread = use(BackgroundThreadContext);
-  const view = decisionAnswerView(
-    decision,
-    attempt,
-    snapshot !== null && snapshot === snapshotAtSend,
+  const reusedRetryDeadlinePassed = useDeadlinePassed(
+    attempt?.status === "sent" ? attempt.reusedRetryDeadline : null,
   );
+  const view = decisionAnswerView(decision, attempt, reusedRetryDeadlinePassed);
   const busy = view.status === "posting" || view.status === "recording";
   const selectedKey = busy
     ? view.optionKey
     : (pickedKey ?? (view.status === "failed" ? view.optionKey : null));
 
   const send = async (optionKey: string) => {
-    setSnapshotAtSend(snapshot);
     setAttempt({ status: "sending", optionKey });
     const result = await answerDecision({
       environmentId: threadRef.environmentId,
       input: { threadId: threadRef.threadId, cardId: decision.id, optionKey },
     });
     if (result._tag === "Success") {
-      setAttempt({ status: "sent", optionKey });
+      setAttempt({
+        status: "sent",
+        optionKey,
+        cardAtSend: decision,
+        reusedRetryDeadline:
+          result.value.delivery === "reused" && data.answer?.status === "failed"
+            ? Date.now() + REUSED_RETRY_WAIT_MS
+            : null,
+      });
       return;
     }
     const error = isAtomCommandInterrupted(result) ? null : squashAtomCommandFailure(result);
     setAttempt({
       status: "failed",
       optionKey,
+      cardAtSend: decision,
       message:
         error instanceof Error && error.message.trim().length > 0
           ? error.message
           : UNCONFIRMED_ANSWER,
     });
   };
+
+  const progressStatus = data.answer?.status;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains reported server progress across panel remounts
+  useEffect(() => {
+    if (
+      attempt?.status !== "sent" ||
+      (progressStatus !== "posting" && progressStatus !== "recording")
+    ) {
+      return;
+    }
+    setAttempt((current) =>
+      current === attempt ? { status: "reported", optionKey: attempt.optionKey } : current,
+    );
+  }, [attempt, progressStatus, setAttempt]);
 
   const pickFromShortcut = useEffectEvent((digit: number) => {
     const option = data.options[digit - 1];
@@ -203,7 +223,7 @@ export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionP
                     if (selectedKey !== null) void send(selectedKey);
                   }}
                 >
-                  {busy ? "Posting…" : view.status === "failed" ? "Try again" : "Answer"}
+                  {busy ? "Recording answer…" : view.status === "failed" ? "Try again" : "Answer"}
                 </Button>
               </div>
             )}
