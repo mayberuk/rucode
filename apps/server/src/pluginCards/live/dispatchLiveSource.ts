@@ -279,9 +279,12 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
   );
 
   // Card-core republishes only when the derived state differs, so a quiet tick costs one snapshot.
+  // Stream.tick fires at once; the snapshot that armed this timer is already fresh, so skip it.
   const rechecks = SubscriptionRef.changes(needsRecheck).pipe(
     Stream.changesWith((left, right) => left === right),
-    Stream.switchMap((needed) => (needed ? Stream.tick(RECHECK_INTERVAL) : Stream.empty)),
+    Stream.switchMap((needed) =>
+      needed ? Stream.tick(RECHECK_INTERVAL).pipe(Stream.drop(1)) : Stream.empty,
+    ),
   );
 
   const changes = Stream.mergeAll(
