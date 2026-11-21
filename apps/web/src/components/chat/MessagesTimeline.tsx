@@ -14,6 +14,7 @@ import {
   type EnvironmentId,
   type MessageId,
   type OrchestrationV2TurnItem,
+  type PluginCard,
   type RunAttemptId,
   type ServerProviderSkill,
   type RunId,
@@ -130,6 +131,7 @@ import {
   McpAppTimelineRow,
 } from "./TimelineAssistantRows";
 import { V2EventTimelineRow } from "./TimelineV2EventRow";
+import { PluginCardTimelineRow } from "./PluginCardTimelineRow";
 import { startTimelinePositionRestore } from "./useTimelinePositionRestore";
 import {
   attachTimelineViewport,
@@ -251,6 +253,8 @@ interface MessagesTimelineProps {
 
   listRef: React.RefObject<LegendListRef | null>;
   timelineEntries: ReadonlyArray<TimelineEntry>;
+  /** Cards the thread's plugins drew, each with a renderer. */
+  pluginCards?: ReadonlyArray<PluginCard> | undefined;
   latestRun: TimelineLatestRun | null;
   /** The run the screen reader announcer follows; see announcedRun. */
   announcedRun?: { readonly runId: RunId; readonly status: TimelineLatestRun["status"] } | null;
@@ -367,6 +371,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   awaitingRequestId = null,
   listRef,
   timelineEntries,
+  pluginCards,
   findOpen = false,
   findExpanded = false,
   findQuery = "",
@@ -753,6 +758,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     worktreeSetup,
     toolCallVisibility,
     revealedMessageId,
+    ...(pluginCards === undefined ? {} : { pluginCards }),
   });
   const rows = useStableRows(rawRows, listIdentityKey);
   const matchedApprovalRequestIds = new Set<string>();
@@ -1631,6 +1637,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
                   row.kind === "html-render" ||
                   row.kind === "sent-message" ||
                   row.kind === "mcp-app" ||
+                  row.kind === "plugin-card" ||
                   row.kind === "viewed-images"
                 ? "pb-2"
                 : "pb-4",
@@ -1683,6 +1690,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "sent-message" ? <SentMessageTimelineRow row={row} /> : null}
       {row.kind === "viewed-images" ? <ViewedImagesTimelineRow row={row} /> : null}
       {row.kind === "mcp-app" ? <McpAppTimelineRow row={row} /> : null}
+      {row.kind === "plugin-card" ? <PluginCardTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "worktree-setup" ? <WorktreeSetupTimelineRow row={row} /> : null}
       {row.kind === "event" ? <V2EventTimelineRow row={row} /> : null}

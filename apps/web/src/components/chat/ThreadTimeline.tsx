@@ -1,6 +1,8 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { type ComponentProps, useLayoutEffect } from "react";
 import { useIncrementalTimelineEntries } from "../../hooks/useIncrementalTimelineEntries";
+import { usePluginThreadCards } from "../../pluginCards/core/usePluginCards";
+import { pluginCardRenderer } from "../../pluginCards/registry";
 import type { TimelineEntriesInput, TimelineEntry } from "../../session-logic";
 import { useTimelineVisibleTurnItems } from "../../state/entities";
 import {
@@ -36,6 +38,9 @@ export function ThreadTimeline({
   detailLoading: boolean;
 }) {
   const visibleTurnItems = useTimelineVisibleTurnItems(threadDetailRef);
+  const pluginCards = usePluginThreadCards(threadDetailRef)?.cards.filter(
+    (card) => pluginCardRenderer(card.kind) !== null,
+  );
   const serverEntries = useIncrementalTimelineEntries(activeThreadKey, {
     ...entriesInput,
     visibleTurnItems,
@@ -54,5 +59,11 @@ export function ThreadTimeline({
     }
     rememberReadyThreadTimeline({ threadKey: activeThreadKey, entries });
   }, [activeThreadKey, detailLoading, entries]);
-  return <MessagesTimeline {...timelineProps} timelineEntries={displayedEntries} />;
+  return (
+    <MessagesTimeline
+      {...timelineProps}
+      timelineEntries={displayedEntries}
+      pluginCards={draftEntries === null ? pluginCards : undefined}
+    />
+  );
 }

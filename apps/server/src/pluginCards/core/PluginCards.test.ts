@@ -4,6 +4,8 @@ import {
   type PluginCard,
   type PluginCardAction,
   type PluginCardError,
+  type PluginLiveDecision,
+  type PluginLiveState,
   type PluginThreadCards,
   ThreadId,
   TurnItemId,
@@ -15,7 +17,9 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../../processRunner.ts";
+import type { DispatchDecisionLive, DispatchDecisionSource } from "../dispatch/decisionSource.ts";
 import type {
   PluginCardSource,
   RecognizableCommand,
@@ -57,6 +61,7 @@ const makeHarness = Effect.fnUntraced(function* (options?: {
   readonly existing?: ReadonlyArray<ThreadCommands.ThreadCommandItem>;
   readonly mapped?: ReadonlyArray<PluginCard>;
   readonly source?: Partial<PluginCardSource>;
+  readonly decisionSource?: DispatchDecisionSource;
 }) {
   const cards = new Map<string, ResolvedPluginCard | null>();
   const resolves = yield* Queue.unbounded<string>();
@@ -85,12 +90,15 @@ const makeHarness = Effect.fnUntraced(function* (options?: {
   const service = yield* PluginCards.make({
     cardSources: [Effect.succeed(source)],
     liveSources: [],
+    decisionSource:
+      options?.decisionSource === undefined ? null : Effect.succeed(options.decisionSource),
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
         threadCommands,
         Layer.mock(PluginThreadIndex.PluginThreadIndex)({}),
         Layer.mock(ProcessRunner.ProcessRunner)({}),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
         NodeServices.layer,
       ),
     ),
@@ -302,5 +310,142 @@ it.effect("refuses actions and assets for a card the thread does not have", () =
         "unknown-card",
       );
     }
+  }),
+);
+
+const liveDecision = (id: string, threadId: ThreadId | null): PluginLiveDecision => ({
+  cardId: `dispatch.decision:/repo#${id}`,
+  decisionId: id,
+  dir: "/repo",
+  kind: "batch-approval",
+  question: `Approve ${id}?`,
+  initiative: null,
+  part: "core",
+  threadId,
+  needsPerson: false,
+  raisedAt: "2026-11-21T10:00:00Z",
+  applyAfter: null,
+});
+
+/**
+ * Serves `state.live` as its live fragment and `mapped` as THREAD's cards. Each run of `changes`
+ * is a subscriber, announced on `subscribed`; `signal` reaches every subscriber, and each one
+ * reports on `consumed` once it has pulled the signal.
+ */
+const makeDecisionSource = Effect.fnUntraced(function* (mapped: ReadonlyArray<PluginCard>) {
+  const subscribers: Array<Queue.Queue<void>> = [];
+  const subscribed = yield* Queue.unbounded<void>();
+  const consumed = yield* Queue.unbounded<void>();
+  const changes = Stream.unwrap(
+    Effect.gen(function* () {
+      const feed = yield* Queue.unbounded<void>();
+      subscribers.push(feed);
+      yield* Queue.offer(subscribed, undefined);
+      return Stream.fromQueue(feed).pipe(Stream.tap(() => Queue.offer(consumed, undefined)));
+    }),
+  );
+  const signal = Effect.forEach(subscribers, (feed) => Queue.offer(feed, undefined), {
+    discard: true,
+  });
+  const state: { live: DispatchDecisionLive } = { live: { decisions: [], waitingThreadIds: [] } };
+  const source: DispatchDecisionSource = {
+    id: "dispatch",
+    recognize: () => [],
+    resolve: () => Effect.succeed(null),
+    cardsForThread: (threadId) => Effect.succeed(threadId === THREAD ? mapped : []),
+    changes,
+    live: Effect.sync(() => state.live),
+    findDecision: () => Effect.succeed(null),
+    setProgress: () => Effect.void,
+  };
+  return { source, signal, subscribed, consumed, state };
+});
+
+it.effect("fills the live state's open decisions and waiting chats from the decision source", () =>
+  Effect.gen(function* () {
+    const other = ThreadId.make("thread-2");
+    const decisions = yield* makeDecisionSource([]);
+    decisions.state.live = {
+      decisions: [
+        liveDecision("d-2", other),
+        liveDecision("d-1", THREAD),
+        liveDecision("d-3", null),
+      ],
+      waitingThreadIds: [other, THREAD, other],
+    };
+    const { service } = yield* makeHarness({ decisionSource: decisions.source });
+    const states = yield* Queue.unbounded<PluginLiveState>();
+    yield* Stream.runForEach(service.subscribeLive, (state) => Queue.offer(states, state)).pipe(
+      Effect.forkScoped,
+    );
+
+    const first = yield* Queue.take(states);
+    // Thread snapshots and the live state each subscribe to the source's changes.
+    yield* Queue.take(decisions.subscribed);
+    yield* Queue.take(decisions.subscribed);
+    assert.deepStrictEqual(
+      first.decisions.map((decision) => decision.decisionId),
+      ["d-1", "d-2", "d-3"],
+    );
+    assert.deepStrictEqual(first.waitingThreadIds, [THREAD, other]);
+    assert.deepStrictEqual([first.initiatives, first.children], [[], []]);
+
+    decisions.state.live = { decisions: [liveDecision("d-3", null)], waitingThreadIds: [] };
+    yield* decisions.signal;
+    yield* Queue.take(decisions.consumed);
+    yield* Queue.take(decisions.consumed);
+    yield* TestClock.adjust(DEBOUNCE);
+    const next = yield* Queue.take(states);
+    assert.deepStrictEqual(
+      next.decisions.map((decision) => decision.decisionId),
+      ["d-3"],
+    );
+    assert.deepStrictEqual(next.waitingThreadIds, []);
+  }),
+);
+
+it.effect("adds the decision source's mapped cards to the chat and routes answers to it", () =>
+  Effect.gen(function* () {
+    const mapped: PluginCard = {
+      ...pushCard("decision"),
+      kind: "gitty.push",
+      data: { branch: "decision", batches: [], mergeRequest: null },
+      id: "gitty.push:decision",
+      threadId: THREAD,
+      placement: { type: "time", at: "2026-11-21T09:00:00.000Z" },
+    };
+    const decisions = yield* makeDecisionSource([mapped]);
+    const harness = yield* makeHarness({ decisionSource: decisions.source });
+    yield* harness.subscribe;
+    assert.deepStrictEqual(
+      (yield* Queue.take(harness.snapshots)).cards.map((card) => card.id),
+      ["gitty.push:decision"],
+    );
+    assert.strictEqual(
+      yield* failureReason(
+        harness.service.answerDecision({
+          threadId: THREAD,
+          cardId: "dispatch.decision:/repo#d-1",
+          optionKey: "go",
+        }),
+      ),
+      "unknown-card",
+    );
+  }),
+);
+
+it.effect("answers no decision when the server runs without the decision source", () =>
+  Effect.gen(function* () {
+    const { service } = yield* makeHarness();
+    assert.strictEqual(
+      yield* failureReason(
+        service.answerDecision({
+          threadId: THREAD,
+          cardId: "dispatch.decision:/repo#d-1",
+          optionKey: "go",
+        }),
+      ),
+      "unavailable",
+    );
   }),
 );

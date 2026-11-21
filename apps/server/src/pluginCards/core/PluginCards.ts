@@ -18,10 +18,16 @@ import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
+import {
+  type DispatchDecisionLive,
+  type DispatchDecisionSource,
+  makeDispatchDecisionSource,
+} from "../dispatch/decisionSource.ts";
 import { pluginLiveSources } from "../live/index.ts";
 import { pluginCardSources } from "../sources/index.ts";
 import type {
@@ -32,6 +38,7 @@ import type {
   PluginLiveSource,
   PluginLiveSourceFactory,
 } from "./PluginCardSource.ts";
+import * as DecisionAnswerFlow from "./decisionAnswerFlow.ts";
 import * as PluginThreadIndex from "./PluginThreadIndex.ts";
 import * as ThreadCommands from "./threadCommands.ts";
 
@@ -40,8 +47,8 @@ const MAX_ASSET_BYTES = 4 * 1024 * 1024;
 const REFRESH_DEBOUNCE = Duration.millis(150);
 const RESOLVE_CONCURRENCY = 8;
 
-const builtInCardSources: ReadonlyArray<PluginCardSourceFactory> = [];
 const builtInLiveSources: ReadonlyArray<PluginLiveSourceFactory> = [];
+const noDecisions: DispatchDecisionLive = { decisions: [], waitingThreadIds: [] };
 
 export class PluginCards extends Context.Service<
   PluginCards,
@@ -112,12 +119,23 @@ const comparePlaced = (left: PlacedCard, right: PlacedCard): number => {
 export const make = Effect.fn("PluginCards.make")(function* (options?: {
   readonly cardSources?: ReadonlyArray<PluginCardSourceFactory>;
   readonly liveSources?: ReadonlyArray<PluginLiveSourceFactory>;
+  /** Null leaves dispatch decisions out, and answering them unavailable. */
+  readonly decisionSource?: Effect.Effect<
+    DispatchDecisionSource,
+    never,
+    PluginCardSourceServices | Scope.Scope
+  > | null;
 }) {
   const threadCommands = yield* ThreadCommands.ThreadCommands;
   const services = yield* Effect.context<PluginCardSourceServices>();
-  const cardSources: ReadonlyArray<PluginCardSource> = yield* Effect.all(
-    options?.cardSources ?? [...builtInCardSources, ...pluginCardSources],
-  );
+  const decisionSource =
+    options?.decisionSource === null
+      ? null
+      : yield* options?.decisionSource ?? makeDispatchDecisionSource();
+  const cardSources: ReadonlyArray<PluginCardSource> = [
+    ...(decisionSource === null ? [] : [decisionSource]),
+    ...(yield* Effect.all(options?.cardSources ?? pluginCardSources)),
+  ];
   const liveSources: ReadonlyArray<PluginLiveSource> = yield* Effect.all(
     options?.liveSources ?? [...builtInLiveSources, ...pluginLiveSources],
   );
@@ -312,9 +330,17 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
   const refreshLive = liveRefreshPermit
     .withPermits(1)(
       Effect.gen(function* () {
-        const fragments = yield* Effect.forEach(
-          liveSources,
-          (source) => guard(source.snapshot, { initiatives: [], children: [] }, source.id),
+        const [fragments, decisionFragment] = yield* Effect.all(
+          [
+            Effect.forEach(
+              liveSources,
+              (source) => guard(source.snapshot, { initiatives: [], children: [] }, source.id),
+              { concurrency: "unbounded" },
+            ),
+            decisionSource === null
+              ? Effect.succeed(noDecisions)
+              : guard(decisionSource.live, noDecisions, decisionSource.id),
+          ],
           { concurrency: "unbounded" },
         );
         const content: Omit<PluginLiveState, "asOf"> = {
@@ -324,8 +350,8 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
           children: fragments
             .flatMap((fragment) => fragment.children)
             .toSorted(byId((child) => child.id)),
-          decisions: [],
-          waitingThreadIds: [],
+          decisions: decisionFragment.decisions.toSorted(byId((decision) => decision.cardId)),
+          waitingThreadIds: [...new Set(decisionFragment.waitingThreadIds)].toSorted(),
         };
         const current = yield* SubscriptionRef.get(live);
         if (current !== null) {
@@ -339,7 +365,10 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
     .pipe(Effect.withSpan("PluginCards.refreshLive"));
 
   yield* Stream.mergeAll(
-    liveSources.map((source) => source.changes),
+    [
+      ...liveSources.map((source) => source.changes),
+      ...(decisionSource === null ? [] : [decisionSource.changes]),
+    ],
     { concurrency: "unbounded" },
   ).pipe(
     Stream.debounce(REFRESH_DEBOUNCE),
@@ -352,12 +381,13 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
     live,
   ).pipe(Stream.filter((state): state is PluginLiveState => state !== null));
 
+  const answerFlow =
+    decisionSource === null ? null : yield* DecisionAnswerFlow.make(decisionSource);
+
   return PluginCards.of({
     subscribeThread,
     subscribeLive,
-    answerDecision: Effect.fn("PluginCards.answerDecision")(function* () {
-      return yield* unavailableError;
-    }),
+    answerDecision: answerFlow === null ? unavailable.answerDecision : answerFlow.answer,
     runAction,
     readAsset,
   });

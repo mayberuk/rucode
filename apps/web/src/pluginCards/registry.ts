@@ -3,9 +3,10 @@ import type { ComponentType } from "react";
 
 import { cardRenderers } from "./cards";
 import type { PluginCardRendererMap, PluginCardRendererProps } from "./core/types";
+import { DecisionCard } from "./decision/DecisionCard";
 import { liveCardRenderers } from "./live";
 
-const builtInRenderers: PluginCardRendererMap = {};
+const builtInRenderers: PluginCardRendererMap = { "dispatch.decision": DecisionCard };
 
 export function pluginCardRenderer(
   kind: PluginCardKind,
