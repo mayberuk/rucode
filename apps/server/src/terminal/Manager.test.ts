@@ -270,7 +270,10 @@ const unreadableProcessSources: ForegroundCommandSources = {
 
 function procSources(
   processes: Readonly<
-    Record<number, { readonly argv: ReadonlyArray<string>; readonly cwd: string }>
+    Record<
+      number,
+      { readonly argv: ReadonlyArray<string>; readonly cwd: string; readonly exe: string }
+    >
   >,
 ): ForegroundCommandSources {
   return {
@@ -280,8 +283,9 @@ function procSources(
       return Effect.succeed(process ? `${process.argv.join("\0")}\0` : null);
     },
     readLink: (path) => {
-      const match = /^\/proc\/(\d+)\/cwd$/.exec(path);
-      return Effect.succeed(match ? (processes[Number(match[1])]?.cwd ?? null) : null);
+      const match = /^\/proc\/(\d+)\/(cwd|exe)$/.exec(path);
+      const process = match ? processes[Number(match[1])] : undefined;
+      return Effect.succeed((match?.[2] === "exe" ? process?.exe : process?.cwd) ?? null);
     },
     run: () => Effect.succeed(null),
   };
@@ -3667,7 +3671,11 @@ it.layer(
   // The shell is the host's first spawn (pid 7000); the foreground job is pid 4242.
   const SHELL_PID = 7000;
   const JOB_PID = 4242;
-  const createRecordingFixture = (foregroundGroup: number = JOB_PID) =>
+  const retitledJobArgv = ["node: worker"];
+  const createRecordingFixture = (
+    foregroundGroup: number = JOB_PID,
+    jobArgv: ReadonlyArray<string> = ["node", "/app/server.js", "--name", "my app"],
+  ) =>
     Effect.gen(function* () {
       const busy = { value: false, label: "node" };
       const polls = yield* Queue.unbounded<boolean>();
@@ -3686,10 +3694,11 @@ it.layer(
           }),
         foregroundProcessGroup: () => Effect.succeed(foregroundGroup),
         foregroundCommandSources: procSources({
-          [SHELL_PID]: { argv: ["-zsh"], cwd: "/work/app" },
+          [SHELL_PID]: { argv: ["-zsh"], cwd: "/work/app", exe: "/usr/bin/zsh" },
           [JOB_PID]: {
-            argv: ["node", "/app/server.js", "--name", "my app"],
+            argv: jobArgv,
             cwd: "/work/app/sub",
+            exe: "/usr/bin/node",
           },
         }),
       }).pipe(Effect.provide(layerWithHostPlatform("linux")));
@@ -3705,7 +3714,10 @@ it.layer(
     "records a whole script line and the shell's directory when the shell starts a subprocess",
     () =>
       Effect.gen(function* () {
-        const { manager, sessionHost, busy, tick } = yield* createRecordingFixture();
+        const { manager, sessionHost, busy, tick } = yield* createRecordingFixture(
+          JOB_PID,
+          retitledJobArgv,
+        );
         yield* manager.write(writeInput(" npm run dev\r"));
         busy.value = true;
         yield* tick;
@@ -3734,6 +3746,22 @@ it.layer(
       yield* sessionHost.awaitCommands(1);
 
       expect(sessionHost.commands).toEqual([{ key: threadKey, command: jobCommand }]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("records nothing for a retitled foreground process after typed input", () =>
+    Effect.gen(function* () {
+      const { manager, sessionHost, busy, tick } = yield* createRecordingFixture(
+        JOB_PID,
+        retitledJobArgv,
+      );
+      yield* manager.write(writeInput("node /app/server.js"));
+      yield* manager.write(writeInput("\r"));
+      busy.value = true;
+      yield* tick;
+      yield* sessionHost.awaitCommands(1);
+
+      expect(sessionHost.commands).toEqual([{ key: threadKey, command: null }]);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 

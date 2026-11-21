@@ -3130,7 +3130,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     if (command === null) {
       const group = yield* foregroundProcessGroup(terminalPid);
       if (group !== null) {
-        command = yield* readForegroundCommand(group, platform, foregroundCommandSources);
+        command = yield* readForegroundCommand(group, platform, foregroundCommandSources, {
+          verifyLinuxExecutable: true,
+        });
       }
       // A background job leaves the shell as foreground group; recording it would rerun the shell.
       const name = command?.line.split(" ")[0]?.replace(/^.*\//, "").replace(/^-/, "");
