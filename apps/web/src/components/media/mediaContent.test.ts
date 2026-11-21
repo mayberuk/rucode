@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vite-plus/test";
 
-import { readMediaPng } from "./mediaContent";
+import { readMediaPng, remoteMediaHost } from "./mediaContent";
 
 const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -73,4 +73,19 @@ it("reads media the renderer cannot fetch through the desktop main process", asy
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it.each([
+  ["https://example.com/a.png", "example.com"],
+  ["//cdn.example.com:8443/a.png", "cdn.example.com:8443"],
+  ["HTTP://Example.com/x", "example.com"],
+  ["http://localhost:5173/a.png", "localhost:5173"],
+  ["data:image/png;base64,AA==", null],
+  ["blob:https://example.com/0f3a", null],
+  ["./shot.png", null],
+  ["https://", null],
+  ["", null],
+  ["ftp://example.com/a.png", null],
+])("names the host a remote media source would contact: %s", (src, host) => {
+  expect(remoteMediaHost(src)).toBe(host);
 });

@@ -1,16 +1,18 @@
 import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
 import { mediaFileReference, mediaUrlReference } from "@t3tools/client-runtime/media-reference";
 import type { AssetResource, EnvironmentId, SOURCE_CONTROL_MEDIA_ASSET } from "@t3tools/contracts";
-import { TriangleAlertIcon } from "lucide-react";
+import { AudioLinesIcon, ImageIcon, TriangleAlertIcon, VideoIcon } from "lucide-react";
 import {
   createContext,
   memo,
   use,
+  useRef,
   useState,
   type ComponentProps,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 
 import { useAssetUrlRefresh, useAssetUrlState } from "../../assets/assetUrls";
@@ -18,6 +20,8 @@ import { cn } from "../../lib/utils";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { MediaActions, type MediaActionSource } from "../media/MediaActions";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
+import { Button } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { markdownImageGallery, markdownImageItems } from "./markdownImageGallery";
 
@@ -27,6 +31,10 @@ const CHAT_MARKDOWN_MEDIA_BOUNDS_CLASS_NAME = cn(
   CHAT_MARKDOWN_MEDIA_MAX_WIDTH_CLASS_NAME,
 );
 const CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME = "inline-block!";
+const CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME = cn(
+  CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME,
+  "rounded-md border border-border/40 bg-muted/40 px-2 py-1 text-xs text-muted-foreground",
+);
 const CHAT_MARKDOWN_MEDIA_FRAME_CLASS_NAME = "rounded-lg border border-border/40";
 const CHAT_MARKDOWN_IMAGE_SIZE_CLASS_NAME = cn(
   "h-auto w-auto object-contain",
@@ -142,13 +150,7 @@ export function ChatMarkdownImageFallback(props: {
   readonly detail?: string | undefined;
 }) {
   const content = (
-    <span
-      data-markdown-copy={props.copyMarkdown}
-      className={cn(
-        CHAT_MARKDOWN_MEDIA_LAYOUT_CLASS_NAME,
-        "rounded-md border border-border/40 bg-muted/40 px-2 py-1 text-xs text-muted-foreground",
-      )}
-    >
+    <span data-markdown-copy={props.copyMarkdown} className={CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME}>
       <ChatMarkdownMediaUnavailableLabel alt={props.alt} kind={props.kind} detail={props.detail} />
     </span>
   );
@@ -156,6 +158,123 @@ export function ChatMarkdownImageFallback(props: {
     <MediaActions source={props.actionsSource}>{content}</MediaActions>
   ) : (
     content
+  );
+}
+
+// Module-level because the timeline remounts rows as they scroll; per-instance state would ask
+// again for media the user already loaded. Not persisted: a reload starts gated.
+const approvedRemoteMedia = new Set<string>();
+
+const REMOTE_MEDIA_LABEL = {
+  image: "Image",
+  video: "Video",
+  audio: "Audio",
+} as const;
+
+const REMOTE_MEDIA_ICON = {
+  image: ImageIcon,
+  video: VideoIcon,
+  audio: AudioLinesIcon,
+} as const;
+
+const REMOTE_MEDIA_GATE_ATTRIBUTE = "data-remote-media-gate";
+
+/**
+ * A link that wraps an unloaded remote image loads it on the first activation instead of
+ * navigating. Keyboard activation targets the anchor, so the chip's own click never sees it.
+ * Returns true when it handled the event.
+ */
+export function loadGatedMediaInsideLink(event: ReactMouseEvent<HTMLElement>): boolean {
+  const gate = event.currentTarget.querySelector<HTMLElement>(`[${REMOTE_MEDIA_GATE_ATTRIBUTE}]`);
+  if (!gate) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  gate.click();
+  return true;
+}
+
+/** Renders no request to `src` until the user clicks Load. Callers key it on `src`. */
+export function ChatMarkdownRemoteMedia(props: {
+  readonly src: string;
+  readonly host: string;
+  readonly kind: "image" | "video" | "audio";
+  readonly alt: string;
+  readonly copyMarkdown: string | undefined;
+  readonly children: ReactNode;
+}) {
+  const [approved, setApproved] = useState(() => approvedRemoteMedia.has(props.src));
+  const insideLink = use(MarkdownLinkContext);
+  const focusAfterApproval = useRef(false);
+  if (approved) {
+    // The pressed Load button unmounts; without a target, focus would fall back to the page.
+    return (
+      <span
+        tabIndex={-1}
+        className="outline-none"
+        ref={(element) => {
+          if (!element || !focusAfterApproval.current) return;
+          focusAfterApproval.current = false;
+          element.focus({ preventScroll: true });
+        }}
+      >
+        {props.children}
+      </span>
+    );
+  }
+  const Icon = REMOTE_MEDIA_ICON[props.kind];
+  const label = REMOTE_MEDIA_LABEL[props.kind];
+  const approve = (event: ReactMouseEvent) => {
+    // The placeholder can sit inside a link that wraps the image.
+    event.preventDefault();
+    event.stopPropagation();
+    focusAfterApproval.current = true;
+    approvedRemoteMedia.add(props.src);
+    setApproved(true);
+  };
+  return (
+    <span
+      data-markdown-copy={props.copyMarkdown}
+      data-thread-find-ignore
+      className={cn(CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME, CHAT_MARKDOWN_MEDIA_MAX_WIDTH_CLASS_NAME)}
+      // A button inside the link would be nested interactive content. The chip loads on click and
+      // names the action for the link; the link's own handler loads it for a keyboard activation.
+      {...(insideLink
+        ? {
+            onClick: approve,
+            role: "group",
+            "aria-label": `Load ${label.toLowerCase()} from ${props.host}`,
+            [REMOTE_MEDIA_GATE_ATTRIBUTE]: "",
+          }
+        : {})}
+    >
+      <span className="inline-flex max-w-full items-center gap-1.5">
+        <Icon aria-hidden className="size-3.5 shrink-0" />
+        <Tooltip>
+          <TooltipTrigger render={<span className="min-w-0 truncate" />}>
+            {`${label} from ${props.host}`}
+          </TooltipTrigger>
+          <TooltipPopup className="break-all">{props.src}</TooltipPopup>
+        </Tooltip>
+        {props.alt ? <span className="min-w-0 truncate">{` · ${props.alt}`}</span> : null}
+        {insideLink ? (
+          <span
+            aria-hidden
+            className="shrink-0 rounded-md border border-border px-1.5 text-foreground"
+          >
+            Load
+          </span>
+        ) : (
+          <Button
+            variant="outline"
+            size="xs"
+            aria-label={`Load ${label.toLowerCase()} from ${props.host}`}
+            onClick={approve}
+          >
+            Load
+          </Button>
+        )}
+      </span>
+    </span>
   );
 }
 
@@ -177,6 +296,8 @@ export function ChatMarkdownImage(props: {
   readonly alt: string;
   readonly copyMarkdown: string | undefined;
   readonly standalone: boolean;
+  /** Set for a remote image the user chose to load: holds a chip, not a bare image, until it decodes. */
+  readonly remoteHost?: string | undefined;
   readonly className?: string | undefined;
   readonly style?: CSSProperties | undefined;
   readonly imageProps?:
@@ -190,7 +311,8 @@ export function ChatMarkdownImage(props: {
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const src = props.src ?? loadedSrc;
   const failed = props.sourceFailed === true || (src !== null && failedSrc === src);
-  const settled = src !== null && !failed && (!props.standalone || loadedSrc !== null);
+  const awaitsDecode = props.standalone || props.remoteHost !== undefined;
+  const settled = src !== null && !failed && (!awaitsDecode || loadedSrc !== null);
   // Cached images are complete before `onLoad` can fire.
   const markLoadedIfComplete = (image: HTMLImageElement | null) => {
     if (!image) return;
@@ -245,6 +367,33 @@ export function ChatMarkdownImage(props: {
         actionsSource={props.actionsSource}
         detail={props.unavailableDetail}
       />
+    ) : src !== null && props.remoteHost !== undefined ? (
+      <span
+        id={props.imageProps?.id}
+        data-markdown-copy={props.copyMarkdown}
+        data-thread-find-ignore
+        role="status"
+        className={cn(
+          CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME,
+          CHAT_MARKDOWN_MEDIA_MAX_WIDTH_CLASS_NAME,
+          "relative",
+        )}
+      >
+        <span className="inline-flex max-w-full items-center gap-1.5">
+          <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">{`Loading image from ${props.remoteHost}`}</span>
+        </span>
+        <img
+          ref={markLoadedIfComplete}
+          src={src}
+          alt={props.alt}
+          decoding="async"
+          loading="lazy"
+          draggable={false}
+          className="invisible absolute inset-0 size-full"
+          {...imageEvents(src)}
+        />
+      </span>
     ) : (
       <span
         id={props.imageProps?.id}
@@ -274,18 +423,33 @@ export function ChatMarkdownImage(props: {
           <span className="flex size-full items-center justify-center p-2 text-center text-xs text-muted-foreground">
             <ChatMarkdownMediaUnavailableLabel alt={props.alt} detail={props.unavailableDetail} />
           </span>
-        ) : src !== null ? (
-          <img
-            ref={markLoadedIfComplete}
-            src={src}
-            alt={props.alt}
-            decoding="async"
-            loading="lazy"
-            draggable={false}
-            className="invisible absolute inset-0 size-full"
-            {...imageEvents(src)}
-          />
-        ) : null}
+        ) : (
+          <>
+            {props.remoteHost !== undefined ? (
+              <span
+                data-thread-find-ignore
+                className="flex size-full items-center justify-center p-2 text-center text-xs text-muted-foreground"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+                  Loading image
+                </span>
+              </span>
+            ) : null}
+            {src !== null ? (
+              <img
+                ref={markLoadedIfComplete}
+                src={src}
+                alt={props.alt}
+                decoding="async"
+                loading="lazy"
+                draggable={false}
+                className="invisible absolute inset-0 size-full"
+                {...imageEvents(src)}
+              />
+            ) : null}
+          </>
+        )}
       </span>
     </MediaActions>
   );

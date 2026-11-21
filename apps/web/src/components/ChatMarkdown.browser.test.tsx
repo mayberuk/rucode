@@ -888,3 +888,151 @@ describe("ChatMarkdown host media", () => {
     expect(screen.container.textContent).not.toContain("Retry video");
   });
 });
+
+describe("ChatMarkdown remote media", () => {
+  // The approval set lives for the whole module, so every case uses a URL no other case does.
+  const pixel =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  // A real, loadable image on the test server, so a clicked Load settles instead of failing.
+  const localImage = (name: string) => `${location.origin}/favicon-16x16.png?${name}`;
+
+  function remoteMediaSources(container: HTMLElement) {
+    return [...container.querySelectorAll("img, video, audio, source")]
+      .flatMap((element) => [element.getAttribute("src"), element.getAttribute("srcset")])
+      .filter((value): value is string => value !== null && /^(?:https?:)?\/\//i.test(value));
+  }
+
+  it("holds a remote image behind a placeholder naming its host", async () => {
+    setup();
+    await using screen = await renderText("![shot](https://img.example.test/a.png)");
+    expect(remoteMediaSources(screen.container)).toEqual([]);
+    expect(screen.container.querySelector("img")).toBeNull();
+    expect(screen.container.textContent).toContain("Image from img.example.test");
+    await expect
+      .element(screen.getByRole("button", { name: "Load image from img.example.test" }))
+      .toBeVisible();
+  });
+
+  it("keeps the host's port in the placeholder", async () => {
+    setup();
+    await using screen = await renderText("![](https://port.example.test:8443/a.png)");
+    expect(screen.container.textContent).toContain("Image from port.example.test:8443");
+  });
+
+  it("loads one image on one click and leaves the others held", async () => {
+    setup();
+    const clicked = localImage("one-click");
+    const other = localImage("other");
+    await using screen = await renderText(`![first](${clicked})\n\n![second](${other})`);
+    expect(screen.container.querySelector("img")).toBeNull();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: `Load image from ${location.host}` }).first(),
+    );
+
+    await vi.waitFor(() => {
+      expect([...screen.container.querySelectorAll("img")].map((img) => img.src)).toEqual([
+        clicked,
+      ]);
+    });
+    expect(buttonsLabelled(screen.container, `Load image from ${location.host}`)).toHaveLength(1);
+  });
+
+  it("shows an approved image again without asking after a remount", async () => {
+    setup();
+    const url = localImage("remount");
+    const message = () => <ChatMarkdown cwd="/tmp/project" text={`![shot](${url})`} />;
+    await using screen = await render(message());
+    await userEvent.click(screen.getByRole("button", { name: `Load image from ${location.host}` }));
+    await vi.waitFor(() => expect(screen.container.querySelector("img")?.src).toBe(url));
+
+    await screen.rerender(null);
+    await screen.rerender(message());
+
+    expect(screen.container.querySelector("img")?.src).toBe(url);
+    expect(buttonsLabelled(screen.container, `Load image from ${location.host}`)).toHaveLength(0);
+  });
+
+  it("shows the unavailable label when a loaded remote image fails", async () => {
+    setup();
+    await using screen = await renderText(`![gone](${location.origin}/no-such-image.png?fails)`);
+    await userEvent.click(screen.getByRole("button", { name: `Load image from ${location.host}` }));
+    await vi.waitFor(() => expect(screen.container.textContent).toContain("Image unavailable"));
+    expect(screen.container.querySelector("img")).toBeNull();
+  });
+
+  it("holds remote video and audio without creating a media element", async () => {
+    setup();
+    await using screen = await renderText(
+      "![clip](https://video.example.test/a.mp4)\n\n![song](https://audio.example.test/a.mp3)",
+    );
+    expect(remoteMediaSources(screen.container)).toEqual([]);
+    expect(screen.container.querySelector("video, audio, source")).toBeNull();
+    expect(screen.container.textContent).toContain("Video from video.example.test");
+    expect(screen.container.textContent).toContain("Audio from audio.example.test");
+    expect(buttonsLabelled(screen.container, "Load video from video.example.test")).toHaveLength(1);
+    expect(buttonsLabelled(screen.container, "Load audio from audio.example.test")).toHaveLength(1);
+  });
+
+  it("holds a protocol-relative image", async () => {
+    setup();
+    await using screen = await renderText("![p](//proto.example.test/a.png)");
+    expect(remoteMediaSources(screen.container)).toEqual([]);
+    expect(screen.container.textContent).toContain("Image from proto.example.test");
+  });
+
+  it("holds a raw HTML image and a <picture> for either theme", async () => {
+    setup();
+    await using raw = await renderText('<img src="https://raw.example.test/x.png" alt="raw">');
+    expect(remoteMediaSources(raw.container)).toEqual([]);
+    expect(raw.container.textContent).toContain("Image from raw.example.test");
+
+    const picture =
+      '<picture><source media="(prefers-color-scheme: dark)" srcset="https://pic.example.test/dark.png"><img src="https://pic.example.test/light.png" alt="Shot"></picture>';
+    await using screen = await renderText(picture);
+    expect(remoteMediaSources(screen.container)).toEqual([]);
+    expect(screen.container.textContent).toContain("Image from pic.example.test");
+
+    await act(() => {
+      appearance.value = "dark";
+      for (const listener of appearance.listeners) listener();
+    });
+    expect(remoteMediaSources(screen.container)).toEqual([]);
+    expect(screen.container.textContent).toContain("Image from pic.example.test");
+  });
+
+  it.each([pixel, localImage("host-route")])(
+    "renders a host-route image at once, even when its URL is %#",
+    async (hostSrc) => {
+      setup();
+      await using screen = await render(
+        <HostImageUrlContext value={() => hostSrc}>
+          <ChatMarkdown cwd={undefined} text="![dot](/work/dot.png)" />
+        </HostImageUrlContext>,
+      );
+      await expect.element(screen.getByAltText("dot")).toHaveAttribute("src", hostSrc);
+      expect(screen.container.querySelector("button")).toBeNull();
+      expect(screen.container.textContent).not.toContain("Image from");
+    },
+  );
+
+  it.each(["![gap]()", "![gap](https://)", "![gap](//)"])(
+    "shows the unavailable label and makes no request for %s",
+    async (text) => {
+      setup();
+      await using screen = await renderText(text);
+      expect(screen.container.textContent).toContain("Image unavailable");
+      expect(screen.container.querySelector("img, button")).toBeNull();
+    },
+  );
+
+  it("copies a held image as its Markdown", async () => {
+    setup();
+    await using screen = await renderText("![shot](https://copy.example.test/a.png)");
+    const placeholder = screen.container.querySelector("[data-markdown-copy]");
+    expect(placeholder?.getAttribute("data-markdown-copy")).toBe(
+      "![shot](https://copy.example.test/a.png)",
+    );
+    expect(placeholder?.hasAttribute("data-thread-find-ignore")).toBe(true);
+  });
+});

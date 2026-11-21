@@ -58,6 +58,37 @@ describe("extractToolActivityPresentation", () => {
       expect(extractToolActivityPresentation({ viewedImagePath })).toEqual({});
   });
 
+  it("keeps only inline tool icon images, so no icon request leaves the machine", () => {
+    const inline = "data:image/png;base64,iVBORw0KGgo=";
+    const remote = "https://www.google.com/s2/favicons?domain=firecrawl.dev&sz=64";
+    const source = { key: "mcp:firecrawl", name: "Firecrawl", kind: "integration" };
+    const logoOf = (icon: unknown) =>
+      extractToolActivityPresentation({ toolIcon: icon, toolSource: source }).toolIcon;
+
+    expect(logoOf({ _tag: "themed-logo", logoUrl: remote })).toBeUndefined();
+    expect(logoOf({ _tag: "themed-logo", logoUrl: "data:text/html,<p>x</p>" })).toBeUndefined();
+    expect(logoOf({ _tag: "themed-logo", logoUrl: "data:IMAGE/PNG;base64,iVBORw0KGgo=" })).toEqual({
+      _tag: "themed-logo",
+      logoUrl: "data:IMAGE/PNG;base64,iVBORw0KGgo=",
+    });
+    expect(logoOf({ _tag: "themed-logo", logoUrl: inline })).toEqual({
+      _tag: "themed-logo",
+      logoUrl: inline,
+    });
+    expect(logoOf({ _tag: "themed-logo", logoUrl: inline, logoUrlDark: remote })).toEqual({
+      _tag: "themed-logo",
+      logoUrl: inline,
+    });
+    expect(
+      logoOf({
+        _tag: "website",
+        pageUrl: "https://firecrawl.dev/",
+        faviconUrl: remote,
+        faviconUrlDark: inline,
+      }),
+    ).toEqual({ _tag: "website", pageUrl: "https://firecrawl.dev/", faviconUrlDark: inline });
+  });
+
   it("does not infer presentation from provider-specific payload data", () => {
     expect(
       extractToolActivityPresentation({
