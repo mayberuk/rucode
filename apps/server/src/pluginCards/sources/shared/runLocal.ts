@@ -22,6 +22,9 @@ interface LocalCommandInput {
 const DEFAULT_TIMEOUT = Duration.seconds(15);
 const DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 
+/** A host without the program fails the same way on every refresh, so it is reported once. */
+const missingReported = new Set<string>();
+
 export const runLocalCommand = Effect.fn("PluginCards.runLocalCommand")(function* (
   input: LocalCommandInput,
 ) {
@@ -40,12 +43,16 @@ export const runLocalCommand = Effect.fn("PluginCards.runLocalCommand")(function
           ? null
           : { stdout: output.stdout, stderr: output.stderr, exitCode: output.code },
       ),
-      Effect.catch((error) =>
-        Effect.logWarning("local plugin command failed", {
+      Effect.catch((error) => {
+        if (error._tag === "ProcessSpawnError") {
+          if (missingReported.has(input.command)) return Effect.succeed(null);
+          missingReported.add(input.command);
+        }
+        return Effect.logWarning("local plugin command failed", {
           program: input.command,
           reason: error._tag,
-        }).pipe(Effect.as(null)),
-      ),
+        }).pipe(Effect.as(null));
+      }),
     );
 });
 

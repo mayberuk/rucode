@@ -47,18 +47,36 @@ const collectWarnings = Effect.fnUntraced(function* <A, E, R>(effect: Effect.Eff
 const base = { command: "dp", args: ["wave", "live"], cwd: "/work" };
 
 it.effect.each([
-  ["a missing program", spawnError("t3-missing")],
-  ["a timeout", timeoutError("t3-missing")],
-] as const)("returns no result and logs one warning naming the program for %s", ([, error]) =>
+  ["a missing program", "t3-missing-first", spawnError("t3-missing-first")],
+  ["a timeout", "t3-timeout", timeoutError("t3-timeout")],
+] as const)(
+  "returns no result and logs one warning naming the program for %s",
+  ([, command, error]) =>
+    Effect.gen(function* () {
+      const { value, warnings } = yield* collectWarnings(
+        runLocalCommand({ ...base, command }).pipe(withRunner(() => Effect.fail(error))),
+      );
+      expect(value).toBeNull();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(command);
+    }),
+);
+
+it.effect("logs a missing program once per command name but every timeout", () =>
   Effect.gen(function* () {
-    const { value, warnings } = yield* collectWarnings(
-      runLocalCommand({ ...base, command: "t3-missing" }).pipe(
-        withRunner(() => Effect.fail(error)),
-      ),
+    const calls = (command: string, error: ProcessRunner.ProcessRunError) =>
+      Effect.forEach([1, 2], () =>
+        runLocalCommand({ ...base, command }).pipe(withRunner(() => Effect.fail(error))),
+      );
+    const { warnings } = yield* collectWarnings(
+      Effect.gen(function* () {
+        yield* calls("t3-absent-a", spawnError("t3-absent-a"));
+        yield* calls("t3-absent-b", spawnError("t3-absent-b"));
+        yield* calls("t3-slow", timeoutError("t3-slow"));
+      }),
     );
-    expect(value).toBeNull();
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("t3-missing");
+    const logged = (name: string) => warnings.filter((warning) => warning.includes(name)).length;
+    expect([logged("t3-absent-a"), logged("t3-absent-b"), logged("t3-slow")]).toEqual([1, 1, 2]);
   }),
 );
 
@@ -121,8 +139,8 @@ it.effect.each([
 it.effect("returns no result from runLocalJson when the program is missing", () =>
   Effect.gen(function* () {
     const { value, warnings } = yield* collectWarnings(
-      runLocalJson(Payload, { ...base, command: "t3-missing" }).pipe(
-        withRunner(() => Effect.fail(spawnError("t3-missing"))),
+      runLocalJson(Payload, { ...base, command: "t3-missing-json" }).pipe(
+        withRunner(() => Effect.fail(spawnError("t3-missing-json"))),
       ),
     );
     expect(value).toBeNull();
