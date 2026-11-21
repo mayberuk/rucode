@@ -177,6 +177,22 @@ const REMOTE_MEDIA_ICON = {
   audio: AudioLinesIcon,
 } as const;
 
+const REMOTE_MEDIA_GATE_ATTRIBUTE = "data-remote-media-gate";
+
+/**
+ * A link that wraps an unloaded remote image loads it on the first activation instead of
+ * navigating. Keyboard activation targets the anchor, so the chip's own click never sees it.
+ * Returns true when it handled the event.
+ */
+export function loadGatedMediaInsideLink(event: ReactMouseEvent<HTMLElement>): boolean {
+  const gate = event.currentTarget.querySelector<HTMLElement>(`[${REMOTE_MEDIA_GATE_ATTRIBUTE}]`);
+  if (!gate) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  gate.click();
+  return true;
+}
+
 /** Renders no request to `src` until the user clicks Load. Callers key it on `src`. */
 export function ChatMarkdownRemoteMedia(props: {
   readonly src: string;
@@ -220,13 +236,21 @@ export function ChatMarkdownRemoteMedia(props: {
       data-markdown-copy={props.copyMarkdown}
       data-thread-find-ignore
       className={cn(CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME, CHAT_MARKDOWN_MEDIA_MAX_WIDTH_CLASS_NAME)}
-      // A button inside the link would be nested interactive content, so the chip itself loads on click.
-      {...(insideLink ? { onClick: approve } : {})}
+      // A button inside the link would be nested interactive content. The chip loads on click and
+      // names the action for the link; the link's own handler loads it for a keyboard activation.
+      {...(insideLink
+        ? {
+            onClick: approve,
+            role: "group",
+            "aria-label": `Load ${label.toLowerCase()} from ${props.host}`,
+            [REMOTE_MEDIA_GATE_ATTRIBUTE]: "",
+          }
+        : {})}
     >
       <span className="inline-flex max-w-full items-center gap-1.5">
         <Icon aria-hidden className="size-3.5 shrink-0" />
         <Tooltip>
-          <TooltipTrigger render={<span className="shrink-0 whitespace-nowrap" />}>
+          <TooltipTrigger render={<span className="min-w-0 truncate" />}>
             {`${label} from ${props.host}`}
           </TooltipTrigger>
           <TooltipPopup className="break-all">{props.src}</TooltipPopup>
@@ -349,11 +373,15 @@ export function ChatMarkdownImage(props: {
         data-markdown-copy={props.copyMarkdown}
         data-thread-find-ignore
         role="status"
-        className={cn(CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME, "relative")}
+        className={cn(
+          CHAT_MARKDOWN_MEDIA_CHIP_CLASS_NAME,
+          CHAT_MARKDOWN_MEDIA_MAX_WIDTH_CLASS_NAME,
+          "relative",
+        )}
       >
-        <span className="inline-flex items-center gap-1.5">
+        <span className="inline-flex max-w-full items-center gap-1.5">
           <ImageIcon aria-hidden className="size-3.5 shrink-0" />
-          {`Loading image from ${props.remoteHost}`}
+          <span className="min-w-0 truncate">{`Loading image from ${props.remoteHost}`}</span>
         </span>
         <img
           ref={markLoadedIfComplete}

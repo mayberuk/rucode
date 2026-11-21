@@ -213,6 +213,7 @@ import {
   ChatMarkdownImageFallback,
   ChatMarkdownRemoteMedia,
   ChatMarkdownVideo,
+  loadGatedMediaInsideLink,
   MarkdownLinkContext,
   markdownImageCopy,
 } from "./chat/ChatMarkdownMedia";
@@ -1255,6 +1256,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           target={isSameDocumentLink ? undefined : "_blank"}
           rel={isSameDocumentLink ? undefined : "noopener noreferrer"}
           onClick={(event) => {
+            if (loadGatedMediaInsideLink(event)) return;
             onClick?.(event);
             if (isSameDocumentLink && href) {
               handleMarkdownFragmentClick(event, href);
