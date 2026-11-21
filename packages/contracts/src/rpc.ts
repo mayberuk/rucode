@@ -411,6 +411,17 @@ import {
 } from "./scheduledTask.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
+  PluginCardActionInput,
+  PluginCardAsset,
+  PluginCardAssetInput,
+  PluginCardError,
+  PluginCardsThreadInput,
+  PluginDecisionAnswerInput,
+  PluginDecisionAnswerResult,
+  PluginLiveState,
+  PluginThreadCards,
+} from "./pluginCards.ts";
+import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
   ProjectCloneListEvent,
@@ -583,6 +594,11 @@ export const WS_METHODS = {
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   secretsAnswerRequest: "secrets.answerRequest",
+  pluginCardsSubscribeThread: "pluginCards.subscribeThread",
+  pluginCardsSubscribeLive: "pluginCards.subscribeLive",
+  pluginCardsAnswerDecision: "pluginCards.answerDecision",
+  pluginCardsRunAction: "pluginCards.runAction",
+  pluginCardsReadAsset: "pluginCards.readAsset",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
@@ -2208,6 +2224,39 @@ const WsSecretsAnswerRequestRpc = Rpc.make(WS_METHODS.secretsAnswerRequest, {
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
 });
 
+const PluginCardsRpcError = Schema.Union([PluginCardError, EnvironmentAuthorizationError]);
+
+const WsPluginCardsSubscribeThreadRpc = Rpc.make(WS_METHODS.pluginCardsSubscribeThread, {
+  payload: PluginCardsThreadInput,
+  success: PluginThreadCards,
+  error: PluginCardsRpcError,
+  stream: true,
+});
+
+const WsPluginCardsSubscribeLiveRpc = Rpc.make(WS_METHODS.pluginCardsSubscribeLive, {
+  payload: Schema.Struct({}),
+  success: PluginLiveState,
+  error: PluginCardsRpcError,
+  stream: true,
+});
+
+const WsPluginCardsAnswerDecisionRpc = Rpc.make(WS_METHODS.pluginCardsAnswerDecision, {
+  payload: PluginDecisionAnswerInput,
+  success: PluginDecisionAnswerResult,
+  error: PluginCardsRpcError,
+});
+
+const WsPluginCardsRunActionRpc = Rpc.make(WS_METHODS.pluginCardsRunAction, {
+  payload: PluginCardActionInput,
+  error: PluginCardsRpcError,
+});
+
+const WsPluginCardsReadAssetRpc = Rpc.make(WS_METHODS.pluginCardsReadAsset, {
+  payload: PluginCardAssetInput,
+  success: PluginCardAsset,
+  error: PluginCardsRpcError,
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2327,6 +2376,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksRunNowRpc,
   WsScheduledTasksRotateWebhookTokenRpc,
   WsSecretsAnswerRequestRpc,
+  WsPluginCardsSubscribeThreadRpc,
+  WsPluginCardsSubscribeLiveRpc,
+  WsPluginCardsAnswerDecisionRpc,
+  WsPluginCardsRunActionRpc,
+  WsPluginCardsReadAssetRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsServerReportClientActivityRpc,

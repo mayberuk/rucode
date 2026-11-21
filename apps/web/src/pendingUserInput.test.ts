@@ -7,6 +7,7 @@ import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 import {
   answerContextRecords,
   carryDisplacedCustomAnswerIntoPrompt,
+  composerDrawerContent,
   derivePendingUserInputProgress,
   projectPendingUserInputAnswer,
   threadContextsReferencedByAnswer,
@@ -219,5 +220,79 @@ describe("withdrawDisplacedCustomAnswerFromPrompt", () => {
       "my first answer",
     );
     expect(withdrawDisplacedCustomAnswerFromPrompt("draft", "  ")).toBe("draft");
+  });
+});
+
+describe("composerDrawerContent", () => {
+  const decision = (id: string, raisedAt: string) => ({ id, data: { raisedAt } });
+  const older = decision("older", "2026-11-20T09:00:00Z");
+  const newer = decision("newer", "2026-11-20T10:00:00Z");
+  const newest = decision("newest", "2026-11-21T08:00:00+00:00");
+
+  it("shows the provider question and holds open decisions behind it", () => {
+    expect(
+      composerDrawerContent({
+        pendingUserInputs: ["first question", "second question"],
+        pendingApprovals: ["approval"],
+        openDecisions: [older],
+      }),
+    ).toEqual({ type: "question", userInput: "first question" });
+  });
+
+  it("hides decisions while a provider approval is pending", () => {
+    expect(
+      composerDrawerContent({
+        pendingUserInputs: [],
+        pendingApprovals: ["approval"],
+        openDecisions: [older, newer],
+      }),
+    ).toBeNull();
+  });
+
+  it("queues decisions oldest first with a count of every open decision", () => {
+    expect(
+      composerDrawerContent({
+        pendingUserInputs: [],
+        pendingApprovals: [],
+        openDecisions: [newer, newest, older],
+      }),
+    ).toEqual({ type: "decision", decision: older, index: 0, total: 3 });
+    expect(
+      composerDrawerContent({
+        pendingUserInputs: [],
+        pendingApprovals: [],
+        openDecisions: [newest],
+      }),
+    ).toEqual({ type: "decision", decision: newest, index: 0, total: 1 });
+  });
+
+  it("orders by instant when the fractional precision differs", () => {
+    const wholeSecond = decision("whole", "2026-11-01T04:23:56Z");
+    const halfSecondLater = decision("fraction", "2026-11-01T04:23:56.974762056Z");
+    expect(
+      composerDrawerContent({
+        pendingUserInputs: [],
+        pendingApprovals: [],
+        openDecisions: [halfSecondLater, wholeSecond],
+      }),
+    ).toMatchObject({ decision: wholeSecond });
+  });
+
+  it("keeps the listed order for decisions raised at the same instant", () => {
+    const first = decision("first", "2026-11-20T09:00:00Z");
+    const second = decision("second", "2026-11-20T09:00:00.000Z");
+    expect(
+      composerDrawerContent({
+        pendingUserInputs: [],
+        pendingApprovals: [],
+        openDecisions: [first, second],
+      }),
+    ).toMatchObject({ decision: first });
+  });
+
+  it("shows nothing when no question, approval or decision is pending", () => {
+    expect(
+      composerDrawerContent({ pendingUserInputs: [], pendingApprovals: [], openDecisions: [] }),
+    ).toBeNull();
   });
 });

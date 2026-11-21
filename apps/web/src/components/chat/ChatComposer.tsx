@@ -220,6 +220,7 @@ import {
 import { CollapsedComposerStopAction, ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerFooterPrimaryActions } from "./ComposerFooterControls";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import { ComposerPluginDecisionPanel } from "./ComposerPluginDecisionPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
 import { getComposerPromptInjectionState, getComposerReasoningStep } from "./composerProviderState";
@@ -255,8 +256,9 @@ import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelS
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import { isVideoAttachment, type SessionPhase, type Thread } from "../../types";
 import { type ComposerPromptHistoryPosition } from "./composerPromptHistory";
-import { usePendingUserInputDraft } from "./usePendingThreadRequests";
+import { usePendingPluginDecisions, usePendingUserInputDraft } from "./usePendingThreadRequests";
 import type { PendingApproval, PendingUserInput, TimelineEntry } from "../../session-logic";
+import { composerDrawerContent } from "../../pendingUserInput";
 import {
   composerRunsDraftLocally,
   resolveComposerDispatchMode,
@@ -589,6 +591,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
+  const openPluginDecisions = usePendingPluginDecisions(
+    routeKind === "server" ? routeThreadRef : null,
+  );
   const {
     heldRequestIds,
     onDraftChange: onTypingGuardDraftChange,
@@ -598,6 +603,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = useComposerTypingGuard(composerDraftTargetKey, [
     ...pendingApprovals.map((request) => request.requestId),
     ...incomingPendingUserInputs.map((request) => request.requestId),
+    ...openPluginDecisions.map((decision) => decision.id),
   ]);
   // A layout effect so the timeline never paints a held approval as answerable.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes held requests to the timeline without lifting per-keystroke typing state
@@ -612,6 +618,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ? heldRequestIds.has(incomingPendingUserInputs[0].requestId)
     : false;
   const pendingUserInputs = holdingUserInput ? [] : incomingPendingUserInputs;
+  const drawerContent = composerDrawerContent({
+    pendingUserInputs: incomingPendingUserInputs,
+    pendingApprovals,
+    openDecisions: openPluginDecisions,
+  });
+  const drawerDecision =
+    drawerContent?.type === "decision" && !heldRequestIds.has(drawerContent.decision.id)
+      ? drawerContent
+      : null;
   const activePendingProgress = holdingUserInput ? null : incomingPendingProgress;
   const activePendingIsResponding = !holdingUserInput && incomingPendingIsResponding;
   const isLiteralPendingAnswer = activePendingProgress?.activeQuestion?.initialAnswer !== undefined;
@@ -1186,7 +1201,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const isChoiceOnlyPendingQuestion =
     activePendingProgress?.activeQuestion?.allowCustomAnswer === false;
-  const showComposerTopDrawer = pendingUserInputs.length > 0;
+  const showComposerTopDrawer = pendingUserInputs.length > 0 || drawerDecision !== null;
   const showCollapsedMobilePromptRow = isComposerCollapsedMobile;
   const showComposerAttachAction =
     fileStagingLimit !== null &&
@@ -3473,6 +3488,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onToggleOption={onSelectActivePendingUserInputOption}
                     onAdvance={onAdvanceActivePendingUserInput}
                     onDismiss={onDismissActivePendingUserInput}
+                  />
+                ) : drawerDecision ? (
+                  <ComposerPluginDecisionPanel
+                    key={drawerDecision.decision.id}
+                    decision={drawerDecision.decision}
+                    index={drawerDecision.index}
+                    total={drawerDecision.total}
+                    threadRef={routeThreadRef}
                   />
                 ) : null}
               </ComposerBanner.Root>
