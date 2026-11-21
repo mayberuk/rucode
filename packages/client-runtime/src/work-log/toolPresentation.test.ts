@@ -67,6 +67,10 @@ describe("extractToolActivityPresentation", () => {
 
     expect(logoOf({ _tag: "themed-logo", logoUrl: remote })).toBeUndefined();
     expect(logoOf({ _tag: "themed-logo", logoUrl: "data:text/html,<p>x</p>" })).toBeUndefined();
+    expect(logoOf({ _tag: "themed-logo", logoUrl: "data:IMAGE/PNG;base64,iVBORw0KGgo=" })).toEqual({
+      _tag: "themed-logo",
+      logoUrl: "data:IMAGE/PNG;base64,iVBORw0KGgo=",
+    });
     expect(logoOf({ _tag: "themed-logo", logoUrl: inline })).toEqual({
       _tag: "themed-logo",
       logoUrl: inline,

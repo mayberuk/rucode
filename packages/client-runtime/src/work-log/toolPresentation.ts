@@ -32,7 +32,9 @@ function imageUrl(value: unknown): string | undefined {
   if (!raw) return undefined;
   try {
     const url = new URL(raw);
-    return url.protocol === "data:" && url.pathname.startsWith("image/") ? url.href : undefined;
+    return url.protocol === "data:" && url.pathname.toLowerCase().startsWith("image/")
+      ? url.href
+      : undefined;
   } catch {
     return undefined;
   }

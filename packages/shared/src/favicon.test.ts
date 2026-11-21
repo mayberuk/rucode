@@ -95,6 +95,11 @@ describe("toolActivityFaviconUrl", () => {
     ).toBeNull();
   });
 
+  it("matches the image media type case-insensitively", () => {
+    const upper = "data:IMAGE/PNG;base64,iVBORw0KGgo=";
+    expect(toolActivityFaviconUrl({ pageUrl: PAGE_URL, faviconUrl: upper }, "light")).toBe(upper);
+  });
+
   it("limits inline icons to 4096 characters", () => {
     const prefix = "data:image/png;base64,";
     const atLimit = prefix + "A".repeat(4096 - prefix.length);

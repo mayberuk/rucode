@@ -3,7 +3,9 @@ function inlineFaviconUrl(rawUrl: string | null | undefined): string | null {
   if (!rawUrl || rawUrl.length > 4096) return null;
   try {
     const url = new URL(rawUrl);
-    return url.protocol === "data:" && url.pathname.startsWith("image/") ? url.href : null;
+    return url.protocol === "data:" && url.pathname.toLowerCase().startsWith("image/")
+      ? url.href
+      : null;
   } catch {
     return null;
   }

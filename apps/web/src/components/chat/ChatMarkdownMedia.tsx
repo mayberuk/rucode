@@ -425,15 +425,17 @@ export function ChatMarkdownImage(props: {
           </span>
         ) : (
           <>
-            <span
-              data-thread-find-ignore
-              className="flex size-full items-center justify-center p-2 text-center text-xs text-muted-foreground"
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <ImageIcon aria-hidden className="size-3.5 shrink-0" />
-                Loading image
+            {props.remoteHost !== undefined ? (
+              <span
+                data-thread-find-ignore
+                className="flex size-full items-center justify-center p-2 text-center text-xs text-muted-foreground"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+                  Loading image
+                </span>
               </span>
-            </span>
+            ) : null}
             {src !== null ? (
               <img
                 ref={markLoadedIfComplete}

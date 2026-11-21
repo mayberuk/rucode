@@ -7,7 +7,7 @@ import { userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../test/render";
 import ChatMarkdown from "../ChatMarkdown";
-import { ChatMarkdownAssetImage, markdownImageCopy } from "./ChatMarkdownMedia";
+import { ChatMarkdownAssetImage, ChatMarkdownImage, markdownImageCopy } from "./ChatMarkdownMedia";
 
 // Every evaluation of the URL query is one mint: the first read, then one per refresh.
 const assetQuery = vi.hoisted(() => ({ mints: 0 }));
@@ -120,6 +120,20 @@ describe("remote media loaded from the keyboard", () => {
     await using screen = await renderText(`![shot](${unansweredImage("standalone")})`);
     await userEvent.click(screen.getByRole("button", { name: "Load image from 192.0.2.1" }));
     await expect.element(screen.getByText("Loading image")).toBeVisible();
+  });
+
+  it("shows no Loading image text for a standalone image that is not remote", async () => {
+    await using screen = await render(
+      <ChatMarkdownImage
+        src={localImage("not-remote")}
+        alt="shot"
+        copyMarkdown={undefined}
+        standalone
+        actionsSource={{ kind: "image", name: "shot", src: localImage("not-remote") }}
+      />,
+    );
+    expect(screen.container.textContent).not.toContain("Loading image");
+    await vi.waitFor(() => expect(screen.container.querySelector("img")).not.toBeNull());
   });
 
   it("shows the host chip for an inline image until it loads", async () => {
