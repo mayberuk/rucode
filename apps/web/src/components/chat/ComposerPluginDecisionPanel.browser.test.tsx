@@ -188,13 +188,12 @@ it("answers the picked option in two steps and shows recording until the decisio
     environmentId: threadRef.environmentId,
     input: { threadId: threadRef.threadId, cardId: card.id, optionKey: "keep" },
   });
-  await expect.element(screen.getByText("Posting answer")).toBeVisible();
-  await expect.element(answerButton(screen)).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Posting…" })).toBeDisabled();
 
   await act(async () => {
     answer.calls[0]!.resolve(AsyncResult.success({ delivery: "started" }));
   });
-  await expect.element(screen.getByText("Recording answer")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Posting…" })).toBeDisabled();
 
   await env.publish([
     {
@@ -206,7 +205,7 @@ it("answers the picked option in two steps and shows recording until the decisio
       },
     },
   ]);
-  await expect.element(screen.getByText("Recording answer")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Posting…" })).toBeDisabled();
   await expect
     .element(screen.getByRole("button", { name: /Keep it open/ }))
     .toHaveAttribute("aria-pressed", "true");
@@ -278,9 +277,7 @@ it("shows a failed answer's reason with Try again and keeps the decision in the 
   });
   await env.publish([card]);
 
-  await expect
-    .element(screen.getByText("The dp command could not record the answer. exit status 1"))
-    .toBeVisible();
+  await expect.element(screen.getByText("Couldn't record your answer.")).toBeVisible();
   await expect.element(screen.getByText("Close the initiative without d-1?")).toBeVisible();
   await expect.element(answerButton(screen)).not.toBeInTheDocument();
   await screen.getByRole("button", { name: "Try again" }).click();
@@ -405,7 +402,7 @@ it.each([
   );
   const timelineCard = screen.getByRole("region", { name: "Decision" });
   await expect.element(timelineCard).toMatchTextContent(headline);
-  await expect.element(timelineCard).not.toMatchTextContent(/Answer in the box below/);
+  await expect.element(timelineCard).not.toMatchTextContent(/Answer it in the composer/);
   if (who !== null) await expect.element(timelineCard).toMatchTextContent(who);
   expect(timelineCard.element().querySelector("time")?.getAttribute("datetime")).toBe(
     "2026-11-21T09:05:00Z",
@@ -422,6 +419,6 @@ it("lists an open decision's options on its timeline card and points to the comp
   const timelineCard = screen.getByRole("region", { name: "Decision" });
   await expect.element(timelineCard).toMatchTextContent(/Close the initiative without d-1\?/);
   await expect.element(timelineCard).toMatchTextContent(/Keep it open/);
-  await expect.element(timelineCard).toMatchTextContent(/Answer in the box below\./);
+  await expect.element(timelineCard).toMatchTextContent(/Answer it in the composer\./);
   await expect.element(screen.getByRole("button")).not.toBeInTheDocument();
 });

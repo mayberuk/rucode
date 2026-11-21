@@ -69,6 +69,7 @@ const watchingFileSystem = (ready: Queue.Queue<string>, events: Queue.Queue<stri
  */
 const setup = Effect.fnUntraced(function* (options?: {
   readonly transcriptFor?: ThreadId;
+  readonly firstRaise?: boolean;
   /** Written to checkout `a` before any watcher starts. */
   readonly seed?: ReadonlyArray<ReturnType<typeof decisionRecord>>;
 }) {
@@ -84,12 +85,14 @@ const setup = Effect.fnUntraced(function* (options?: {
     const initiativesRoot = path.join(root, "initiatives");
     const decisionsDir = (checkout: string) => path.join(checkout, ".claude", "work", "decisions");
     for (const dir of [
-      decisionsDir(checkoutA),
+      options?.firstRaise === true ? checkoutA : decisionsDir(checkoutA),
       decisionsDir(checkoutB),
       path.join(initiativesRoot, ".live"),
     ]) {
       yield* fs.makeDirectory(dir, { recursive: true });
     }
+    const makeDecisionsDir = (checkout: string) =>
+      fs.makeDirectory(decisionsDir(checkout), { recursive: true });
     const write = (checkout: string, record: ReturnType<typeof decisionRecord>) =>
       fs.writeFileString(
         path.join(decisionsDir(checkout), `${record.id}.json`),
@@ -98,13 +101,22 @@ const setup = Effect.fnUntraced(function* (options?: {
 
     for (const record of options?.seed ?? []) yield* write(checkoutA, record);
 
-    const index = Layer.succeed(PluginThreadIndex, {
-      threadForClaudeSession: (session) =>
+    const lookup = {
+      threadForClaudeSession: (session: string) =>
         Effect.succeed(session === "session-b" ? THREAD_B : null),
-      threadsForDir: (dir) =>
+      threadsForDir: (dir: string) =>
         Effect.succeed(
           dir === checkoutA ? [THREAD_A] : dir === checkoutB ? [THREAD_A, THREAD_B] : [],
         ),
+    };
+    let lookupReads = 0;
+    const index = Layer.succeed(PluginThreadIndex, {
+      ...lookup,
+      decisionLookup: Effect.sync(() => {
+        lookupReads++;
+        return { ...lookup, checkouts: [checkoutA, checkoutB] };
+      }),
+      decisionMappingChanges: Stream.empty,
       threadForPid: () => Effect.succeed(null),
       claudeTranscript: (threadId) =>
         Effect.succeed(
@@ -117,7 +129,18 @@ const setup = Effect.fnUntraced(function* (options?: {
     const source = yield* makeDispatchDecisionSource({ initiativesRoot }).pipe(
       Effect.provide(Layer.mergeAll(index, Layer.mock(ProcessRunner.ProcessRunner)({}))),
     );
-    return { source, checkoutA, checkoutB, initiativesRoot, decisionsDir, write, ready, events };
+    return {
+      source,
+      checkoutA,
+      checkoutB,
+      initiativesRoot,
+      decisionsDir,
+      makeDecisionsDir,
+      write,
+      ready,
+      events,
+      lookupReads: () => lookupReads,
+    };
   }).pipe(Effect.provide(Layer.mergeAll(fsLayer, NodePath.layer)));
 });
 
@@ -187,7 +210,9 @@ it.effect("recognises dp decision raise, wait, answer and show, keyed by directo
 
 it.effect("gives a chat only the decisions that map to it, placed when they were raised", () =>
   Effect.gen(function* () {
-    const { source, checkoutA, checkoutB, write } = yield* setup({ transcriptFor: THREAD_A });
+    const { source, checkoutA, checkoutB, write, lookupReads } = yield* setup({
+      transcriptFor: THREAD_A,
+    });
     yield* write(checkoutA, decisionRecord("mine-open"));
     yield* write(
       checkoutA,
@@ -246,6 +271,7 @@ it.effect("gives a chat only the decisions that map to it, placed when they were
       ],
     );
     assert.deepStrictEqual(live.waitingThreadIds, [THREAD_A, THREAD_B]);
+    assert.strictEqual(lookupReads(), 1);
   }),
 );
 
@@ -273,6 +299,9 @@ it.effect("resolves a recognised decision, answerable only in the chat it maps t
       ["mine", checkoutA, null, "yes", null],
     );
     assert.deepStrictEqual(mine.actions, []);
+    const found = yield* source.findDecision(`dispatch.decision:${checkoutA}/.#mine`);
+    assert.strictEqual(found?.record.dir, checkoutA);
+    assert.strictEqual(found?.threadId, THREAD_A);
 
     const elsewhere = yield* source.resolve(ref(checkoutB, "theirs"), THREAD_A);
     assert.strictEqual(
@@ -300,8 +329,15 @@ it.effect("marks a mapped chat with no Claude transcript terminal-only", () =>
 
 it.effect("shows answer progress on an open decision's card and drops it once resolved", () =>
   Effect.gen(function* () {
-    const { source, checkoutA, write } = yield* setup({ transcriptFor: THREAD_A });
-    yield* write(checkoutA, decisionRecord("mine"));
+    const { source, checkoutA, write, ready, events } = yield* setup({
+      transcriptFor: THREAD_A,
+      seed: [decisionRecord("mine")],
+    });
+    for (let count = 0; count < 3; count++) yield* Queue.take(ready);
+    const changed = yield* Queue.unbounded<void>();
+    yield* Stream.runForEach(source.changes, () => Queue.offer(changed, undefined)).pipe(
+      Effect.forkScoped({ startImmediately: true }),
+    );
     const cardId = `dispatch.decision:${checkoutA}#mine`;
     const progress = {
       optionKey: "go",
@@ -309,7 +345,13 @@ it.effect("shows answer progress on an open decision's card and drops it once re
       reason: "chat-quote-invalid" as const,
       detail: "dp: line is marked isMeta",
     };
-    yield* source.setProgress(cardId, progress);
+    const progressThreads = yield* Queue.unbounded<ThreadId>();
+    yield* Stream.runForEach(source.progressChanges, (threadId) =>
+      Queue.offer(progressThreads, threadId),
+    ).pipe(Effect.forkScoped({ startImmediately: true }));
+    yield* source.setProgress(THREAD_A, cardId, progress);
+    assert.strictEqual(yield* Queue.take(progressThreads), THREAD_A);
+    assert.strictEqual(yield* Queue.size(changed), 0);
     assert.deepStrictEqual(
       decisionCards(yield* source.cardsForThread(THREAD_A))[0]?.data.answer,
       progress,
@@ -319,10 +361,16 @@ it.effect("shows answer progress on an open decision's card and drops it once re
       checkoutA,
       decisionRecord("mine", { state: "answered", choice: "go", chosenBy: "person" }),
     );
+    yield* Queue.take(events);
+    yield* TestClock.adjust("250 millis");
+    yield* Queue.take(changed);
     assert.isNull(decisionCards(yield* source.cardsForThread(THREAD_A))[0]?.data.answer);
 
-    yield* source.setProgress(cardId, null);
+    yield* source.setProgress(THREAD_A, cardId, null);
     yield* write(checkoutA, decisionRecord("mine"));
+    yield* Queue.take(events);
+    yield* TestClock.adjust("250 millis");
+    yield* Queue.take(changed);
     assert.isNull(decisionCards(yield* source.cardsForThread(THREAD_A))[0]?.data.answer);
   }),
 );
@@ -360,5 +408,26 @@ it.effect("signals a change after a record is edited on disk, and reads the edit
     );
     const live = yield* source.live;
     assert.deepStrictEqual([live.decisions, live.waitingThreadIds], [[], []]);
+  }),
+);
+
+it.effect("notices a checkout's first decision raised outside the chat", () =>
+  Effect.gen(function* () {
+    const { source, checkoutA, makeDecisionsDir, write, ready, events } = yield* setup({
+      firstRaise: true,
+    });
+    yield* Queue.take(ready);
+    assert.strictEqual(yield* Queue.take(ready), checkoutA);
+
+    const changed = yield* Queue.unbounded<void>();
+    yield* Stream.runForEach(source.changes, () => Queue.offer(changed, undefined)).pipe(
+      Effect.forkScoped({ startImmediately: true }),
+    );
+    yield* makeDecisionsDir(checkoutA);
+    yield* write(checkoutA, decisionRecord("first"));
+    yield* Queue.take(events);
+    yield* TestClock.adjust("250 millis");
+    yield* Queue.take(changed);
+    assert.deepStrictEqual((yield* source.live).waitingThreadIds, [THREAD_A]);
   }),
 );

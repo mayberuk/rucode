@@ -1,6 +1,7 @@
-import { CheckIcon, SplitIcon } from "lucide-react";
+import { CheckIcon, CircleIcon, SplitIcon } from "lucide-react";
 
 import { usePrimarySettings } from "~/hooks/useSettings";
+import { cn } from "~/lib/utils";
 import { formatDayAwareTimestamp } from "~/timestampFormat";
 import { PluginCardShell } from "../core/PluginCardShell";
 import type { PluginCardRendererProps } from "../core/types";
@@ -10,13 +11,14 @@ export function DecisionCard({ card }: PluginCardRendererProps<"dispatch.decisio
   const data = card.data;
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const outcome = decisionOutcome(data);
+  const titleColor = outcome === null ? "text-warning-foreground" : "text-muted-foreground";
   return (
     <PluginCardShell
       label="Decision"
       title={
         <span className="inline-flex min-w-0 items-center gap-1.5">
-          <SplitIcon aria-hidden className="size-3.5 shrink-0 text-warning-foreground" />
-          <span className="text-warning-foreground">Decision</span>
+          <SplitIcon aria-hidden className={cn("size-3.5 shrink-0", titleColor)} />
+          <span className={titleColor}>Decision</span>
           <span className="truncate font-normal text-muted-foreground">
             {decisionContextLabel(data)}
           </span>
@@ -31,15 +33,21 @@ export function DecisionCard({ card }: PluginCardRendererProps<"dispatch.decisio
           <>
             <ul className="mt-1.5 flex flex-col gap-1">
               {data.options.map((option) => (
-                <li key={option.key} className="text-sm text-foreground/70">
-                  {option.label}
-                  {option.recommended ? (
-                    <span className="ms-2 text-2xs text-secondary-label">Recommended</span>
-                  ) : null}
+                <li
+                  key={option.key}
+                  className="flex items-start gap-1.5 text-sm text-foreground/70"
+                >
+                  <CircleIcon aria-hidden className="mt-0.5 size-3.5 shrink-0 text-icon-muted" />
+                  <div>
+                    {option.label}
+                    {option.recommended ? (
+                      <p className="text-xs text-secondary-label">Recommended</p>
+                    ) : null}
+                  </div>
                 </li>
               ))}
             </ul>
-            <p className="mt-1.5 text-2xs text-secondary-label">Answer in the box below.</p>
+            <p className="mt-1.5 text-2xs text-secondary-label">Answer it in the composer.</p>
           </>
         ) : (
           <div className="mt-1.5 flex flex-col gap-0.5">

@@ -60,8 +60,8 @@ const PLUGIN_CARD_ERROR_MESSAGES = {
   "not-this-chat": "This decision belongs to a different chat.",
   "terminal-only": "This decision can only be answered from a terminal.",
   "answer-in-progress": "This decision is already being answered.",
-  "dp-missing": "The dp command was not found on this machine.",
-  "dp-failed": "The dp command could not record the answer.",
+  "dp-missing": "The tool for recording answers is missing on this machine.",
+  "dp-failed": "Couldn't record your answer.",
   "message-not-in-transcript": "The answer message has not reached the chat transcript yet.",
   "chat-quote-invalid": "The answer message could not be quoted from the chat transcript.",
   "protected-decision": "This decision is protected and cannot be answered from here.",
@@ -76,7 +76,9 @@ export class PluginCardError extends Schema.TaggedError<PluginCardError>()("Plug
 }) {
   override get message(): string {
     const base = PLUGIN_CARD_ERROR_MESSAGES[this.reason];
-    return this.detail === undefined || this.detail === "" ? base : `${base} ${this.detail}`;
+    return this.reason === "dp-failed" || this.detail === undefined || this.detail === ""
+      ? base
+      : `${base} ${this.detail}`;
   }
 }
 

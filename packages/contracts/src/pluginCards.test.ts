@@ -259,10 +259,10 @@ describe("PluginCardError", () => {
     expect(new Set(messages).size).toBe(PluginCardErrorReason.literals.length);
   });
 
-  it("appends the detail after the message", () => {
-    const { message } = new PluginCardError({ reason: "dp-failed", detail: "exit 2" });
-    expect(message.endsWith(" exit 2")).toBe(true);
-    expect(message.startsWith("The dp command could not record the answer.")).toBe(true);
+  it("keeps answer recording details available without including them in the message", () => {
+    const error = new PluginCardError({ reason: "dp-failed", detail: "exit 2" });
+    expect(error.message).toBe("Couldn't record your answer.");
+    expect(error.detail).toBe("exit 2");
   });
 });
 

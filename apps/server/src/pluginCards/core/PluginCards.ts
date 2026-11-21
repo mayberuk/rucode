@@ -153,13 +153,20 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
       ),
     );
 
-  const sourceChanges = yield* PubSub.sliding<void>(1);
+  const sourceChanges = yield* PubSub.unbounded<ThreadId | null>();
   for (const source of cardSources) {
     if (source.changes === undefined) continue;
     yield* source.changes.pipe(
-      Stream.runForEach(() => PubSub.publish(sourceChanges, undefined)),
+      Stream.runForEach(() => PubSub.publish(sourceChanges, null)),
       (run) => guard(run, undefined, source.id),
       Effect.forkScoped,
+    );
+  }
+
+  if (decisionSource !== null) {
+    yield* decisionSource.progressChanges.pipe(
+      Stream.runForEach((threadId) => PubSub.publish(sourceChanges, threadId)),
+      Effect.forkScoped({ startImmediately: true }),
     );
   }
 
@@ -201,8 +208,27 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
     threadId: ThreadId,
     recognized: ReadonlyMap<string, Anchor>,
   ) {
+    const mapped = yield* Effect.forEach(
+      cardSources,
+      (source) =>
+        source.cardsForThread === undefined
+          ? Effect.succeed([])
+          : guard(source.cardsForThread(threadId), [], source.id).pipe(
+              Effect.map((cards) => cards.map((card) => ({ card, source }))),
+            ),
+      { concurrency: RESOLVE_CONCURRENCY },
+    );
+
+    const mappedDecisions = new Set(
+      mapped.flatMap((cards) =>
+        cards.flatMap(({ card, source }) => (source === decisionSource ? [card.id] : [])),
+      ),
+    );
+
     const anchored = yield* Effect.forEach(
-      [...recognized],
+      [...recognized].filter(
+        ([id, anchor]) => anchor.source !== decisionSource || !mappedDecisions.has(id),
+      ),
       ([id, anchor]) =>
         guard(anchor.source.resolve(anchor.ref, threadId), null, anchor.source.id).pipe(
           Effect.map((resolved): PlacedCard | null =>
@@ -222,17 +248,6 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
         ),
       { concurrency: RESOLVE_CONCURRENCY },
     );
-    const mapped = yield* Effect.forEach(
-      cardSources,
-      (source) =>
-        source.cardsForThread === undefined
-          ? Effect.succeed([])
-          : guard(source.cardsForThread(threadId), [], source.id).pipe(
-              Effect.map((cards) => cards.map((card) => ({ card, source }))),
-            ),
-      { concurrency: RESOLVE_CONCURRENCY },
-    );
-
     const placed = new Map<string, PlacedCard>();
     for (const entry of anchored) {
       if (entry !== null) placed.set(entry.card.id, entry);
@@ -280,7 +295,11 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
           Stream.filterEffect((command) => recognize(recognized, command)),
           Stream.as(undefined),
         );
-        const refreshes = Stream.merge(recognizedChanges, Stream.fromSubscription(signals)).pipe(
+        const sourceRefreshes = Stream.fromSubscription(signals).pipe(
+          Stream.filter((changedThread) => changedThread === null || changedThread === threadId),
+          Stream.as(undefined),
+        );
+        const refreshes = Stream.merge(recognizedChanges, sourceRefreshes).pipe(
           Stream.debounce(REFRESH_DEBOUNCE),
           Stream.mapEffect(() => snapshot),
         );

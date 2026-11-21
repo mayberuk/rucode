@@ -354,6 +354,7 @@ const makeDecisionSource = Effect.fnUntraced(function* (mapped: ReadonlyArray<Pl
     resolve: () => Effect.succeed(null),
     cardsForThread: (threadId) => Effect.succeed(threadId === THREAD ? mapped : []),
     changes,
+    progressChanges: Stream.empty,
     live: Effect.sync(() => state.live),
     findDecision: () => Effect.succeed(null),
     setProgress: () => Effect.void,

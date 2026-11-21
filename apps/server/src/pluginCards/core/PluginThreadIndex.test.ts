@@ -23,6 +23,7 @@ import * as ProjectionStoreV2 from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as OrchestrationEventStore from "../../persistence/OrchestrationEventStore.ts";
 import * as PluginThreadIndex from "./PluginThreadIndex.ts";
 
 const LIVE_THREAD = ThreadId.make("thread-live");
@@ -121,7 +122,7 @@ const withIndex = <A, E>(
       }),
     });
     const index = yield* PluginThreadIndex.make({ procRoot: `${root}/proc` }).pipe(
-      Effect.provide(Layer.mergeAll(projection, projects, settings)),
+      Effect.provide(Layer.mergeAll(projection, projects, settings, OrchestrationEventStore.layer)),
       Effect.provideService(HostProcess.Environment, {}),
       Effect.provideService(HostProcess.HomeDirectory, `${root}/home`),
     );
@@ -346,6 +347,20 @@ it.effect("maps a Claude session id to the thread whose active session it is", (
       assert.isNull(yield* index.threadForClaudeSession("session-d"));
       assert.isNull(yield* index.threadForClaudeSession("session-e"));
       assert.isNull(yield* index.threadForClaudeSession("session-unknown"));
+      const lookup = yield* index.decisionLookup;
+      for (const session of [
+        "session-a",
+        "session-b2",
+        "session-b",
+        "session-c",
+        "session-d",
+        "session-e",
+      ]) {
+        assert.strictEqual(
+          yield* lookup.threadForClaudeSession(session),
+          yield* index.threadForClaudeSession(session),
+        );
+      }
     }),
   ),
 );

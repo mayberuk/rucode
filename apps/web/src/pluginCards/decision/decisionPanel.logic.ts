@@ -52,11 +52,8 @@ export function decisionAnswerView(
       optionKey: progress.optionKey,
       message:
         progress.reason === null
-          ? (progress.detail ?? "The answer could not be recorded.")
-          : new PluginCardError({
-              reason: progress.reason,
-              ...(progress.detail === null ? {} : { detail: progress.detail }),
-            }).message,
+          ? "Couldn't record your answer."
+          : new PluginCardError({ reason: progress.reason }).message,
     };
   }
   if (attempt?.status === "sent") {

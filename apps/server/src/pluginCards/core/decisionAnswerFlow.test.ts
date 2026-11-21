@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -103,6 +104,7 @@ const watchingFileSystem = (ready: Queue.Queue<string>) =>
   ).pipe(Layer.provide(NodeFileSystem.layer));
 
 interface HarnessOptions {
+  readonly knownCheckout?: boolean;
   readonly record?: Record<string, unknown>;
   /** The chat the decision's directory maps to; null leaves it unmapped. */
   readonly mapTo?: ThreadId | null;
@@ -152,7 +154,14 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
             ? { sessionId: "s-1", transcriptPath }
             : null,
         ),
-      checkouts: Effect.succeed([checkout]),
+      checkouts: Effect.succeed(options.knownCheckout === false ? [] : [checkout]),
+      decisionLookup: Effect.succeed({
+        checkouts: [checkout],
+        threadForClaudeSession: () => Effect.succeed(null),
+        threadsForDir: (dir: string) =>
+          Effect.succeed(dir === checkout && mapTo !== null ? [mapTo] : []),
+      }),
+      decisionMappingChanges: Stream.empty,
     });
 
     const sends: Array<ThreadManagementService.ThreadManagementSendInput> = [];
@@ -191,8 +200,10 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
     const progress = yield* Queue.unbounded<PluginDecisionAnswerProgress | null>();
     const flow = yield* DecisionAnswerFlow.make({
       ...source,
-      setProgress: (cardId, next) =>
-        source.setProgress(cardId, next).pipe(Effect.andThen(Queue.offer(progress, next))),
+      setProgress: (threadId, cardId, next) =>
+        source
+          .setProgress(threadId, cardId, next)
+          .pipe(Effect.andThen(Queue.offer(progress, next))),
     }).pipe(
       Effect.provide(services),
       Effect.provideService(HostProcess.Environment, {
@@ -301,6 +312,11 @@ it.effect.each([
     reason: "decision-closed",
   },
   { name: "an unknown option", options: {}, key: "skip", reason: "unknown-option" },
+  {
+    name: "a decision outside known checkouts",
+    options: { knownCheckout: false },
+    reason: "unknown-card",
+  },
   {
     name: "a decision mapped to another chat",
     options: { mapTo: OTHER_THREAD },

@@ -39,7 +39,10 @@ const initiativeFor = (
   return holding.length === 1 ? holding[0] : undefined;
 };
 
-const uniqueThreadForDir = Effect.fnUntraced(function* (lookup: DispatchThreadLookup, dir: string) {
+const uniqueThreadForDir = Effect.fnUntraced(function* (
+  lookup: Pick<DispatchThreadLookup, "threadsForDir">,
+  dir: string,
+) {
   const threads = yield* lookup.threadsForDir(dir);
   return threads.length === 1 ? (threads[0] ?? null) : null;
 });
@@ -47,7 +50,7 @@ const uniqueThreadForDir = Effect.fnUntraced(function* (lookup: DispatchThreadLo
 export const mapDecisionToThread = Effect.fn("DispatchReader.mapDecisionToThread")(function* (
   record: DispatchDecisionRecord,
   initiatives: ReadonlyArray<DispatchLiveInitiative>,
-  lookup: DispatchThreadLookup,
+  lookup: Pick<DispatchThreadLookup, "threadForClaudeSession" | "threadsForDir">,
 ) {
   if (record.grantSession !== undefined && record.grantSession !== "") {
     const thread = yield* lookup.threadForClaudeSession(record.grantSession);

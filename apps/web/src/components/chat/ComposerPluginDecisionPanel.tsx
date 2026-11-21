@@ -170,7 +170,7 @@ export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionP
             </div>
             {data.answerable === "terminal-only" ? (
               selectedKey === null ? (
-                <p className="py-1.5 text-2xs text-secondary-label">
+                <p className="py-1.5 text-xs text-secondary-label">
                   This chat cannot post the answer. Pick an option to get its terminal command.
                 </p>
               ) : (
@@ -190,26 +190,21 @@ export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionP
                       : "text-secondary-label",
                   )}
                 >
-                  {view.status === "posting"
-                    ? "Posting answer"
-                    : view.status === "recording"
-                      ? "Recording answer"
-                      : view.status === "failed"
-                        ? view.message
-                        : "Your answer is posted as a message in this chat."}
+                  {view.status === "failed"
+                    ? view.message
+                    : "Your answer is posted as a message in this chat."}
                 </p>
-                {busy ? null : (
-                  <Button
-                    type="button"
-                    size="xs"
-                    disabled={selectedKey === null}
-                    onClick={() => {
-                      if (selectedKey !== null) void send(selectedKey);
-                    }}
-                  >
-                    {view.status === "failed" ? "Try again" : "Answer"}
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant={view.status === "failed" ? "ghost" : "default"}
+                  size="xs"
+                  disabled={busy || selectedKey === null}
+                  onClick={() => {
+                    if (selectedKey !== null) void send(selectedKey);
+                  }}
+                >
+                  {busy ? "Posting…" : view.status === "failed" ? "Try again" : "Answer"}
+                </Button>
               </div>
             )}
           </ComposerBanner.Body>

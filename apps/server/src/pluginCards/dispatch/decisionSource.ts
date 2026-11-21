@@ -7,6 +7,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -49,10 +50,12 @@ export interface DispatchDecisionSource extends PluginCardSource {
   readonly changes: Stream.Stream<void, never, PluginCardSourceServices>;
   /** Open decisions across known checkouts, and the chats they wait on. */
   readonly live: Effect.Effect<DispatchDecisionLive>;
+  readonly progressChanges: Stream.Stream<ThreadId>;
   /** Re-reads the record behind a decision card id from disk; null when it is gone. */
   readonly findDecision: (cardId: string) => Effect.Effect<MappedDecision | null>;
   /** Null clears it. Shown on the card while the decision is open. */
   readonly setProgress: (
+    threadId: ThreadId,
     cardId: string,
     progress: PluginDecisionAnswerProgress | null,
   ) => Effect.Effect<void>;
@@ -64,6 +67,18 @@ const parseKey = (key: string) => {
   const cut = key.lastIndexOf("#");
   if (cut <= 0 || cut === key.length - 1) return null;
   return { dir: key.slice(0, cut), id: key.slice(cut + 1) };
+};
+
+const parseCardId = (cardId: string) => {
+  const prefix = `${CARD_KIND}:`;
+  return cardId.startsWith(prefix) ? parseKey(cardId.slice(prefix.length)) : null;
+};
+
+export const canonicalDecisionCardId = (cardId: string, path: Path.Path) => {
+  const key = parseCardId(cardId);
+  return key === null || !path.isAbsolute(key.dir)
+    ? null
+    : decisionCardId(path.resolve(key.dir), key.id);
 };
 
 const DP_DECISION = /(?:^|[\s;&|(/])dp\s+decision\s+(raise|wait|answer|show)(?=$|[\s;&|)])/g;
@@ -143,7 +158,9 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
     const services = yield* Effect.context<PluginCardSourceServices>();
 
     const signals = yield* PubSub.unbounded<void>();
-    const signal = PubSub.publish(signals, undefined).pipe(Effect.asVoid);
+    const diskEvents = yield* PubSub.sliding<void>(1);
+    const diskChanged = PubSub.publish(diskEvents, undefined).pipe(Effect.asVoid);
+    const progressEvents = yield* PubSub.unbounded<ThreadId>();
     const progress = new Map<string, PluginDecisionAnswerProgress>();
 
     const resolveDir = (cwd: string, dir: string | null) => {
@@ -177,6 +194,7 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
       string,
       { readonly token: object; readonly fiber: Fiber.Fiber<void> }
     >();
+    let watchedChildren = new Map<string, Set<string> | null>();
     const watchPermit = yield* Semaphore.make(1);
 
     const isDirectory = (dir: string) =>
@@ -185,67 +203,125 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
         Effect.orElseSucceed(() => false),
       );
 
-    const watch = Effect.fnUntraced(function* (dir: string) {
+    const watch = Effect.fn("PluginCards.watchDecisions")(function* (dir: string) {
       const token = {};
-      const fiber = yield* fs.watch(dir).pipe(
-        Stream.runForEach(() => signal),
-        Effect.ignoreCause({ log: true }),
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (watchers.get(dir)?.token === token) watchers.delete(dir);
+      const ready = yield* Deferred.make<void>();
+      const fiber = yield* fs
+        .watch(dir, {
+          onReady: () => {
+            Deferred.doneUnsafe(ready, Effect.void);
+          },
+        })
+        .pipe(
+          Stream.filter((event) => {
+            const children = watchedChildren.get(dir);
+            return children === null || children?.has(path.resolve(dir, event.path)) === true;
           }),
-        ),
-        Effect.forkIn(scope),
-      );
+          Stream.runForEach(() => diskChanged),
+          Effect.ignoreCause({ log: true }),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (watchers.get(dir)?.token === token) watchers.delete(dir);
+              Deferred.doneUnsafe(ready, Effect.void);
+            }),
+          ),
+          Effect.forkIn(scope),
+        );
       watchers.set(dir, { token, fiber });
+      yield* Deferred.await(ready);
     });
 
-    // A decisions directory appears on the first raise in a checkout, so each read re-checks the set.
-    const syncWatchers = (checkouts: ReadonlyArray<string>) =>
-      watchPermit.withPermits(1)(
-        Effect.gen(function* () {
-          const wanted = new Set([
-            path.join(initiativesRoot, ".live"),
-            ...checkouts.map((checkout) => path.join(checkout, ".claude", "work", "decisions")),
-          ]);
-          for (const [dir, watcher] of watchers) {
-            if (wanted.has(dir)) continue;
-            watchers.delete(dir);
-            yield* Fiber.interrupt(watcher.fiber);
+    const syncWatchers = Effect.fn("PluginCards.syncDecisionWatchers")(
+      function* (checkouts: ReadonlyArray<string>) {
+        const targets = [
+          path.join(initiativesRoot, ".live"),
+          ...checkouts.map((checkout) => path.join(checkout, ".claude", "work", "decisions")),
+        ];
+        const wanted = new Map<string, Set<string> | null>();
+        for (const target of targets) {
+          let dir = target;
+          let child = null;
+          while (!(yield* isDirectory(dir))) {
+            const parent = path.dirname(dir);
+            if (parent === dir) break;
+            child = dir;
+            dir = parent;
           }
-          for (const dir of wanted) {
-            if (watchers.has(dir) || !(yield* isDirectory(dir))) continue;
-            yield* watch(dir);
+          if (child === null) wanted.set(dir, null);
+          else if (wanted.get(dir) !== null) {
+            const children = wanted.get(dir) ?? new Set<string>();
+            children.add(child);
+            wanted.set(dir, children);
           }
-        }),
-      );
+        }
+        watchedChildren = wanted;
+        for (const [dir, children] of wanted) {
+          if (watchers.has(dir)) continue;
+          yield* watch(dir);
+          // A missing child can appear between selecting its ancestor and installing the watch.
+          if (children !== null && Option.isSome(yield* Effect.findFirst(children, isDirectory))) {
+            yield* diskChanged;
+          }
+        }
+        for (const [dir, watcher] of watchers) {
+          if (wanted.has(dir)) continue;
+          watchers.delete(dir);
+          yield* Fiber.interrupt(watcher.fiber);
+        }
+      },
+      (effect) => watchPermit.withPermits(1)(effect),
+    );
 
-    const readDecision = Effect.fnUntraced(function* (dir: string, id: string) {
+    const readDecision = Effect.fn("PluginCards.readDecision")(function* (dir: string, id: string) {
       const records = yield* listDecisionRecords(dir);
       return records.find((record) => record.id === id) ?? null;
     });
 
-    const mapRecord = Effect.fnUntraced(function* (record: DispatchDecisionRecord) {
+    const mapRecord = Effect.fn("PluginCards.mapDecision")(function* (
+      record: DispatchDecisionRecord,
+    ) {
       const initiatives = yield* listLiveInitiatives(initiativesRoot);
       return yield* mapDecisionToThread(record, initiatives, index);
     });
 
     const scan = Effect.gen(function* () {
-      const checkouts = yield* index.checkouts;
-      yield* syncWatchers(checkouts);
+      const lookup = yield* index.decisionLookup;
+      yield* syncWatchers(lookup.checkouts);
       const initiatives = yield* listLiveInitiatives(initiativesRoot);
-      const records = yield* Effect.forEach(checkouts, listDecisionRecords, {
+      const records = (yield* Effect.forEach(lookup.checkouts, listDecisionRecords, {
         concurrency: READ_CONCURRENCY,
-      });
-      return yield* Effect.forEach(
-        records.flat(),
-        (record) =>
-          mapDecisionToThread(record, initiatives, index).pipe(
-            Effect.map((threadId): MappedDecision => ({ record, threadId })),
-          ),
-        { concurrency: READ_CONCURRENCY },
+      })).flat();
+      const byId = new Map(
+        records.map((record) => [decisionCardId(record.dir, record.id), record]),
       );
-    }).pipe(Effect.provideContext(services));
+      const mapRecord = Effect.fnUntraced(function* (record: DispatchDecisionRecord) {
+        return { record, threadId: yield* mapDecisionToThread(record, initiatives, lookup) };
+      });
+      const open = yield* Effect.forEach(
+        records.filter((record) => record.state === "open"),
+        mapRecord,
+      );
+      const openThreads = new Map(open.map(({ record, threadId }) => [record, threadId]));
+      const byThread = yield* Effect.cached(
+        Effect.gen(function* () {
+          const cards = new Map<ThreadId, Array<DispatchDecisionRecord>>();
+          for (const record of records) {
+            const threadId =
+              record.state === "open"
+                ? (openThreads.get(record) ?? null)
+                : (yield* mapRecord(record)).threadId;
+            if (threadId === null) continue;
+            const existing = cards.get(threadId);
+            if (existing === undefined) cards.set(threadId, [record]);
+            else existing.push(record);
+          }
+          return cards;
+        }),
+      );
+      return { checkouts: new Set(lookup.checkouts), byId, byThread, mapRecord, open };
+    }).pipe(Effect.provideContext(services), Effect.withSpan("PluginCards.scanDecisions"));
+
+    const [snapshot, invalidate] = yield* Effect.cachedInvalidateWithTTL(scan, Duration.infinity);
 
     const answerableIn = Effect.fnUntraced(function* (threadId: ThreadId, mapped: ThreadId | null) {
       if (mapped !== threadId) return "terminal-only" as const;
@@ -277,19 +353,24 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
     ) {
       const key = ref.kind === CARD_KIND ? parseKey(ref.key) : null;
       if (key === null) return null;
+      const scanned = yield* snapshot;
+      if (scanned.checkouts.has(key.dir)) {
+        const record = scanned.byId.get(decisionCardId(key.dir, key.id));
+        if (record === undefined) return null;
+        const { threadId: mapped } = yield* scanned.mapRecord(record);
+        return cardData(record, yield* answerableIn(threadId, mapped));
+      }
       const record = yield* readDecision(key.dir, key.id);
-      if (record === null) return null;
-      const mapped = yield* mapRecord(record);
-      return cardData(record, yield* answerableIn(threadId, mapped));
+      return record === null ? null : cardData(record, "terminal-only");
     }, Effect.provideContext(services));
 
     const cardsForThread = Effect.fn("PluginCards.decisionCardsForThread")(function* (
       threadId: ThreadId,
     ) {
-      const mine = (yield* scan).filter((entry) => entry.threadId === threadId);
-      if (mine.length === 0) return [];
+      const mine = (yield* (yield* snapshot).byThread).get(threadId);
+      if (mine === undefined) return [];
       const answerable = yield* answerableIn(threadId, threadId);
-      return mine.map(({ record }): DispatchDecisionCard => ({
+      return mine.map((record): DispatchDecisionCard => ({
         ...cardData(record, answerable),
         id: decisionCardId(record.dir, record.id),
         threadId,
@@ -298,7 +379,7 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
     });
 
     const live = Effect.gen(function* () {
-      const open = (yield* scan).filter((entry) => entry.record.state === "open");
+      const { open } = yield* snapshot;
       const decisions = open
         .map(({ record, threadId }): PluginLiveDecision => ({
           cardId: decisionCardId(record.dir, record.id),
@@ -324,21 +405,35 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
     }).pipe(Effect.withSpan("PluginCards.decisionLive"));
 
     const findDecision = Effect.fn("PluginCards.findDecision")(function* (cardId: string) {
-      const prefix = `${CARD_KIND}:`;
-      const key = cardId.startsWith(prefix) ? parseKey(cardId.slice(prefix.length)) : null;
-      if (key === null) return null;
+      const canonical = canonicalDecisionCardId(cardId, path);
+      const key = canonical === null ? null : parseCardId(canonical);
+      if (key === null || !(yield* index.checkouts).includes(key.dir)) return null;
       const record = yield* readDecision(key.dir, key.id);
       if (record === null) return null;
       return { record, threadId: yield* mapRecord(record) } satisfies MappedDecision;
     }, Effect.provideContext(services));
 
-    const setProgress = (cardId: string, next: PluginDecisionAnswerProgress | null) =>
+    const setProgress = (
+      threadId: ThreadId,
+      cardId: string,
+      next: PluginDecisionAnswerProgress | null,
+    ) =>
       Effect.suspend(() => {
         if (next === null) progress.delete(cardId);
         else progress.set(cardId, next);
-        return signal;
+        return PubSub.publish(progressEvents, threadId).pipe(Effect.asVoid);
       });
 
+    yield* Stream.merge(Stream.fromPubSub(diskEvents), index.decisionMappingChanges).pipe(
+      Stream.debounce(CHANGE_DEBOUNCE),
+      Stream.runForEach(() =>
+        invalidate.pipe(
+          Effect.andThen(snapshot),
+          Effect.andThen(PubSub.publish(signals, undefined)),
+        ),
+      ),
+      Effect.forkIn(scope, { startImmediately: true }),
+    );
     yield* index.checkouts.pipe(Effect.flatMap(syncWatchers), Effect.forkIn(scope));
 
     return {
@@ -346,7 +441,8 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
       recognize,
       resolve,
       cardsForThread,
-      changes: Stream.fromPubSub(signals).pipe(Stream.debounce(CHANGE_DEBOUNCE)),
+      changes: Stream.fromPubSub(signals),
+      progressChanges: Stream.fromPubSub(progressEvents),
       live,
       findDecision,
       setProgress,

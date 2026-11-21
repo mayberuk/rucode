@@ -13,10 +13,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ProjectionStoreV2 from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import * as OrchestrationEventStore from "../../persistence/OrchestrationEventStore.ts";
 import { AGENT_THREAD_ENV } from "../../preview/PortScanner.ts";
 import { resolveClaudeHomePath } from "../../provider/Drivers/ClaudeHome.ts";
 import * as ServerSettings from "../../serverSettings.ts";
@@ -39,6 +41,12 @@ export class PluginThreadIndex extends Context.Service<
     readonly claudeTranscript: (
       threadId: ThreadId,
     ) => Effect.Effect<{ readonly sessionId: string; readonly transcriptPath: string } | null>;
+    readonly decisionLookup: Effect.Effect<{
+      readonly checkouts: ReadonlyArray<string>;
+      readonly threadForClaudeSession: (sessionId: string) => Effect.Effect<ThreadId | null>;
+      readonly threadsForDir: (dir: string) => Effect.Effect<ReadonlyArray<ThreadId>>;
+    }>;
+    readonly decisionMappingChanges: Stream.Stream<void>;
     /** Project roots and worktree paths of non-archived threads. */
     readonly checkouts: Effect.Effect<ReadonlyArray<string>>;
   }
@@ -61,6 +69,7 @@ export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
   const sql = yield* SqlClient.SqlClient;
   const projection = yield* ProjectionStoreV2.ProjectionStoreV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
+  const eventStore = yield* OrchestrationEventStore.OrchestrationEventStore;
   const settings = yield* ServerSettings.ServerSettingsService;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -76,28 +85,35 @@ export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
     return thread !== null && thread.deletedAt === null ? thread.id : null;
   });
 
-  const threadForClaudeSession = Effect.fn("PluginThreadIndex.threadForClaudeSession")(function* (
-    sessionId: string,
+  const readClaudeSessions = Effect.fn("PluginThreadIndex.readClaudeSessions")(function* (
+    sessionId?: string,
   ) {
-    const rows = yield* sql<{ readonly thread_id: string }>`
-      SELECT DISTINCT provider_thread.thread_id AS thread_id
+    type Row = { readonly thread_id: string; readonly session_id: string };
+    const nativeId = sql`json_extract(provider_thread.payload_json, '$.nativeThreadRef.nativeId')`;
+    return yield* sql<Row>`
+      SELECT DISTINCT provider_thread.thread_id AS thread_id, ${nativeId} AS session_id
       FROM orchestration_v2_projection_provider_threads AS provider_thread
       JOIN orchestration_v2_projection_threads AS thread
         ON thread.thread_id = provider_thread.thread_id
         AND thread.active_provider_thread_id = provider_thread.provider_thread_id
       WHERE provider_thread.driver = ${CLAUDE_DRIVER}
-        AND json_extract(provider_thread.payload_json, '$.nativeThreadRef.nativeId') = ${sessionId}
+        AND ${sessionId === undefined ? sql`typeof(${nativeId}) = 'text'` : sql`${nativeId} = ${sessionId}`}
         AND thread.deleted_at IS NULL
     `.pipe(
       NodeSqliteClient.readOnly,
       Effect.tapError((cause) =>
-        Effect.logWarning("plugin cards could not look up a Claude session", { cause }),
+        Effect.logWarning("plugin cards could not look up Claude sessions", { cause }),
       ),
-      Effect.orElseSucceed((): ReadonlyArray<{ readonly thread_id: string }> => []),
+      Effect.orElseSucceed((): ReadonlyArray<Row> => []),
     );
+  });
+
+  const threadForClaudeSession = Effect.fn("PluginThreadIndex.threadForClaudeSession")(function* (
+    sessionId: string,
+  ) {
+    const rows = yield* readClaudeSessions(sessionId);
     // Forks can share a session id; an ambiguous match maps to no chat.
-    if (rows.length !== 1) return null;
-    return Option.getOrNull(decodeThreadId(rows[0]!.thread_id));
+    return rows.length === 1 ? Option.getOrNull(decodeThreadId(rows[0]!.thread_id)) : null;
   });
 
   const activeDirectories = Effect.fnUntraced(function* () {
@@ -133,14 +149,84 @@ export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
     });
   });
 
-  const checkouts = Effect.gen(function* () {
-    const directories = new Set<string>();
-    for (const entry of yield* readDirectories) {
-      if (entry.projectRoot !== null) directories.add(path.resolve(entry.projectRoot));
-      if (entry.worktreePath !== null) directories.add(path.resolve(entry.worktreePath));
+  const readDirectoryLookup = readDirectories.pipe(
+    Effect.map((entries) => {
+      const checkouts = new Set<string>();
+      const byDir = new Map<string, Array<ThreadId>>();
+      for (const { threadId, projectRoot, worktreePath } of entries) {
+        if (projectRoot !== null) checkouts.add(path.resolve(projectRoot));
+        if (worktreePath !== null) checkouts.add(path.resolve(worktreePath));
+        const effective = worktreePath ?? projectRoot;
+        if (effective === null) continue;
+        const dir = path.resolve(effective);
+        const threads = byDir.get(dir);
+        if (threads === undefined) byDir.set(dir, [threadId]);
+        else threads.push(threadId);
+      }
+      return { checkouts: [...checkouts].toSorted(), byDir };
+    }),
+  );
+
+  const checkouts = readDirectoryLookup.pipe(
+    Effect.map((lookup) => lookup.checkouts),
+    Effect.withSpan("PluginThreadIndex.checkouts"),
+  );
+
+  const decisionLookup = Effect.gen(function* () {
+    const { checkouts, byDir } = yield* readDirectoryLookup;
+    const sessions = new Map<string, ThreadId | null>();
+    for (const { session_id, thread_id } of yield* readClaudeSessions()) {
+      sessions.set(
+        session_id,
+        sessions.has(session_id) ? null : Option.getOrNull(decodeThreadId(thread_id)),
+      );
     }
-    return [...directories].toSorted();
-  }).pipe(Effect.withSpan("PluginThreadIndex.checkouts"));
+    return {
+      checkouts,
+      threadsForDir: (dir: string) => Effect.succeed(byDir.get(path.resolve(dir)) ?? []),
+      threadForClaudeSession: (sessionId: string) =>
+        Effect.succeed(sessions.get(sessionId) ?? null),
+    };
+  }).pipe(Effect.withSpan("PluginThreadIndex.decisionLookup"));
+
+  const mappingCursor = yield* Effect.result(eventStore.latestApplicationSequence);
+  const decisionMappingChanges = Stream.unwrap(
+    Effect.fromResult(mappingCursor).pipe(
+      Effect.map((afterSequence) =>
+        eventStore.streamProjectedApplicationEvents({
+          afterSequence,
+          project: ({ sequence }) => ({ sequence }),
+          filter: (stored) => {
+            if ("aggregateKind" in stored) {
+              return (
+                stored.type !== "project.meta-updated" || stored.payload.workspaceRoot !== undefined
+              );
+            }
+            switch (stored.event.type) {
+              case "thread.created":
+              case "thread.archived":
+              case "thread.unarchived":
+              case "thread.deleted":
+              case "thread.metadata-updated":
+              case "thread.provider-switched":
+                return true;
+              case "provider-thread.updated":
+                return stored.event.payload.driver === CLAUDE_DRIVER;
+              default:
+                return false;
+            }
+          },
+        }),
+      ),
+    ),
+  ).pipe(
+    Stream.as(undefined),
+    Stream.catchCause((cause) =>
+      Stream.fromEffect(
+        Effect.logWarning("plugin cards stopped following thread mapping changes", { cause }),
+      ).pipe(Stream.drain),
+    ),
+  );
 
   const threadForPid = Effect.fn("PluginThreadIndex.threadForPid")(function* (pid: number) {
     if (!Number.isSafeInteger(pid) || pid <= 0) return null;
@@ -219,6 +305,8 @@ export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
     threadForPid,
     claudeTranscript,
     checkouts,
+    decisionLookup,
+    decisionMappingChanges,
   });
 });
 
