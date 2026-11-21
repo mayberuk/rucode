@@ -1690,8 +1690,8 @@ function wholeCommandLine(data: string): string | null {
   if (data.length <= 1 || !data.endsWith("\r") || data.indexOf("\r") !== data.length - 1) {
     return null;
   }
-  const line = data.slice(0, -1).replace(/^ +/, "");
-  return line.length > 0 ? line : null;
+  const line = data.slice(0, -1);
+  return /[^ ]/.test(line) ? line : null;
 }
 
 function restoreNotice(command: RestorableTerminalCommand): string {

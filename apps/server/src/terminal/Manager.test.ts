@@ -214,7 +214,9 @@ class FakeSessionHost implements TerminalSessionHostShape {
     readonly key: TerminalSessionKey;
     readonly command: RestorableTerminalCommand | null;
   }> = [];
-  private readonly restorable: RestorableTerminalCommand | undefined;
+  private readonly restorable:
+    | { readonly key: TerminalSessionKey; readonly command: RestorableTerminalCommand }
+    | undefined;
   private readonly commandWaiters: Array<{ count: number; done: Deferred.Deferred<void> }> = [];
   private nextPid = 7000;
 
@@ -222,7 +224,7 @@ class FakeSessionHost implements TerminalSessionHostShape {
     options: {
       readonly persistent?: boolean;
       readonly adoptAll?: Effect.Effect<ReadonlyArray<AdoptedTerminalSession>>;
-      readonly restorable?: RestorableTerminalCommand;
+      readonly restorable?: FakeSessionHost["restorable"];
     } = {},
   ) {
     this.persistent = options.persistent ?? true;
@@ -250,7 +252,13 @@ class FakeSessionHost implements TerminalSessionHostShape {
       return process;
     });
 
-  readonly restorableCommand = () => Effect.succeed(Option.fromNullishOr(this.restorable));
+  readonly restorableCommand = (key: TerminalSessionKey) =>
+    Effect.succeed(
+      this.restorable?.key.threadId === key.threadId &&
+        this.restorable.key.terminalId === key.terminalId
+        ? Option.some(this.restorable.command)
+        : Option.none(),
+    );
 
   readonly recordCommand = (key: TerminalSessionKey, command: RestorableTerminalCommand | null) =>
     Effect.sync(() => {
@@ -3710,21 +3718,21 @@ it.layer(
 
   const jobCommand = { line: "node /app/server.js --name 'my app'", cwd: "/work/app/sub" };
 
-  it.effect(
-    "records a whole script line and the shell's directory when the shell starts a subprocess",
-    () =>
+  it.effect.each([" npm run dev", "a", "echo  a  &&  echo b "])(
+    "records the whole line %j and the shell's directory when the shell starts a subprocess",
+    (line) =>
       Effect.gen(function* () {
         const { manager, sessionHost, busy, tick } = yield* createRecordingFixture(
           JOB_PID,
           retitledJobArgv,
         );
-        yield* manager.write(writeInput(" npm run dev\r"));
+        yield* manager.write(writeInput(`${line}\r`));
         busy.value = true;
         yield* tick;
         yield* sessionHost.awaitCommands(1);
 
         expect(sessionHost.commands).toEqual([
-          { key: threadKey, command: { line: "npm run dev", cwd: "/work/app" } },
+          { key: threadKey, command: { line, cwd: "/work/app" } },
         ]);
       }).pipe(Effect.provide(TestClock.layer())),
   );
@@ -3774,7 +3782,7 @@ it.layer(
       yield* tick;
       yield* sessionHost.awaitCommands(1);
 
-      expect(sessionHost.commands[0]?.command).toEqual({ line: "npm test", cwd: "/work/app" });
+      expect(sessionHost.commands[0]?.command).toEqual({ line: " npm test", cwd: "/work/app" });
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
@@ -3811,10 +3819,16 @@ it.layer(
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  const createRestoreFixture = (restorable?: RestorableTerminalCommand) =>
+  const createRestoreFixture = (
+    restorable?: RestorableTerminalCommand,
+    initialHistory = "saved output\n",
+    terminalId = DEFAULT_TERMINAL_ID,
+  ) =>
     Effect.gen(function* () {
-      const sessionHost = new FakeSessionHost(restorable ? { restorable } : {});
-      const fixture = yield* createManager(5, { sessionHost, initialHistory: "saved output\n" });
+      const sessionHost = new FakeSessionHost(
+        restorable ? { restorable: { key: threadKey, command: restorable } } : {},
+      );
+      const fixture = yield* createManager(5, { sessionHost, initialHistory });
       const noticed = yield* Deferred.make<void>();
       const unsubscribe = yield* fixture.manager.subscribe((event) =>
         event.type === "output"
@@ -3822,26 +3836,27 @@ it.layer(
           : Effect.void,
       );
       yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
-      yield* fixture.manager.open(openInput());
+      yield* fixture.manager.open(openInput({ terminalId }));
       return { ...fixture, sessionHost, noticed, shell: sessionHost.spawns[0]!.process };
     });
 
-  it.effect("shows the saved history and then the restore line for a restorable command", () =>
-    Effect.gen(function* () {
-      const { manager, getEvents, noticed } = yield* createRestoreFixture({
-        line: "npm run dev",
-        cwd: "/other/dir",
-      });
-      yield* Deferred.await(noticed);
+  it.effect.each(["saved output\n", ""])(
+    "shows the restore line after saved history %j",
+    (initialHistory) =>
+      Effect.gen(function* () {
+        const { manager, getEvents, noticed } = yield* createRestoreFixture(
+          { line: "npm run dev", cwd: "/other/dir" },
+          initialHistory,
+        );
+        yield* Deferred.await(noticed);
 
-      const outputs = (yield* getEvents).flatMap((event) =>
-        event.type === "output" ? [event.data] : [],
-      );
-      expect(outputs).toEqual([restoreNoticeFor("npm run dev")]);
-      const { history } = yield* manager.open(openInput());
-      expect(history.indexOf("saved output")).toBe(0);
-      expect(history.endsWith(restoreNoticeFor("npm run dev"))).toBe(true);
-    }),
+        const outputs = (yield* getEvents).flatMap((event) =>
+          event.type === "output" ? [event.data] : [],
+        );
+        expect(outputs).toEqual([restoreNoticeFor("npm run dev")]);
+        const { history } = yield* manager.open(openInput());
+        expect(history).toBe(initialHistory + restoreNoticeFor("npm run dev"));
+      }),
   );
 
   it.effect("reruns the command from its directory on the next key, without sending the key", () =>
@@ -3920,7 +3935,7 @@ it.layer(
     }),
   );
 
-  it.effect("keeps waiting through terminal replies and resizes", () =>
+  it.effect("keeps waiting through terminal replies, resizes and client attachments", () =>
     Effect.gen(function* () {
       const { manager, noticed, shell } = yield* createRestoreFixture({
         line: "npm run dev",
@@ -3930,10 +3945,28 @@ it.layer(
 
       yield* manager.write(writeInput("\u001b[?1;2c", true));
       yield* manager.resize({ ...threadKey, cols: 120, rows: 30 });
+      const detach = yield* manager.attachStream(openInput(), () => Effect.void);
+      yield* Effect.addFinalizer(() => Effect.sync(detach));
       expect(shell.writes).toEqual(["\u001b[?1;2c"]);
 
       yield* manager.write(writeInput("x"));
       expect(shell.writes).toEqual(["\u001b[?1;2c", "cd -- '/other/dir' && npm run dev\r"]);
+    }),
+  );
+
+  it.effect("does not restore a command recorded for another terminal", () =>
+    Effect.gen(function* () {
+      const terminalId = "other-terminal";
+      const { manager, shell } = yield* createRestoreFixture(
+        { line: "npm run dev", cwd: "/other/dir" },
+        "",
+        terminalId,
+      );
+
+      yield* manager.write({ ...writeInput("x"), terminalId });
+
+      expect(shell.writes).toEqual(["x"]);
+      expect((yield* manager.open(openInput({ terminalId }))).history).toBe("");
     }),
   );
 

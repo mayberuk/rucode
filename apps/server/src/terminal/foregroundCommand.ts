@@ -90,11 +90,23 @@ export const readForegroundCommand = Effect.fn("terminal.readForegroundCommand")
 ) {
   if (platform === "linux") {
     const cmdline = yield* sources.readText(`/proc/${pid}/cmdline`);
-    const argv = cmdline === null ? [] : cmdline.split("\0");
+    // Title rewrites can NUL-pad argv. A single final empty argument is still valid.
+    if (cmdline === null || cmdline.endsWith("\0\0\0")) return null;
+    const argv = cmdline.split("\0");
     if (argv.at(-1) === "") argv.pop();
     const [program] = argv;
-    // A process can replace argv[0] with a title such as "node: worker".
-    if (!program || /[\s\p{Cc}]/u.test(program)) return null;
+    if (!program || /\p{Cc}/u.test(program)) return null;
+    if (/\s/u.test(program)) {
+      // The executable name distinguishes a path with spaces from a title like "node: worker".
+      const executable = yield* sources.readLink(`/proc/${pid}/exe`);
+      const programName = program.slice(program.lastIndexOf("/") + 1);
+      if (
+        executable === null ||
+        executable.slice(executable.lastIndexOf("/") + 1) !== programName
+      ) {
+        return null;
+      }
+    }
     const cwd = yield* readProcessCwd(pid, platform, sources);
     return cwd === null ? null : restorableTerminalCommand(posixQuoteArgv(argv), cwd);
   }

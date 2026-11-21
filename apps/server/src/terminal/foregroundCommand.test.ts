@@ -1,9 +1,13 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import { describe, expect } from "vite-plus/test";
 
+import * as ProcessRunner from "../processRunner.ts";
 import {
   type ForegroundCommandSources,
+  makeForegroundCommandSources,
   posixQuoteArgv,
   readForegroundCommand,
   readProcessCwd,
@@ -91,7 +95,20 @@ describe("readForegroundCommand", () => {
       executable: "/usr/bin/bash",
       line: "/bin/bash ./dev.sh",
     },
+    {
+      program: "printf",
+      args: ["%s", ""],
+      executable: "/usr/bin/printf",
+      line: "printf %s ''",
+    },
+    {
+      program: "/opt/my tools/dev runner",
+      args: ["two words"],
+      executable: "/opt/my tools/dev runner",
+      line: "'/opt/my tools/dev runner' 'two words'",
+    },
     { program: "node: worker", args: [], executable: "/usr/bin/node", line: null },
+    { program: "vite", args: Array<string>(255).fill(""), executable: "/usr/bin/node", line: null },
   ])(
     "on linux uses the original argv for $program when restorable",
     ({ program, args, executable, line }) =>
@@ -195,6 +212,16 @@ describe("readForegroundCommand", () => {
     }),
   );
 });
+
+it.live("foreground command sources return null for missing processes and failed queries", () =>
+  Effect.gen(function* () {
+    const sources = yield* makeForegroundCommandSources();
+    const missingPid = "2147483647";
+    expect(yield* sources.readText(`/proc/${missingPid}/cmdline`)).toBeNull();
+    expect(yield* sources.readLink(`/proc/${missingPid}/cwd`)).toBeNull();
+    expect(yield* sources.run("ps", ["-o", "args=", "-p", missingPid])).toBeNull();
+  }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
 
 describe("readProcessCwd", () => {
   it.effect("reads the proc link on linux and lsof on darwin", () =>
