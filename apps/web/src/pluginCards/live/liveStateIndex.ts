@@ -91,21 +91,28 @@ function spendMetric(spend: PluginLiveInitiative["spend"]): InitiativeMetric {
   };
 }
 
+type Wave = PluginLiveInitiative["wave"];
+
+const waveLabel = (wave: Wave) => `Wave ${wave.current} of ${wave.total}`;
+
+const wavePartsValue = (wave: Wave) =>
+  wave.partsTotal > 0 ? `${wave.partsSettled} of ${wave.partsTotal} parts` : "None";
+
 export function initiativeMetrics(
   initiative: PluginLiveInitiative,
 ): ReadonlyArray<InitiativeMetric> {
   const { wave, settled, running, openDecisions, spend } = initiative;
   return [
     {
-      label: `Wave ${wave.current}`,
-      value: `${wave.partsSettled} of ${wave.partsTotal}`,
+      label: waveLabel(wave),
+      value: wavePartsValue(wave),
       fill: share(wave.partsSettled, wave.partsTotal),
       tone: null,
       tooltip: `Parts settled in wave ${wave.current} of ${wave.total}`,
     },
     {
-      label: "Settled",
-      value: `${settled.count} of ${settled.total}`,
+      label: "Runs settled",
+      value: settled.total > 0 ? `${settled.count} of ${settled.total}` : "None",
       fill: share(settled.count, settled.total),
       tone: null,
       tooltip: "Runs settled out of all runs started",
@@ -145,11 +152,10 @@ function initiativeThreadIds(
   return distinct(ids);
 }
 
-function groupEndLabel(wave: PluginLiveInitiative["wave"]): string {
-  const base = `Wave ${wave.current} of ${wave.total}`;
+function groupEndLabel(wave: Wave): string {
   return wave.partsTotal > 0
-    ? `${base} · ${wave.partsSettled} of ${wave.partsTotal} parts settled`
-    : base;
+    ? `${waveLabel(wave)} · ${wavePartsValue(wave)} settled`
+    : waveLabel(wave);
 }
 
 export function initiativeSidebarGroups(
@@ -203,6 +209,16 @@ export function boardInitiatives(
       (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
   );
 }
+
+const PART_STATUS_LABELS: Readonly<Record<string, string>> = {
+  planned: "Planned",
+  "mr-open": "MR open",
+  "gate-fail": "Gate failed",
+  "gate-pass": "Gate passed",
+  merged: "Merged",
+};
+
+export const partStatusLabel = (status: string) => PART_STATUS_LABELS[status] ?? status;
 
 export function formatAsOf(asOf: string, now: string): string {
   const elapsed = Date.parse(now) - Date.parse(asOf);

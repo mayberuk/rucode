@@ -9,6 +9,7 @@ import { expect, it } from "vite-plus/test";
 import {
   boardInitiatives,
   formatAsOf,
+  partStatusLabel,
   hasOpenDecision,
   initiativeForThread,
   initiativeMetrics,
@@ -206,8 +207,8 @@ it("sidebar groups are structurally equal when only as-of times change", () => {
 
 it("metrics for zero parts have no bars and the stated wording", () => {
   expect(initiativeMetrics(initiative())).toMatchObject([
-    { label: "Wave 1", value: "0 of 0", fill: null, tone: null },
-    { label: "Settled", value: "0 of 0", fill: null, tone: null },
+    { label: "Wave 1 of 1", value: "None", fill: null, tone: null },
+    { label: "Runs settled", value: "None", fill: null, tone: null },
     { label: "Running", value: "0", fill: null, tone: null },
     { label: "Decisions", value: "None", fill: null, tone: null },
     { label: "Spend", value: "Unknown", fill: null, tone: null },
@@ -224,8 +225,8 @@ it("metrics show bar shares, running count and open decisions with a warning ton
     }),
   );
   expect(metrics).toMatchObject([
-    { label: "Wave 2", value: "1 of 4", fill: 0.25 },
-    { label: "Settled", value: "6 of 8", fill: 0.75 },
+    { label: "Wave 2 of 3", value: "1 of 4 parts", fill: 0.25 },
+    { label: "Runs settled", value: "6 of 8", fill: 0.75 },
     { label: "Running", value: "2" },
     { label: "Decisions", value: "3 open", tone: "warning" },
     { label: "Spend" },
@@ -268,8 +269,8 @@ it("board lists open initiatives across environments, active first then newest a
     ["env-b:idle-old", false],
   ]);
   expect(board[0]?.metrics.map((m) => m.label)).toEqual([
-    "Wave 1",
-    "Settled",
+    "Wave 1 of 1",
+    "Runs settled",
     "Running",
     "Decisions",
     "Spend",
@@ -290,4 +291,15 @@ it.each([
   ["2026-11-21T08:00:00Z", "updated just now"],
 ])("formatAsOf at %s reads %s", (now, expected) => {
   expect(formatAsOf(at, now)).toBe(expected);
+});
+
+it.each([
+  ["mr-open", "MR open"],
+  ["gate-fail", "Gate failed"],
+  ["gate-pass", "Gate passed"],
+  ["merged", "Merged"],
+  ["planned", "Planned"],
+  ["something-new", "something-new"],
+])("labels part status %s as %s", (status, label) => {
+  expect(partStatusLabel(status)).toBe(label);
 });
