@@ -1,4 +1,4 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { OrchestrationDispatchCommandError, PluginCardError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -2351,6 +2351,14 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(secretRequests.answer(input)),
           ),
+        [WS_METHODS.pluginCardsSubscribeThread]: (_input) => Stream.empty,
+        [WS_METHODS.pluginCardsSubscribeLive]: (_input) => Stream.empty,
+        [WS_METHODS.pluginCardsAnswerDecision]: (_input) =>
+          Effect.fail(new PluginCardError({ reason: "unavailable" })),
+        [WS_METHODS.pluginCardsRunAction]: (_input) =>
+          Effect.fail(new PluginCardError({ reason: "unavailable" })),
+        [WS_METHODS.pluginCardsReadAsset]: (_input) =>
+          Effect.fail(new PluginCardError({ reason: "unavailable" })),
         [WS_METHODS.scheduledTasksListWebhookDeliveries]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.listWebhookDeliveries(input)),
