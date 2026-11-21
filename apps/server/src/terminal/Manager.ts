@@ -79,6 +79,14 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
 import { terminalOutputStream } from "./OutputProtocol.ts";
+import {
+  inProcessTerminalSessionHost,
+  type AdoptedTerminalSession,
+  type HostedPtyProcess,
+  type TerminalLaunchRecord,
+  type TerminalSessionHostShape,
+} from "./sessionHost.ts";
+import { makeLiveTerminalSessionHost } from "./sessionHostLive.ts";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 
 export {
@@ -316,7 +324,7 @@ interface TerminalSessionState {
   inputCount: number;
   cols: number;
   rows: number;
-  process: PtyAdapter.PtyProcess | null;
+  process: HostedPtyProcess | null;
   shell: string | null;
   unsubscribeData: (() => void) | null;
   unsubscribeExit: (() => void) | null;
@@ -1651,6 +1659,18 @@ function createTerminalSpawnEnv(
   return stripAppImageRuntimeEnv(spawnEnv);
 }
 
+function launchRecordOf(session: TerminalSessionState, shell: string): TerminalLaunchRecord {
+  return {
+    cwd: session.cwd,
+    worktreePath: session.worktreePath,
+    shell,
+    runtimeEnv: session.runtimeEnv,
+    stopOnSettle: session.stopOnSettle,
+    cols: session.cols,
+    rows: session.rows,
+  };
+}
+
 function normalizedRuntimeEnv(
   env: Record<string, string> | undefined,
 ): Record<string, string> | null {
@@ -1665,6 +1685,7 @@ interface TerminalManagerOptions {
   historyLineLimit?: number;
   historyByteLimit?: number;
   ptyAdapter: PtyAdapter.PtyAdapter["Service"];
+  sessionHost?: TerminalSessionHostShape;
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
   managedBinaryCacheDir?: string;
@@ -1742,7 +1763,8 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
 export const make = Effect.fn("TerminalManager.make")(function* (
   deriveConfigMap: typeof deriveProviderInstanceConfigMap,
 ) {
-  const { terminalLogsDir, providerStatusCacheDir, baseDir } = yield* ServerConfig.ServerConfig;
+  const { terminalLogsDir, providerStatusCacheDir, baseDir, stateDir } =
+    yield* ServerConfig.ServerConfig;
   const ptyAdapter = yield* PtyAdapter.PtyAdapter;
   const portDiscovery = yield* PortScanner.PortDiscovery;
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
@@ -1762,6 +1784,7 @@ export const make = Effect.fn("TerminalManager.make")(function* (
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,
     ptyAdapter,
+    sessionHost: yield* makeLiveTerminalSessionHost({ ptyAdapter, stateDir }),
     processTable: nativeTelemetry.processTable.pipe(
       Effect.mapError(
         (cause) => new TerminalSubprocessCheckError({ cause, command: "resource-monitor" }),
@@ -1924,6 +1947,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const processKillGraceMs = options.processKillGraceMs ?? DEFAULT_PROCESS_KILL_GRACE_MS;
   const maxRetainedInactiveSessions =
     options.maxRetainedInactiveSessions ?? DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS;
+  const sessionHost = options.sessionHost ?? inProcessTerminalSessionHost(options.ptyAdapter);
   const registerTerminalProcesses = options.registerTerminalProcesses ?? (() => Effect.void);
   const unregisterTerminal = options.unregisterTerminal ?? (() => Effect.void);
 
@@ -2715,7 +2739,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     index = 0,
     lastError: PtyAdapter.PtySpawnError | null = null,
   ): Effect.fn.Return<
-    { process: PtyAdapter.PtyProcess; shell: string; shellLabel: string },
+    { process: HostedPtyProcess; shell: string; shellLabel: string },
     PtyAdapter.PtySpawnError
   > {
     if (index >= shellCandidates.length) {
@@ -2778,14 +2802,18 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       survivesRestart: true,
     });
     const attempt = yield* Effect.result(
-      options.ptyAdapter.spawn({
-        shell: launch.command,
-        ...(launch.args.length > 0 ? { args: [...launch.args] } : {}),
-        cwd: session.cwd,
-        cols: session.cols,
-        rows: session.rows,
-        env: spawnEnv,
-      }),
+      sessionHost.spawn(
+        { threadId: session.threadId, terminalId: session.terminalId },
+        launchRecordOf(session, candidate.shell),
+        {
+          shell: launch.command,
+          ...(launch.args.length > 0 ? { args: [...launch.args] } : {}),
+          cwd: session.cwd,
+          cols: session.cols,
+          rows: session.rows,
+          env: spawnEnv,
+        },
+      ),
     );
 
     if (attempt._tag === "Success") {
@@ -2837,7 +2865,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       return [undefined, state] as const;
     });
 
-    let ptyProcess: PtyAdapter.PtyProcess | null = null;
+    let ptyProcess: HostedPtyProcess | null = null;
     let startedShell: string | null = null;
 
     const startResult = yield* Effect.result(
@@ -3229,16 +3257,134 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         yield* runKillEscalation(session.process, session.threadId, session.terminalId);
       });
 
+      const detachSession = Effect.fn("terminal.detachSession")(function* (
+        session: TerminalSessionState,
+      ) {
+        cleanupProcessHandles(session);
+        const process = session.process;
+        if (!process) return;
+        yield* persistHistory(session.threadId, session.terminalId, session.history);
+        process.detach();
+      });
+
       // Closing workerScope next would interrupt escalations of already stopped terminals.
       yield* Effect.all(
         [
-          Effect.forEach(sessions, cleanupSession, { concurrency: "unbounded", discard: true }),
+          Effect.forEach(sessions, sessionHost.persistent ? detachSession : cleanupSession, {
+            concurrency: "unbounded",
+            discard: true,
+          }),
           Fiber.awaitAll(pendingKills),
         ],
         { concurrency: "unbounded", discard: true },
       );
     }).pipe(Effect.ignoreCause({ log: true })),
   );
+
+  const adoptSession = Effect.fn("terminal.adoptSession")(function* (
+    adopted: AdoptedTerminalSession,
+  ) {
+    const { threadId, terminalId } = adopted.key;
+    const { launch, exit } = adopted;
+    const process = exit === null ? adopted.process : null;
+    const history = yield* readHistory(threadId, terminalId).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("failed to read adopted terminal history", {
+          threadId,
+          terminalId,
+          error,
+        }).pipe(Effect.as(new BoundedTerminalHistory(historyLineLimit, "", historyByteLimit))),
+      ),
+    );
+    const session: TerminalSessionState = {
+      threadId,
+      terminalId,
+      cwd: launch.cwd,
+      worktreePath: launch.worktreePath,
+      status: process ? "running" : "exited",
+      pid: process ? process.pid : null,
+      history,
+      pendingHistoryControlSequence: "",
+      pendingProcessEvents: [],
+      pendingProcessEventIndex: 0,
+      processEventDrainRunning: false,
+      exitCode: exit !== null && Number.isInteger(exit.exitCode) ? exit.exitCode : null,
+      exitSignal: exit !== null && Number.isInteger(exit.signal) ? exit.signal : null,
+      updatedAt: yield* nowIso,
+      eventSequence: 0,
+      inputCount: 0,
+      cols: launch.cols,
+      rows: launch.rows,
+      process,
+      shell: launch.shell,
+      unsubscribeData: null,
+      unsubscribeExit: null,
+      hasRunningSubprocess: false,
+      childCommandLabel: null,
+      runtimeEnv: normalizedRuntimeEnv(launch.runtimeEnv ?? undefined),
+      stopOnSettle: launch.stopOnSettle,
+      startupError: null,
+    };
+    const backlog = sanitizeTerminalHistoryChunk("", adopted.backlog);
+    if (backlog.visibleText.length > 0) history.append(backlog.visibleText);
+    if (process) session.pendingHistoryControlSequence = backlog.pendingControlSequence;
+    advanceEventSequence(session);
+
+    const sessionKey = toSessionKey(threadId, terminalId);
+    let eventsActivated = false;
+    yield* modifyManagerState((state) => {
+      if (process) {
+        const processPid = process.pid;
+        session.unsubscribeData = process.onData((data) => {
+          if (!enqueueProcessEvent(session, processPid, { type: "output", data })) return;
+          if (eventsActivated) runFork(drainProcessEvents(session, processPid));
+        });
+        session.unsubscribeExit = process.onExit((event) => {
+          if (!enqueueProcessEvent(session, processPid, { type: "exit", event })) return;
+          if (eventsActivated) runFork(drainProcessEvents(session, processPid));
+        });
+      }
+      const sessions = new Map(state.sessions);
+      sessions.set(sessionKey, session);
+      closedSessionKeys.delete(sessionKey);
+      return [undefined, { ...state, sessions }] as const;
+    });
+    yield* persistHistory(threadId, terminalId, history);
+    eventsActivated = true;
+    if (process && session.processEventDrainRunning) {
+      runFork(drainProcessEvents(session, process.pid));
+    }
+  });
+
+  // Requests wait for adoption so a client resuming after a restart reaches the
+  // shell the host kept instead of starting a new one.
+  const adoptionDone = yield* Deferred.make<void>();
+  yield* sessionHost.adoptAll.pipe(
+    Effect.flatMap((adopted) =>
+      Effect.forEach(
+        adopted,
+        (session) =>
+          adoptSession(session).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("failed to adopt terminal session", {
+                threadId: session.key.threadId,
+                terminalId: session.key.terminalId,
+                cause,
+              }),
+            ),
+          ),
+        { discard: true },
+      ),
+    ),
+    Effect.andThen(evictInactiveSessionsIfNeeded()),
+    Effect.catchCause((cause) => Effect.logError("failed to adopt terminal sessions", { cause })),
+    Effect.ensuring(Deferred.succeed(adoptionDone, undefined)),
+    Effect.forkIn(workerScope),
+  );
+  const afterAdoption =
+    <Args extends ReadonlyArray<unknown>, A, E, R>(f: (...args: Args) => Effect.Effect<A, E, R>) =>
+    (...args: Args): Effect.Effect<A, E, R> =>
+      Deferred.await(adoptionDone).pipe(Effect.andThen(Effect.suspend(() => f(...args))));
 
   const openWithWorkspaceLease = Effect.fn("terminal.openLocked")(function* (
     requestedInput: TerminalOpenInput,
@@ -3488,6 +3634,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     };
 
     return Effect.gen(function* () {
+      yield* Deferred.await(adoptionDone);
       const bufferedEvents: TerminalEvent[] = [];
       let deliverLive = false;
       let snapshotFloor: number | null = null;
@@ -3714,6 +3861,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     let unsubscribe: (() => void) | null = null;
 
     return Effect.gen(function* () {
+      yield* Deferred.await(adoptionDone);
       const bufferedEvents: TerminalEvent[] = [];
       let deliverLive = false;
 
@@ -3923,18 +4071,18 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   });
 
   return TerminalManager.of({
-    open,
-    getShell,
+    open: afterAdoption(open),
+    getShell: afterAdoption(getShell),
     attachStream,
     attachOutputStream,
     observeStream,
     resyncStream,
-    write,
-    resize,
-    clear,
-    close,
-    closeIdle,
-    closeOnSettle,
+    write: afterAdoption(write),
+    resize: afterAdoption(resize),
+    clear: afterAdoption(clear),
+    close: afterAdoption(close),
+    closeIdle: afterAdoption(closeIdle),
+    closeOnSettle: afterAdoption(closeOnSettle),
     subscribe,
     subscribeMetadata,
   });

@@ -49,6 +49,13 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as TerminalManager from "./Manager.ts";
+import type {
+  AdoptedTerminalSession,
+  HostedPtyProcess,
+  TerminalLaunchRecord,
+  TerminalSessionHostShape,
+  TerminalSessionKey,
+} from "./sessionHost.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { makePrepareTerminalLaunch } from "../workspace/restoreMissingWorktree.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -184,6 +191,84 @@ class FakePtyAdapter {
   }
 }
 
+class FakeHostedPtyProcess extends FakePtyProcess implements HostedPtyProcess {
+  detachCount = 0;
+
+  detach(): void {
+    this.detachCount += 1;
+  }
+}
+
+class FakeSessionHost implements TerminalSessionHostShape {
+  readonly persistent: boolean;
+  readonly adoptAll: Effect.Effect<ReadonlyArray<AdoptedTerminalSession>>;
+  readonly spawns: Array<{
+    readonly key: TerminalSessionKey;
+    readonly launch: TerminalLaunchRecord;
+    readonly input: PtyAdapter.PtySpawnInput;
+    readonly process: FakeHostedPtyProcess;
+  }> = [];
+  private nextPid = 7000;
+
+  constructor(
+    options: {
+      readonly persistent?: boolean;
+      readonly adoptAll?: Effect.Effect<ReadonlyArray<AdoptedTerminalSession>>;
+    } = {},
+  ) {
+    this.persistent = options.persistent ?? true;
+    this.adoptAll = options.adoptAll ?? Effect.succeed([]);
+  }
+
+  readonly spawn = (
+    key: TerminalSessionKey,
+    launch: TerminalLaunchRecord,
+    input: PtyAdapter.PtySpawnInput,
+  ): Effect.Effect<HostedPtyProcess, PtyAdapter.PtySpawnError> =>
+    Effect.sync(() => {
+      const process = new FakeHostedPtyProcess(this.nextPid++);
+      this.spawns.push({ key, launch, input, process });
+      return process;
+    });
+
+  readonly restorableCommand = () => Effect.succeedNone;
+
+  readonly recordCommand = () => Effect.void;
+}
+
+function adoptedTerminal(input: {
+  readonly pid: number;
+  readonly threadId?: string;
+  readonly terminalId?: string;
+  readonly backlog?: string;
+  readonly exit?: PtyAdapter.PtyExitEvent;
+  readonly launch?: Partial<TerminalLaunchRecord>;
+}): { readonly session: AdoptedTerminalSession; readonly process: FakeHostedPtyProcess } {
+  const pty = new FakeHostedPtyProcess(input.pid);
+  return {
+    process: pty,
+    session: {
+      key: {
+        threadId: input.threadId ?? "thread-1",
+        terminalId: input.terminalId ?? DEFAULT_TERMINAL_ID,
+      },
+      launch: {
+        cwd: process.cwd(),
+        worktreePath: null,
+        shell: "/bin/zsh",
+        runtimeEnv: null,
+        stopOnSettle: false,
+        cols: 100,
+        rows: 24,
+        ...input.launch,
+      },
+      process: pty,
+      backlog: input.backlog ?? "",
+      exit: input.exit ?? null,
+    },
+  };
+}
+
 // Publishes 9 MiB of output, past a stream's 8 MiB budget, while nothing pulls.
 const publishPastOutputBudget = (
   manager: TerminalManager.TerminalManager["Service"],
@@ -264,6 +349,11 @@ interface CreateManagerOptions {
   >[0]["resolveProviderInstanceEnvironment"];
   managedBinaryCacheDir?: string;
   managedBinaryToolsDir?: string;
+  sessionHost?: TerminalSessionHostShape;
+  /** Saved default-terminal history for thread-1, written before the manager starts. */
+  initialHistory?: string;
+  /** Owns only the manager, so closing it leaves the fixture's directories in place. */
+  managerScope?: Scope.Scope;
 }
 
 interface ManagerFixture {
@@ -288,8 +378,12 @@ const createManager = (
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-terminal-" });
       const logsDir = join(baseDir, "userdata", "logs", "terminals");
       const ptyAdapter = options.ptyAdapter ?? new FakePtyAdapter();
+      if (options.initialHistory !== undefined) {
+        yield* fs.makeDirectory(logsDir, { recursive: true });
+        yield* fs.writeFileString(yield* historyLogPath(logsDir), options.initialHistory);
+      }
 
-      const manager = yield* TerminalManager.makeWithOptions({
+      const makeManager = TerminalManager.makeWithOptions({
         logsDir,
         historyLineLimit,
         ptyAdapter,
@@ -323,7 +417,11 @@ const createManager = (
               managedBinaryCacheDir: options.managedBinaryCacheDir,
               managedBinaryToolsDir: options.managedBinaryToolsDir,
             }),
+        ...(options.sessionHost !== undefined ? { sessionHost: options.sessionHost } : {}),
       }).pipe(Effect.provideService(SpawnExecutableResolution, (command) => command));
+      const manager = yield* options.managerScope === undefined
+        ? makeManager
+        : makeManager.pipe(Effect.provideService(Scope.Scope, options.managerScope));
       const eventsRef = yield* Ref.make<ReadonlyArray<TerminalEvent>>([]);
       const unsubscribe = yield* manager.subscribe((event) =>
         Ref.update(eventsRef, (events) => [...events, event]),
@@ -3198,6 +3296,309 @@ it.layer(
       expect(process.writes).toEqual([]);
       expect(process.killSignals).toEqual([]);
       expect(missingEvents).toEqual([]);
+    }),
+  );
+
+  it.effect("detaches every live terminal without a signal when a persistent host shuts down", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const managerScope = yield* Scope.make();
+      const sessionHost = new FakeSessionHost({ persistent: true });
+      const { manager, logsDir } = yield* createManager(5, { sessionHost, managerScope });
+      yield* manager.open(openInput());
+      yield* manager.open(openInput({ terminalId: "term-2" }));
+      const output = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output"
+          ? Deferred.succeed(output, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      sessionHost.spawns[0]!.process.emitData("before shutdown\n");
+      yield* Deferred.await(output);
+      unsubscribe();
+
+      yield* Scope.close(managerScope, Exit.void);
+
+      expect(
+        sessionHost.spawns.map(({ process }) => ({
+          detached: process.detachCount,
+          signals: process.killSignals,
+        })),
+      ).toEqual([
+        { detached: 1, signals: [] },
+        { detached: 1, signals: [] },
+      ]);
+      expect(yield* fs.readFileString(yield* historyLogPath(logsDir))).toBe("before shutdown\n");
+    }),
+  );
+
+  it.effect(
+    "terminates a live terminal with SIGTERM then SIGKILL when an in-process host shuts down",
+    () =>
+      Effect.gen(function* () {
+        const managerScope = yield* Scope.make();
+        const { manager, ptyAdapter } = yield* createManager(5, {
+          processKillGraceMs: 1_000,
+          managerScope,
+        });
+        yield* manager.open(openInput());
+        const process = ptyAdapter.processes[0]!;
+        const sigterm = yield* Deferred.make<void>();
+        process.onKill = (signal) => {
+          if (signal === "SIGTERM") Deferred.doneUnsafe(sigterm, Effect.void);
+        };
+
+        const shutdown = yield* Scope.close(managerScope, Exit.void).pipe(Effect.forkChild);
+        yield* Deferred.await(sigterm);
+        yield* TestClock.adjust("1 second");
+        yield* Fiber.join(shutdown);
+
+        expect(process.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("answers open and observe only after adopting the host's live terminals", () =>
+    Effect.gen(function* () {
+      const release = yield* Deferred.make<void>();
+      const adopted = adoptedTerminal({ pid: 4242 });
+      const sessionHost = new FakeSessionHost({
+        adoptAll: Deferred.await(release).pipe(Effect.as([adopted.session])),
+      });
+      const { manager, ptyAdapter } = yield* createManager(5, { sessionHost });
+      const observed = yield* Deferred.make<TerminalAttachStreamEvent>();
+      const observing = yield* manager
+        .observeStream({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID }, (event) =>
+          Deferred.succeed(observed, event).pipe(Effect.asVoid),
+        )
+        .pipe(Effect.forkChild);
+      const opening = yield* manager.open(openInput()).pipe(Effect.forkChild);
+
+      yield* Deferred.succeed(release, undefined);
+
+      (yield* Fiber.join(observing))();
+      expect(yield* Deferred.await(observed)).toMatchObject({
+        type: "snapshot",
+        snapshot: { pid: 4242, status: "running" },
+      });
+      expect(yield* Fiber.join(opening)).toMatchObject({ pid: 4242, status: "running" });
+      expect(sessionHost.spawns).toEqual([]);
+      expect(ptyAdapter.spawnInputs).toEqual([]);
+      expect(adopted.process.killSignals).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "resumes an adopted terminal with its saved history and backlog and streams new output",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const adopted = adoptedTerminal({ pid: 4242, backlog: "while\u001b[6n away\n" });
+        const sessionHost = new FakeSessionHost({ adoptAll: Effect.succeed([adopted.session]) });
+        const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+          sessionHost,
+          initialHistory: "before restart\n",
+        });
+        const events: TerminalAttachStreamEvent[] = [];
+        const output = yield* Deferred.make<void>();
+        const stop = yield* manager.attachStream(
+          { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, resume: true },
+          (event) =>
+            Effect.sync(() => events.push(event)).pipe(
+              Effect.andThen(
+                event.type === "output" ? Deferred.succeed(output, undefined) : Effect.void,
+              ),
+            ),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(stop));
+
+        expect(events).toMatchObject([
+          {
+            type: "snapshot",
+            snapshot: {
+              pid: 4242,
+              status: "running",
+              history: "before restart\nwhile away\n",
+            },
+          },
+        ]);
+        expect(yield* fs.readFileString(yield* historyLogPath(logsDir))).toBe(
+          "before restart\nwhile away\n",
+        );
+        adopted.process.emitData("after\n");
+        yield* Deferred.await(output);
+        expect(events[1]).toMatchObject({ type: "output", data: "after\n" });
+        expect(sessionHost.spawns).toEqual([]);
+        expect(ptyAdapter.spawnInputs).toEqual([]);
+      }),
+  );
+
+  it.effect("polls an adopted terminal for running commands and registers its processes", () =>
+    Effect.gen(function* () {
+      const adopted = adoptedTerminal({ pid: 4242 });
+      const registered: Array<ReadonlyArray<number>> = [];
+      const { manager } = yield* createManager(5, {
+        sessionHost: new FakeSessionHost({ adoptAll: Effect.succeed([adopted.session]) }),
+        subprocessPollIntervalMs: 1_000,
+        processTable: Effect.succeed([
+          { pid: 4242, ppid: 1, name: "zsh" },
+          { pid: 500, ppid: 4242, name: "node" },
+        ]),
+        registerTerminalProcesses: ({ processIds }) =>
+          Effect.sync(() => {
+            registered.push(processIds);
+          }),
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+      const activity = yield* Deferred.make<TerminalEvent>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "activity"
+          ? Deferred.succeed(activity, event).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      (yield* manager.observeStream(
+        { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID },
+        () => Effect.void,
+      ))();
+
+      yield* TestClock.adjust("1 second");
+
+      expect(yield* Deferred.await(activity)).toMatchObject({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        hasRunningSubprocess: true,
+        label: "node",
+      });
+      expect(registered).toContainEqual([4242, 500]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("exposes an adopted terminal that already exited with its exit code", () =>
+    Effect.gen(function* () {
+      const adopted = adoptedTerminal({ pid: 4242, exit: { exitCode: 3, signal: null } });
+      const sessionHost = new FakeSessionHost({ adoptAll: Effect.succeed([adopted.session]) });
+      const { manager, ptyAdapter } = yield* createManager(5, { sessionHost });
+      const events: TerminalAttachStreamEvent[] = [];
+
+      (yield* manager.observeStream(
+        { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID },
+        (event) => Effect.sync(() => events.push(event)),
+      ))();
+
+      expect(events).toMatchObject([
+        {
+          type: "snapshot",
+          snapshot: { status: "exited", exitCode: 3, exitSignal: null, pid: null },
+        },
+      ]);
+      expect(sessionHost.spawns).toEqual([]);
+      expect(ptyAdapter.spawnInputs).toEqual([]);
+    }),
+  );
+
+  it.effect("closes only the adopted shells idle at a prompt when their thread settles", () =>
+    Effect.gen(function* () {
+      const idle = adoptedTerminal({ pid: 4300, terminalId: "idle" });
+      const busy = adoptedTerminal({ pid: 4301, terminalId: "busy" });
+      const { manager } = yield* createManager(5, {
+        sessionHost: new FakeSessionHost({
+          adoptAll: Effect.succeed([idle.session, busy.session]),
+        }),
+        processTable: Effect.succeed([
+          { pid: 4300, ppid: 1, name: "zsh" },
+          { pid: 4301, ppid: 1, name: "zsh" },
+          { pid: 500, ppid: 4301, name: "node" },
+        ]),
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+
+      yield* manager.closeOnSettle({ threadId: "thread-1" });
+
+      expect(idle.process.killSignals[0]).toBe("SIGTERM");
+      expect(busy.process.killed).toBe(false);
+      expect([idle.process.detachCount, busy.process.detachCount]).toEqual([0, 0]);
+    }),
+  );
+
+  it.effect("keeps an adopted shell for the same launch context and restarts it for another", () =>
+    Effect.gen(function* () {
+      const adopted = adoptedTerminal({
+        pid: 4242,
+        launch: { shell: "/bin/bash", runtimeEnv: { B: "2", A: "1" } },
+      });
+      const sessionHost = new FakeSessionHost({ adoptAll: Effect.succeed([adopted.session]) });
+      const { manager, baseDir } = yield* createManager(5, {
+        sessionHost,
+        shellResolver: () => "/bin/bash",
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+
+      const kept = yield* manager.open(openInput({ env: { A: "1", B: "2" } }));
+
+      expect(kept).toMatchObject({ pid: 4242, status: "running" });
+      expect(adopted.process.killed).toBe(false);
+      expect(sessionHost.spawns).toEqual([]);
+
+      const restarted = yield* manager.open(openInput({ cwd: baseDir }));
+
+      expect(adopted.process.killSignals[0]).toBe("SIGTERM");
+      expect(restarted).toMatchObject({ pid: 7000, status: "running", cwd: baseDir });
+      expect(sessionHost.spawns.map(({ key, launch }) => ({ key, launch }))).toEqual([
+        {
+          key: { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID },
+          launch: {
+            cwd: baseDir,
+            worktreePath: null,
+            shell: "/bin/bash",
+            runtimeEnv: null,
+            stopOnSettle: false,
+            cols: 100,
+            rows: 24,
+          },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("kills an adopted terminal through its host when the user closes or deletes it", () =>
+    Effect.gen(function* () {
+      const closed = adoptedTerminal({ pid: 4300, terminalId: "closed" });
+      const deleted = adoptedTerminal({ pid: 4301, terminalId: "deleted" });
+      const { manager, getEvents } = yield* createManager(5, {
+        sessionHost: new FakeSessionHost({
+          adoptAll: Effect.succeed([closed.session, deleted.session]),
+        }),
+      });
+
+      yield* manager.close({ threadId: "thread-1", terminalId: "closed" });
+      yield* manager.close({ threadId: "thread-1", terminalId: "deleted", deleteHistory: true });
+
+      expect(closed.process.killSignals[0]).toBe("SIGTERM");
+      expect(deleted.process.killSignals[0]).toBe("SIGTERM");
+      expect([closed.process.detachCount, deleted.process.detachCount]).toEqual([0, 0]);
+      expect(
+        (yield* getEvents)
+          .filter((event) => event.type === "closed")
+          .map((event) => event.terminalId),
+      ).toEqual(["closed", "deleted"]);
+    }),
+  );
+
+  it.effect("serves open and attach as if nothing was adopted when adoption fails", () =>
+    Effect.gen(function* () {
+      const sessionHost = new FakeSessionHost({
+        adoptAll: Effect.die(new Error("terminal host unreachable")),
+      });
+      const { manager } = yield* createManager(5, { sessionHost });
+
+      const opened = yield* manager.open(openInput());
+      const missing = yield* manager
+        .attachStream(
+          { threadId: "thread-1", terminalId: "never-opened", resume: true },
+          () => Effect.void,
+        )
+        .pipe(Effect.flip);
+
+      expect(opened).toMatchObject({ pid: 7000, status: "running" });
+      expect(sessionHost.spawns).toHaveLength(1);
+      expect(missing._tag).toBe("TerminalSessionLookupError");
     }),
   );
 });
