@@ -82,6 +82,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useAtomCommand } from "../../state/use-atom-command";
 
 function KeybindingPill({ value }: { value: string }) {
+  const isMac = navigator.platform.toLowerCase().includes("mac");
   // Keys dedupe repeated parts; a literal "+" in a shortcut splits into empty strings.
   const seenParts = new Map<string, number>();
   const parts = value.split("+").map((part) => {
@@ -94,20 +95,24 @@ function KeybindingPill({ value }: { value: string }) {
       {parts.map(({ part, key }) => (
         <Kbd key={key}>
           {part === "mod"
-            ? navigator.platform.toLowerCase().includes("mac")
+            ? isMac
               ? "⌘"
               : "Ctrl"
             : part === "shift"
               ? "⇧"
               : part === "alt"
-                ? navigator.platform.toLowerCase().includes("mac")
+                ? isMac
                   ? "⌥"
                   : "Alt"
                 : part === "ctrl"
-                  ? "⌃"
-                  : part.length === 1
-                    ? part.toUpperCase()
-                    : part}
+                  ? isMac
+                    ? "⌃"
+                    : "Ctrl"
+                  : part === "space"
+                    ? "Space"
+                    : part.length === 1
+                      ? part.toUpperCase()
+                      : part}
         </Kbd>
       ))}
     </KbdGroup>

@@ -59,14 +59,22 @@ function isInsideConfirmation(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest('[role="alertdialog"]') !== null;
 }
 
-function scopeCommandHandler(scope: CommandScope, event: KeyboardEvent) {
-  const { commands, options } = scope;
-  const command = resolveShortcutCommand(
+function scopeCommand(
+  scope: CommandScope,
+  event: KeyboardEvent,
+  extraContext?: Partial<ShortcutMatchContext>,
+) {
+  const { options } = scope;
+  return resolveShortcutCommand(
     event,
     options.keybindings?.() ?? appAtomRegistry.get(primaryServerKeybindingsAtom),
-    { context: { ...readFocusContext(event), ...options.context?.() } },
+    { context: { ...readFocusContext(event), ...options.context?.(), ...extraContext } },
   );
-  return command === null ? undefined : commands[command];
+}
+
+function scopeCommandHandler(scope: CommandScope, event: KeyboardEvent) {
+  const command = scopeCommand(scope, event);
+  return command === null ? undefined : scope.commands[command];
 }
 
 function runScope(scope: CommandScope, event: KeyboardEvent): boolean {
@@ -103,6 +111,13 @@ function runScopes(scopes: readonly CommandScope[], event: KeyboardEvent): boole
   return false;
 }
 
+// stopPropagation alone leaves other window listeners (ChatView's terminal shortcuts, the stash
+// menu) running; this listener is registered first, so it can cut them off.
+function claim(event: KeyboardEvent) {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
 function handlePrefixKeyDown(event: KeyboardEvent): boolean {
   if (
     event.isComposing ||
@@ -118,8 +133,7 @@ function handlePrefixKeyDown(event: KeyboardEvent): boolean {
   if (!prefixArmed) {
     if (command !== "prefix.start" || event.repeat) return false;
     prefixArmed = true;
-    event.preventDefault();
-    event.stopPropagation();
+    claim(event);
     return true;
   }
 
@@ -129,33 +143,34 @@ function handlePrefixKeyDown(event: KeyboardEvent): boolean {
       prefixArmed = false;
       return false;
     }
-    event.preventDefault();
-    event.stopPropagation();
+    claim(event);
     return true;
   }
 
   prefixArmed = false;
-  event.preventDefault();
-  event.stopPropagation();
+  claim(event);
   if (event.key === "Escape") return true;
 
-  const action = resolveShortcutCommand(event, keybindings, {
-    context: { ...context, prefixActive: true },
-  });
-  if (action === null) return true;
+  let bound =
+    resolveShortcutCommand(event, keybindings, {
+      context: { ...context, prefixActive: true },
+    }) !== null;
   for (const scopes of [captureScopes, globalScopes]) {
     for (let index = scopes.length - 1; index >= 0; index -= 1) {
       const scope = scopes[index];
       if (!scope || (scope.options.when && !scope.options.when(event))) continue;
+      const action = scopeCommand(scope, event, { prefixActive: true });
+      if (action === null) continue;
+      bound = true;
       const handler = scope.commands[action];
-      if (handler === undefined) continue;
-      handler(event);
-      return true;
+      if (handler !== undefined && handler(event) !== false) return true;
     }
   }
-  toastManager.add(
-    stackedThreadToast({ type: "info", title: "That shortcut can't follow the prefix" }),
-  );
+  if (bound) {
+    toastManager.add(
+      stackedThreadToast({ type: "info", title: "That shortcut can't follow the prefix" }),
+    );
+  }
   return true;
 }
 

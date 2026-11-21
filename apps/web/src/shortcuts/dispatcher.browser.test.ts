@@ -65,6 +65,10 @@ function prefixSurface(
   stack.defer(() => container.remove());
   stack.defer(registerCommands({}));
   stack.defer(() => window.dispatchEvent(new Event("blur")));
+  const windowSeen: Event[] = [];
+  const onWindowKeyDown = (event: Event) => windowSeen.push(event);
+  window.addEventListener("keydown", onWindowKeyDown, true);
+  stack.defer(() => window.removeEventListener("keydown", onWindowKeyDown, true));
   input.focus();
   const received: Event[] = [];
   input.addEventListener("keydown", (event) => {
@@ -78,6 +82,7 @@ function prefixSurface(
   };
   return {
     received,
+    windowSeen,
     input,
     send,
     prefix: (init: KeyboardEventInit = {}) => send(" ", { code: "Space", ctrlKey: true, ...init }),
@@ -102,6 +107,7 @@ describe("prefix dispatcher", () => {
     expect(fixture.received).toEqual([]);
     const following = fixture.send("a");
     expect(fixture.received).toEqual([following]);
+    expect(fixture.windowSeen).toEqual([following]);
     expect(nextWaiting).toHaveBeenCalledOnce();
   });
 
@@ -161,6 +167,7 @@ describe("prefix dispatcher", () => {
       const following = fixture.send("a");
       expect(following.defaultPrevented).toBe(false);
       expect(fixture.received).toEqual([following]);
+      expect(fixture.windowSeen).toEqual([following]);
       expect(nextWaiting).not.toHaveBeenCalled();
     },
   );
@@ -248,6 +255,7 @@ describe("prefix dispatcher", () => {
       );
       const following = fixture.send("a");
       expect(fixture.received).toEqual([following]);
+      expect(fixture.windowSeen).toEqual([following]);
       expect(nextWaiting).not.toHaveBeenCalled();
       expect(toast).toHaveBeenCalledOnce();
     },
@@ -285,6 +293,41 @@ describe("prefix dispatcher", () => {
     expect(newest).toHaveBeenCalledExactlyOnceWith(action);
     expect(older).not.toHaveBeenCalled();
     expect(guarded).not.toHaveBeenCalled();
+  });
+
+  it("resolves each scope's own context and keybindings and passes a declined key on", () => {
+    using fixture = prefixSurface({
+      keybindings: [
+        ...DEFAULT_RESOLVED_KEYBINDINGS,
+        ...compileResolvedKeybindingsConfig([
+          { key: "p", command: "preview.toggle", when: "prefixActive && previewOpen" },
+        ]),
+      ],
+    });
+    using toast = vi.spyOn(toastManager, "add").mockReturnValue("prefix-toast");
+    const older = vi.fn();
+    const declined = vi.fn(() => false);
+    const closedPreview = vi.fn();
+    fixture.register({ "preview.toggle": older }, { context: () => ({ previewOpen: true }) });
+    fixture.register({ "preview.toggle": declined }, { context: () => ({ previewOpen: true }) });
+    fixture.register({ "preview.toggle": closedPreview });
+    fixture.prefix();
+    const action = fixture.send("p");
+    expect(declined).toHaveBeenCalledExactlyOnceWith(action);
+    expect(older).toHaveBeenCalledExactlyOnceWith(action);
+    expect(closedPreview).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it("toasts when every eligible handler declines the prefix action", () => {
+    using fixture = prefixSurface();
+    using toast = vi.spyOn(toastManager, "add").mockReturnValue("prefix-toast");
+    const declined = vi.fn(() => false);
+    fixture.register({ "thread.nextWaiting": declined });
+    fixture.prefix();
+    fixture.send("a");
+    expect(declined).toHaveBeenCalledOnce();
+    expect(toast).toHaveBeenCalledOnce();
   });
 
   it("runs prefix actions inside confirmations", () => {
