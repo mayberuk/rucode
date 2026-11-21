@@ -39,11 +39,11 @@ export function GittyPushCard({ card, threadRef }: PluginCardRendererProps<"gitt
     <PluginCardShell
       label="Push in batches"
       title={
-        <>
-          <span>Pushing</span>
+        <span className="inline-flex min-w-0 items-center gap-x-3">
+          <span className="shrink-0">{summary.verb}</span>
           <span className="min-w-0 truncate font-mono font-normal">{data.branch}</span>
-          <span className="font-normal text-muted-foreground">{summary.label}</span>
-        </>
+          <span className="shrink-0 font-normal text-muted-foreground">{summary.label}</span>
+        </span>
       }
       actions={<PluginCardActionButton card={card} actionId="push-next" threadRef={threadRef} />}
     >
@@ -57,7 +57,14 @@ export function GittyPushCard({ card, threadRef }: PluginCardRendererProps<"gitt
                   key={key}
                   state={batch.state}
                   label={batch.label}
-                  trailing={sha === null ? undefined : <span className="font-mono">{sha}</span>}
+                  trailing={
+                    sha === null ? undefined : (
+                      <>
+                        {batch.state === "pending" ? "not pushed " : null}
+                        <span className="font-mono">{sha}</span>
+                      </>
+                    )
+                  }
                 />
               );
             },
@@ -82,20 +89,25 @@ function MergeRequestRow({
   const pipeline = pipelineLabel(mergeRequest.pipeline);
   const url = mergeRequest.url;
   const display = mergeRequest.pipeline === "none" ? null : PIPELINE_DISPLAY[mergeRequest.pipeline];
+  const reference =
+    number ?? (url === null ? null : mergeRequest.draft ? "Draft" : "Merge request");
+  const StateGlyph = mergeRequest.draft ? PullRequestGlyph.draft : PullRequestGlyph.pullRequest;
   return (
     <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/60 pt-2.5 text-xs">
-      {mergeRequest.draft ? (
+      {reference === null ? null : (
         <>
-          <PullRequestGlyph.draft aria-hidden className="size-3.5 text-muted-foreground" />
-          <span className="text-foreground/80">Draft</span>
+          <StateGlyph aria-hidden className="size-3.5 text-muted-foreground" />
+          {mergeRequest.draft && number !== null ? (
+            <span className="text-foreground/80">Draft</span>
+          ) : null}
+          {url === null ? (
+            <span className="text-foreground/80">{reference}</span>
+          ) : (
+            <InlineButton tone="muted" onClick={() => onOpen(url)}>
+              {reference}
+            </InlineButton>
+          )}
         </>
-      ) : null}
-      {number === null ? null : url === null ? (
-        <span className="text-foreground/80">{number}</span>
-      ) : (
-        <InlineButton tone="muted" onClick={() => onOpen(url)}>
-          {number}
-        </InlineButton>
       )}
       {mergeRequest.additions === null || mergeRequest.deletions === null ? null : (
         <DiffStatLabel

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { expandableImages, thumbnailCaption, verdictPresentation } from "./livecheckCards.logic";
+import {
+  expandableImages,
+  progressMeta,
+  resultSummary,
+  thumbnailCaption,
+  verdictPresentation,
+} from "./livecheckCards.logic";
 
 describe("verdictPresentation", () => {
   it.each([
@@ -53,5 +59,30 @@ describe("expandableImages", () => {
 
   it("ignores loaded urls for assets no step names", () => {
     expect(expandableImages(steps, new Map([["99-other.png", "blob:other"]]))).toEqual([]);
+  });
+});
+
+describe("resultSummary", () => {
+  it("keeps a written summary", () => {
+    expect(resultSummary({ verdict: "error", summary: "Browser crashed" })).toBe("Browser crashed");
+  });
+
+  it("explains an error run that left no summary", () => {
+    expect(resultSummary({ verdict: "error", summary: "" })).toBe("The run ended without a result");
+  });
+
+  it("leaves other verdicts without a summary empty", () => {
+    expect(resultSummary({ verdict: "pass", summary: "" })).toBe("");
+  });
+});
+
+describe("progressMeta", () => {
+  it("names the total only when it is ahead of the current step", () => {
+    expect(progressMeta({ currentStep: 3, totalSteps: 5 })).toBe("step 3 of 5");
+    expect(progressMeta({ currentStep: 3, totalSteps: 3 })).toBe("step 3");
+  });
+
+  it("has nothing before the first step", () => {
+    expect(progressMeta({ currentStep: null, totalSteps: 0 })).toBeNull();
   });
 });

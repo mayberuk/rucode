@@ -8,6 +8,7 @@ import {
   pageUrl,
   pipelineLabel,
   pushSummary,
+  splitPath,
 } from "./iter8GittyCards.logic";
 
 describe("pageLabel", () => {
@@ -83,11 +84,21 @@ describe("pushSummary", () => {
   it("counts only done batches against all batches", () => {
     expect(
       pushSummary({ batches: [batch("done"), batch("done"), batch("running"), batch("pending")] }),
-    ).toEqual({ done: 2, total: 4, label: "2 of 4 batches" });
+    ).toEqual({ done: 2, total: 4, verb: "Pushing", label: "2 of 4 batches" });
   });
 
-  it("reports zero of zero for no batches", () => {
-    expect(pushSummary({ batches: [] })).toEqual({ done: 0, total: 0, label: "0 of 0 batches" });
+  it("says nothing to push yet for no batches", () => {
+    expect(pushSummary({ batches: [] })).toEqual({
+      done: 0,
+      total: 0,
+      verb: "Push",
+      label: "Nothing to push yet",
+    });
+  });
+
+  it("says Pushed once no batch is running or pending", () => {
+    expect(pushSummary({ batches: [batch("done"), batch("done")] }).verb).toBe("Pushed");
+    expect(pushSummary({ batches: [batch("done"), batch("pending")] }).verb).toBe("Pushing");
   });
 
   it("uses the singular for one batch", () => {
@@ -135,5 +146,15 @@ describe("pipelineLabel", () => {
     expect(pipelineLabel("running")).toBe("Pipeline running");
     expect(pipelineLabel("passed")).toBe("Pipeline passed");
     expect(pipelineLabel("failed")).toBe("Pipeline failed");
+  });
+});
+
+describe("splitPath", () => {
+  it("separates the folder, with its trailing slash, from the file name", () => {
+    expect(splitPath("apps/web/src/App.tsx")).toEqual({ folder: "apps/web/src/", name: "App.tsx" });
+  });
+
+  it("has no folder for a bare file name", () => {
+    expect(splitPath("README.md")).toEqual({ folder: "", name: "README.md" });
   });
 });

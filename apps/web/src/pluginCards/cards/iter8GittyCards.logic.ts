@@ -36,11 +36,27 @@ export function pageUrl(page: string, pagePath: string | null): string {
 export function pushSummary(card: Pick<GittyPushCardData, "batches">): {
   readonly done: number;
   readonly total: number;
+  readonly verb: "Push" | "Pushing" | "Pushed";
   readonly label: string;
 } {
   const total = card.batches.length;
   const done = card.batches.filter((batch) => batch.state === "done").length;
-  return { done, total, label: `${done} of ${countLabel(total, "batch", "batches")}` };
+  const pushing = card.batches.some(
+    (batch) => batch.state === "running" || batch.state === "pending",
+  );
+  return {
+    done,
+    total,
+    verb: total === 0 ? "Push" : pushing ? "Pushing" : "Pushed",
+    label:
+      total === 0 ? "Nothing to push yet" : `${done} of ${countLabel(total, "batch", "batches")}`,
+  };
+}
+
+/** Folder and file name of a path, so a long folder can be cut while the file name stays. */
+export function splitPath(path: string): { readonly folder: string; readonly name: string } {
+  const slash = path.lastIndexOf("/");
+  return { folder: path.slice(0, slash + 1), name: path.slice(slash + 1) };
 }
 
 /** GitLab numbers merge requests with `!`, GitHub numbers pull requests with `#`. */

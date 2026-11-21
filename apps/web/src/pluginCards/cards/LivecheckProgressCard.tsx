@@ -7,6 +7,7 @@ import { PluginCardStep } from "../core/PluginCardStep";
 import type { PluginCardRendererProps } from "../core/types";
 import { LivecheckThumbnail } from "./LivecheckThumbnail";
 import { PluginCardActionButton } from "./shared/PluginCardActionButton";
+import { progressMeta } from "./livecheckCards.logic";
 import { agoLabel } from "./shared/cardFormat.logic";
 
 /** Mounted only while the run is unfinished, so a settled card never subscribes to the tick. */
@@ -20,6 +21,7 @@ export function LivecheckProgressCard({
   threadRef,
 }: PluginCardRendererProps<"livecheck.progress">) {
   const data = card.data;
+  const stepMeta = progressMeta(data);
   const steps =
     data.steps.length === 0 ? (
       <p className="px-1 py-1 text-sm text-muted-foreground">Starting</p>
@@ -29,7 +31,13 @@ export function LivecheckProgressCard({
           key={step.index}
           state={step.state}
           label={step.label}
-          trailing={step.durationMs === null ? null : formatDuration(step.durationMs)}
+          trailing={
+            step.state === "stale"
+              ? "no heartbeat"
+              : step.durationMs === null
+                ? null
+                : formatDuration(step.durationMs)
+          }
         />
       ))
     );
@@ -38,18 +46,21 @@ export function LivecheckProgressCard({
     <PluginCardShell
       label="Live check in progress"
       title={
-        <>
-          <span>Checking</span>
+        <span className="inline-flex min-w-0 items-center gap-x-3">
+          <span className="shrink-0">Checking</span>
           <span className="min-w-0 truncate font-normal">{data.target}</span>
-          {data.currentStep === null ? null : (
-            <span className="font-normal text-muted-foreground">step {data.currentStep}</span>
-          )}
-          {data.heartbeatAt === null ? null : (
-            <span className="font-normal text-muted-foreground">
-              heartbeat <HeartbeatAge iso={data.heartbeatAt} />
+          {stepMeta === null && data.heartbeatAt === null ? null : (
+            <span className="shrink-0 font-normal text-muted-foreground">
+              {stepMeta}
+              {stepMeta !== null && data.heartbeatAt !== null ? " · " : null}
+              {data.heartbeatAt === null ? null : (
+                <>
+                  heartbeat <HeartbeatAge iso={data.heartbeatAt} />
+                </>
+              )}
             </span>
           )}
-        </>
+        </span>
       }
       actions={
         <PluginCardActionButton

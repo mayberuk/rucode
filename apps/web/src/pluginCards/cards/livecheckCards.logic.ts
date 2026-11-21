@@ -44,3 +44,19 @@ export function expandableImages(
     return src === undefined ? [] : [{ stepIndex: step.index, src, name: thumbnailCaption(step) }];
   });
 }
+
+export function resultSummary(data: Pick<LivecheckResultCardData, "verdict" | "summary">): string {
+  if (data.summary !== "") return data.summary;
+  return data.verdict === "error" ? "The run ended without a result" : "";
+}
+
+/** The "of N" only appears once the total is known to be ahead of the current step. */
+export function progressMeta(data: {
+  readonly currentStep: number | null;
+  readonly totalSteps: number;
+}): string | null {
+  if (data.currentStep === null) return null;
+  return data.totalSteps > data.currentStep
+    ? `step ${data.currentStep} of ${data.totalSteps}`
+    : `step ${data.currentStep}`;
+}

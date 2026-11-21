@@ -119,7 +119,8 @@ describe("LivecheckResultCard", () => {
       { router: false },
     );
     const section = screen.getByRole("region", { name: "Live check result" }).element();
-    expect(section.textContent).toContain("run r14 · just now");
+    expect(section.textContent).toContain("just now");
+    expect(section.textContent).not.toContain("run r14");
     expect(section.textContent).not.toMatch(/\ds ago/);
   });
 
