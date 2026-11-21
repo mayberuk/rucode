@@ -34,9 +34,12 @@ import {
   type SidebarSection,
   resolveSidebarDropVerb,
   groupSidebarThreadsByProject,
+  partitionInitiativeThreads,
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
+  skipFixedSortableItems,
 } from "./Sidebar.logic";
+import { createSidebarSortingStrategy } from "./Sidebar.drag";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   sortActiveThreadsByOrderKey,
@@ -1706,6 +1709,264 @@ describe("groupSidebarThreadsByProject", () => {
       { projectKey: "t3code", threads: ["a", "b"] },
       { projectKey: "fleet", threads: [] },
     ]);
+  });
+});
+
+describe("partitionInitiativeThreads", () => {
+  const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+  const thread = (id: string, environmentId = localEnvironmentId) => ({
+    environmentId,
+    id: ThreadId.make(id),
+  });
+  const group = (key: string, threadIds: string[], environmentId = localEnvironmentId) => ({
+    key,
+    environmentId,
+    threadIds: threadIds.map((id) => ThreadId.make(id)),
+  });
+  const keyOf = (id: string, environmentId = localEnvironmentId) =>
+    scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(id)));
+  const sections = (lists: Partial<Record<SidebarSection, string[]>>) => ({
+    pinned: (lists.pinned ?? []).map((id) => thread(id)),
+    active: (lists.active ?? []).map((id) => thread(id)),
+    working: (lists.working ?? []).map((id) => thread(id)),
+    snoozed: (lists.snoozed ?? []).map((id) => thread(id)),
+    settled: (lists.settled ?? []).map((id) => thread(id)),
+  });
+  const ids = (list: ReadonlyArray<{ readonly id: string }>) => list.map((entry) => entry.id);
+  const expanded = { routeThreadKey: null, collapsedKeys: {} };
+
+  it("moves listed inbox, Working and Settled chats into the group in the group's order", () => {
+    const input = sections({
+      active: ["inbox", "orchestrator"],
+      working: ["part-b", "busy"],
+      settled: ["part-a", "old"],
+    });
+    const { groups, remaining } = partitionInitiativeThreads(
+      input,
+      [group("local:nov18", ["orchestrator", "part-a", "part-b", "not-in-sidebar"])],
+      expanded,
+    );
+
+    expect(
+      groups.map((entry) => ({
+        key: entry.group.key,
+        threads: entry.threads.map(({ thread, section }) => `${thread.id}:${section}`),
+        hiddenCount: entry.hiddenCount,
+      })),
+    ).toEqual([
+      {
+        key: "local:nov18",
+        threads: ["orchestrator:active", "part-a:settled", "part-b:working"],
+        hiddenCount: 0,
+      },
+    ]);
+    expect(ids(remaining.active)).toEqual(["inbox"]);
+    expect(ids(remaining.working)).toEqual(["busy"]);
+    expect(ids(remaining.settled)).toEqual(["old"]);
+  });
+
+  it("leaves pinned and snoozed chats where the user put them", () => {
+    const input = sections({ pinned: ["pinned"], snoozed: ["snoozed"], active: ["listed"] });
+    const { groups, remaining } = partitionInitiativeThreads(
+      input,
+      [group("local:nov18", ["pinned", "snoozed", "listed"])],
+      expanded,
+    );
+
+    expect(groups.map((entry) => entry.threads.map(({ thread }) => thread.id))).toEqual([
+      ["listed"],
+    ]);
+    expect(ids(remaining.pinned)).toEqual(["pinned"]);
+    expect(ids(remaining.snoozed)).toEqual(["snoozed"]);
+    expect(remaining.active).toEqual([]);
+  });
+
+  it("drops a group whose listed chats are all pinned, snoozed or missing", () => {
+    const { groups, remaining } = partitionInitiativeThreads(
+      sections({ pinned: ["pinned"], snoozed: ["snoozed"], active: ["inbox"] }),
+      [group("local:quiet", ["pinned", "snoozed", "gone"]), group("local:empty", [])],
+      expanded,
+    );
+
+    expect(groups).toEqual([]);
+    expect(ids(remaining.active)).toEqual(["inbox"]);
+  });
+
+  it("returns every chat to its section when no initiative lists it", () => {
+    const input = sections({ active: ["a"], working: ["w"], settled: ["s"] });
+
+    for (const liveGroups of [[], [group("local:other", ["elsewhere"])]]) {
+      const { groups, remaining } = partitionInitiativeThreads(input, liveGroups, expanded);
+      expect(groups).toEqual([]);
+      expect(remaining).toEqual(input);
+    }
+  });
+
+  it("puts a chat two initiatives list only in the first", () => {
+    const { groups } = partitionInitiativeThreads(
+      sections({ active: ["shared", "own"] }),
+      [group("local:first", ["shared"]), group("local:second", ["shared", "own"])],
+      expanded,
+    );
+
+    expect(
+      groups.map((entry) => [entry.group.key, entry.threads.map(({ thread }) => thread.id)]),
+    ).toEqual([
+      ["local:first", ["shared"]],
+      ["local:second", ["own"]],
+    ]);
+  });
+
+  it("matches chats by environment when two environments run the same slug", () => {
+    const input = {
+      ...sections({}),
+      active: [thread("t1"), thread("t1", remoteEnvironmentId), thread("t2", remoteEnvironmentId)],
+    };
+    const { groups, remaining } = partitionInitiativeThreads(
+      input,
+      [
+        group(`${localEnvironmentId}:nov18`, ["t1"]),
+        group(`${remoteEnvironmentId}:nov18`, ["t1"], remoteEnvironmentId),
+      ],
+      expanded,
+    );
+
+    expect(
+      groups.map((entry) => [
+        entry.group.key,
+        entry.threads.map(({ thread }) => `${thread.environmentId}/${thread.id}`),
+      ]),
+    ).toEqual([
+      [`${localEnvironmentId}:nov18`, [`${localEnvironmentId}/t1`]],
+      [`${remoteEnvironmentId}:nov18`, [`${remoteEnvironmentId}/t1`]],
+    ]);
+    expect(remaining.active).toEqual([thread("t2", remoteEnvironmentId)]);
+  });
+
+  it("keeps only the open chat of a collapsed group and counts the rest as hidden", () => {
+    const input = sections({ active: ["a", "b"], settled: ["c"] });
+    const liveGroups = [group("local:nov18", ["a", "b", "c"]), group("local:other", ["x"])];
+    const collapsedKeys = { "local:nov18": true } as const;
+    const summarize = (routeThreadKey: string | null, collapsed: Record<string, true>) =>
+      partitionInitiativeThreads(input, liveGroups, {
+        routeThreadKey,
+        collapsedKeys: collapsed,
+      }).groups.map((entry) => ({
+        threads: entry.threads.map(({ thread }) => thread.id),
+        members: entry.members.map(({ thread }) => thread.id),
+        hiddenCount: entry.hiddenCount,
+      }));
+
+    expect(summarize(keyOf("c"), collapsedKeys)).toEqual([
+      { threads: ["c"], members: ["a", "b", "c"], hiddenCount: 2 },
+    ]);
+    expect(summarize(keyOf("elsewhere"), collapsedKeys)).toEqual([
+      { threads: [], members: ["a", "b", "c"], hiddenCount: 3 },
+    ]);
+    expect(summarize(null, collapsedKeys)).toEqual([
+      { threads: [], members: ["a", "b", "c"], hiddenCount: 3 },
+    ]);
+    expect(summarize(keyOf("c"), { "local:other": true })).toEqual([
+      { threads: ["a", "b", "c"], members: ["a", "b", "c"], hiddenCount: 0 },
+    ]);
+  });
+});
+
+describe("skipFixedSortableItems", () => {
+  const marker = (name: SidebarListMarker): SidebarListItem => ({ kind: "marker", marker: name });
+  const row = (key: string, section: SidebarSection): SidebarListItem => ({
+    kind: "thread",
+    key,
+    section,
+  });
+  const items: readonly SidebarListItem[] = [
+    marker("pinned-header"),
+    row("p1", "pinned"),
+    row("p2", "pinned"),
+    marker("pinned-divider"),
+    row("a1", "active"),
+    row("a2", "active"),
+    marker("settled-header"),
+    row("s1", "settled"),
+  ];
+  const heights = [0, 82, 82, 0, 82, 82, 32, 36];
+  // A group header, one card row and an end row sit after the pinned rows.
+  const blockHeights = [32, 82, 36];
+  const blockAt = 3;
+  const rectsFor = (list: readonly number[]) => {
+    let top = 100;
+    return list.map((height) => {
+      const rect = { top, bottom: top + height, height, left: 0, right: 260, width: 260 };
+      top += height + 1;
+      return rect;
+    });
+  };
+  const strategy = () =>
+    createSidebarSortingStrategy({ items, settledOrder: ["s1"], settledExpanded: true });
+  const withoutBlock = (activeIndex: number, overIndex: number, index: number) => {
+    const rects = rectsFor(heights);
+    return strategy()({
+      rects,
+      activeNodeRect: rects[activeIndex]!,
+      activeIndex,
+      overIndex,
+      index,
+    });
+  };
+  const withBlock = (activeIndex: number, overIndex: number, index: number) => {
+    const rects = rectsFor([
+      ...heights.slice(0, blockAt),
+      ...blockHeights,
+      ...heights.slice(blockAt),
+    ]);
+    const outer = (inner: number) => (inner < blockAt ? inner : inner + blockHeights.length);
+    const fixed = new Set(blockHeights.map((_, offset) => blockAt + offset));
+    return skipFixedSortableItems(
+      strategy(),
+      fixed,
+    )({
+      rects,
+      activeNodeRect: rects[outer(activeIndex)]!,
+      activeIndex: outer(activeIndex),
+      overIndex: outer(overIndex),
+      index: outer(index),
+    });
+  };
+
+  it.each([
+    ["p1 over a2", 1, 5],
+    ["a2 over p1", 5, 1],
+    ["a1 over s1", 4, 7],
+  ])("moves every row as it would without the block when dragging %s", (_, active, over) => {
+    expect([...items.keys()].some((index) => withoutBlock(active, over, index)?.y !== 0)).toBe(
+      true,
+    );
+    for (const index of items.keys()) {
+      expect(withBlock(active, over, index), `row ${index}`).toEqual(
+        withoutBlock(active, over, index),
+      );
+    }
+  });
+
+  it("holds the block still and treats hovering it as hovering nothing", () => {
+    const rects = rectsFor([
+      ...heights.slice(0, blockAt),
+      ...blockHeights,
+      ...heights.slice(blockAt),
+    ]);
+    const fixed = new Set([3, 4, 5]);
+    const wrapped = skipFixedSortableItems(strategy(), fixed);
+    for (const index of fixed) {
+      expect(
+        wrapped({ rects, activeNodeRect: rects[1]!, activeIndex: 1, overIndex: 8, index }),
+      ).toBeNull();
+    }
+    for (const index of items.keys()) {
+      const outer = index < blockAt ? index : index + blockHeights.length;
+      expect(
+        wrapped({ rects, activeNodeRect: rects[1]!, activeIndex: 1, overIndex: 4, index: outer }),
+      ).toEqual(withoutBlock(1, 1, index));
+    }
   });
 });
 

@@ -27,6 +27,7 @@ import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { readLocalApi } from "../localApi";
+import * as liveAtoms from "../pluginCards/live/liveAtoms";
 import type { Project } from "../types";
 import Sidebar from "./Sidebar";
 import { THREAD_JUMP_HINT_SHOW_DELAY_MS } from "./Sidebar.logic";
@@ -45,6 +46,7 @@ vi.mock("./sidebar/SidebarThreadRow", { spy: true });
 vi.mock("../state/session", { spy: true });
 vi.mock("../state/use-orchestration-command", { spy: true });
 vi.mock("../localApi", { spy: true });
+vi.mock("../pluginCards/live/liveAtoms", { spy: true });
 vi.mock(import("../state/server"), async (original) => {
   const { Atom } = await import("effect/reactivity");
   const { compileResolvedKeybindingsConfig } = await import("@t3tools/shared/keybindings");
@@ -395,5 +397,137 @@ describe("sidebar settled pagination", () => {
     const loadedRows = screen.container.querySelectorAll("[data-thread-item]").length;
     await act(() => moreButton.click());
     expect(screen.container.querySelectorAll("[data-thread-item]")).toHaveLength(loadedRows);
+  });
+});
+
+describe("sidebar initiative groups", () => {
+  const environmentId = EnvironmentId.make("local");
+  const groupedProject = project("active");
+  const shell = (id: string, title: string, overrides: Partial<EnvironmentThreadShell> = {}) =>
+    makeThreadFixture({
+      environmentId,
+      projectId: groupedProject.id,
+      id: ThreadId.make(id),
+      title,
+      ...overrides,
+    });
+  const threads = [
+    shell("inbox", "Inbox chat"),
+    shell("part", "Part one chat"),
+    shell("orchestrator", "Orchestrator chat"),
+    shell("pinned", "Pinned chat", {
+      pinnedAt: "2026-01-01T00:00:00.000Z",
+      pinOrderKey: "a",
+    }),
+  ];
+  const group = {
+    key: `${environmentId}:nov18`,
+    environmentId,
+    slug: "nov18",
+    label: "Nov 18 rollout",
+    threadIds: [ThreadId.make("orchestrator"), ThreadId.make("part"), ThreadId.make("pinned")],
+    endLabel: "Wave 2 of 3 · 1 of 2 parts settled",
+  };
+  const routeThreadRef = { environmentId, threadId: ThreadId.make("inbox") };
+
+  function setup(stack: DisposableStack, boringSidebarEnabled: boolean) {
+    const previousSettings = getClientSettings();
+    stack.defer(() => __setClientSettingsForTests(previousSettings));
+    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, boringSidebarEnabled });
+    stack.defer(() => window.localStorage.removeItem("t3code:sidebar:initiative-collapsed"));
+    stack.use(vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([group]));
+    vi.mocked(useProjects).mockReturnValue([groupedProject]);
+    vi.mocked(useQuietThreadShells).mockReturnValue(threads);
+    vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef: routeThreadRef });
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: null,
+      defaultProjectRef: { environmentId, projectId: groupedProject.id },
+      defaultProjectFallbackReady: true,
+      handleNewThread: vi.fn().mockResolvedValue(null),
+      routeDraftId: null,
+      routeThreadRef,
+    });
+  }
+
+  it("groups the listed chats after pinned ones, collapses them and opens the board", async () => {
+    using stack = new DisposableStack();
+    setup(stack, false);
+    await using screen = await render(
+      <SidebarProvider>
+        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+      </SidebarProvider>,
+    );
+    const header = screen.getByRole("button", { name: /^Nov 18 rollout/ });
+    const groupRow = (title: string) => screen.getByText(title, { exact: true }).first();
+    await expect.element(header).toHaveAttribute("aria-expanded", "true");
+    // Label then the count of grouped chats; the pinned one stays out of it.
+    expect(header.element().textContent).toBe("Nov 18 rollout2");
+    await expect.element(groupRow("Orchestrator chat")).toBeInTheDocument();
+    await expect.element(groupRow("Part one chat")).toBeInTheDocument();
+    const endRow = screen.getByRole("button", { name: group.endLabel, exact: true });
+    await expect.element(endRow).toBeInTheDocument();
+
+    const follows = (earlier: Element, later: Element) =>
+      (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const pinned = groupRow("Pinned chat").element();
+    const orchestrator = groupRow("Orchestrator chat").element();
+    const part = groupRow("Part one chat").element();
+    const inbox = groupRow("Inbox chat").element();
+    expect(follows(pinned, header.element())).toBe(true);
+    expect(follows(header.element(), orchestrator)).toBe(true);
+    expect(follows(orchestrator, part)).toBe(true);
+    expect(follows(part, endRow.element())).toBe(true);
+    expect(follows(endRow.element(), inbox)).toBe(true);
+
+    // The shift guard drops pointer presses on rows that just appeared; keys pass.
+    header.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    await expect
+      .element(screen.getByText("Orchestrator chat", { exact: true }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(screen.getByText("Part one chat", { exact: true }))
+      .not.toBeInTheDocument();
+    await expect.element(screen.getByText("Pinned chat", { exact: true })).toBeInTheDocument();
+    const collapsedEnd = screen.getByRole("button", {
+      name: `Show 2 more · ${group.endLabel}`,
+      exact: true,
+    });
+    await expect.element(collapsedEnd).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem("t3code:sidebar:initiative-collapsed")!)).toEqual(
+      {
+        [group.key]: true,
+      },
+    );
+
+    header.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(header).toHaveAttribute("aria-expanded", "true");
+    await expect.element(groupRow("Orchestrator chat")).toBeInTheDocument();
+    await expect.element(groupRow("Part one chat")).toBeInTheDocument();
+
+    using navigate = vi.spyOn(screen.router!, "navigate");
+    endRow.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ to: "/board" })),
+    );
+  });
+
+  it("keeps project folders and shows no initiative group in folder mode", async () => {
+    using stack = new DisposableStack();
+    setup(stack, true);
+    await using screen = await render(
+      <SidebarProvider>
+        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+      </SidebarProvider>,
+    );
+    await expect
+      .element(screen.getByText("Orchestrator chat", { exact: true }).first())
+      .toBeInTheDocument();
+    expect(screen.container.querySelector('[data-testid="sidebar-initiative-header"]')).toBeNull();
+    expect(screen.getByRole("button", { name: group.endLabel }).query()).toBeNull();
   });
 });
