@@ -35,6 +35,7 @@ import {
   resolveSidebarDropVerb,
   groupSidebarThreadsByProject,
   partitionInitiativeThreads,
+  resolveInboxShelf,
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
   skipFixedSortableItems,
@@ -2021,5 +2022,15 @@ describe("shouldCreateNewThreadInCurrentProject", () => {
     expect(shouldCreateNewThreadInCurrentProject(false, 1, 3)).toBe(true);
     expect(shouldCreateNewThreadInCurrentProject(false, 0, 0)).toBe(true);
     expect(shouldCreateNewThreadInCurrentProject(true, 2, 2)).toBe(true);
+  });
+});
+
+describe("resolveInboxShelf", () => {
+  it("keeps a working chat with an open decision in the inbox", () => {
+    const base = { workingShelfEnabled: true, working: true, hasOpenDecision: false };
+    expect(resolveInboxShelf(base)).toBe("working");
+    expect(resolveInboxShelf({ ...base, hasOpenDecision: true })).toBe("active");
+    expect(resolveInboxShelf({ ...base, working: false })).toBe("active");
+    expect(resolveInboxShelf({ ...base, workingShelfEnabled: false })).toBe("active");
   });
 });

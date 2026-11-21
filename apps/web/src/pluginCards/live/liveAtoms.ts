@@ -6,6 +6,7 @@ import type {
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import * as Equal from "effect/Equal";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -70,6 +71,22 @@ const anyThreadHasOpenDecisionAtom = Atom.family((key: string) => {
   );
 });
 
+// Sorted so equal sets compare equal and the sidebar re-partitions only when a decision opens or closes.
+const openDecisionThreadKeysAtom = Atom.family((key: string) => {
+  const environmentIds: ReadonlyArray<EnvironmentId> = JSON.parse(key);
+  return Atom.make((get): ReadonlyArray<string> => {
+    const next = environmentStates(get, environmentIds)
+      .flatMap(({ environmentId, state }) =>
+        (state?.waitingThreadIds ?? []).map((threadId) =>
+          scopedThreadKey(scopeThreadRef(environmentId, threadId)),
+        ),
+      )
+      .toSorted();
+    const previous = get.self<ReadonlyArray<string>>();
+    return Option.isSome(previous) && Equal.equals(previous.value, next) ? previous.value : next;
+  });
+});
+
 function environmentStates(
   get: Atom.AtomContext,
   environmentIds: ReadonlyArray<EnvironmentId>,
@@ -127,6 +144,12 @@ export function useAnyThreadHasOpenDecision(threads: ReadonlyArray<ScopedThreadR
     threads.map(({ environmentId, threadId }) => ({ environmentId, threadId })),
   );
   return useAtomValue(anyThreadHasOpenDecisionAtom(key));
+}
+
+export function useOpenDecisionThreadKeys(
+  environmentIds: ReadonlyArray<EnvironmentId>,
+): ReadonlyArray<string> {
+  return useAtomValue(openDecisionThreadKeysAtom(environmentIdsKey(environmentIds)));
 }
 
 export function useThreadInitiative(

@@ -207,6 +207,17 @@ export function resolveSidebarThreadSection(input: {
   return "active";
 }
 
+/** A chat waiting on the user stays in the inbox even while its run is going. */
+export function resolveInboxShelf(input: {
+  readonly workingShelfEnabled: boolean;
+  readonly working: boolean;
+  readonly hasOpenDecision: boolean;
+}): "working" | "active" {
+  return input.workingShelfEnabled && input.working && !input.hasOpenDecision
+    ? "working"
+    : "active";
+}
+
 const SIDEBAR_MARKER_PREFIX = "sidebar-marker-";
 
 export type SidebarListMarker =
