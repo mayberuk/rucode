@@ -1,4 +1,4 @@
-import { RegistryContext } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
@@ -12,6 +12,8 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useContext, useEffect, useState } from "react";
 
 import { toastManager } from "~/components/ui/toast";
@@ -46,11 +48,20 @@ export function usePluginThreadCards(threadRef: ScopedThreadRef | null): PluginT
   ).data;
 }
 
+const emptyLiveSnapshot = Atom.make<PluginLiveState | null>(null);
+const liveSnapshotAtom = Atom.family((source: ReturnType<typeof pluginLiveStateAtomFamily>) =>
+  Atom.make((get): PluginLiveState | null =>
+    AsyncResult.getOrElse(get(source), () => Option.getOrNull(get.self<PluginLiveState | null>())),
+  ),
+);
+
 /** Null until the first snapshot arrives; a dropped stream keeps its last snapshot. */
 export function usePluginLiveState(environmentId: EnvironmentId | null): PluginLiveState | null {
-  return useEnvironmentQuery(
-    environmentId === null ? null : pluginLiveStateAtomFamily({ environmentId, input: {} }),
-  ).data;
+  return useAtomValue(
+    environmentId === null
+      ? emptyLiveSnapshot
+      : liveSnapshotAtom(pluginLiveStateAtomFamily({ environmentId, input: {} })),
+  );
 }
 
 /** @public Runs a card's server-handled action and reports failures to the user. */

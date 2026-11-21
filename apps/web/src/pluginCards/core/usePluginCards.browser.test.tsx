@@ -6,18 +6,27 @@ import {
   type PluginLiveState,
   type PluginThreadCards,
 } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
-import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 import * as pluginCardsRpc from "~/rpc/pluginCards";
+import * as entities from "~/state/entities";
+import * as session from "~/state/session";
+import { threadEnvironment } from "~/state/threads";
+import { makeThreadFixture } from "~/test-fixtures";
 import { act, render } from "../../../test/render";
 import { PluginCardShell } from "./PluginCardShell";
 import { PluginCardStep } from "./PluginCardStep";
-import { usePluginCardAsset, usePluginLiveState, usePluginThreadCards } from "./usePluginCards";
+import {
+  usePluginCardAsset,
+  usePluginLiveState,
+  usePluginThreadCards,
+  usePostPluginCardMessage,
+} from "./usePluginCards";
 
 vi.mock(import("~/rpc/pluginCards"), { spy: true });
+vi.mock(import("~/state/entities"), { spy: true });
+vi.mock(import("~/state/session"), { spy: true });
 
 const threadRef = {
   environmentId: EnvironmentId.make("plugin-cards"),
@@ -45,16 +54,16 @@ it("distinguishes a missing thread snapshot from an empty list without rendering
   const snapshot = Atom.make<AsyncResult.AsyncResult<PluginThreadCards>>(AsyncResult.initial());
   const registry = AtomRegistry.make();
   using _registry = { [Symbol.dispose]: () => registry.dispose() };
-  using _subscription = vi
+  using subscription = vi
     .spyOn(pluginCardsRpc, "pluginThreadCardsAtomFamily")
     .mockReturnValue(snapshot);
 
   function ThreadCards() {
     const result = usePluginThreadCards(threadRef);
     return (
-      <div data-testid="thread-cards" data-count={result?.cards.length ?? "pending"}>
+      <div data-testid="thread-cards" data-thread-id={result?.threadId}>
         {result?.cards.map((card) => (
-          <div key={card.id}>{card.kind}</div>
+          <div key={card.id}>{JSON.stringify(card)}</div>
         ))}
       </div>
     );
@@ -68,13 +77,36 @@ it("distinguishes a missing thread snapshot from an empty list without rendering
     { router: false },
   );
   const cards = screen.getByTestId("thread-cards");
-  await expect.element(cards).toHaveAttribute("data-count", "pending");
+  expect(subscription).toHaveBeenCalledWith({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId },
+  });
+  await expect.element(cards).not.toHaveAttribute("data-thread-id");
   await expect.element(cards).toBeEmptyDOMElement();
+
+  const at = "2026-11-21T00:00:00Z";
+  const populated: PluginThreadCards = {
+    threadId: threadRef.threadId,
+    cards: [
+      {
+        id: "gitty.conflict:file.txt",
+        threadId: threadRef.threadId,
+        kind: "gitty.conflict",
+        placement: { type: "time", at },
+        updatedAt: at,
+        actions: [],
+        data: { file: "file.txt", base: null, sides: [], resolutions: [] },
+      },
+    ],
+  };
+  await act(() => registry.set(snapshot, AsyncResult.success(populated)));
+  await expect.element(cards).toHaveAttribute("data-thread-id", populated.threadId);
+  await expect.element(cards).toHaveTextContent(JSON.stringify(populated.cards[0]));
 
   await act(() =>
     registry.set(snapshot, AsyncResult.success({ threadId: threadRef.threadId, cards: [] })),
   );
-  await expect.element(cards).toHaveAttribute("data-count", "0");
+  await expect.element(cards).toHaveAttribute("data-thread-id", threadRef.threadId);
   await expect.element(cards).toBeEmptyDOMElement();
 });
 
@@ -84,13 +116,13 @@ it("keeps the last live snapshot until the subscription delivers a new one", asy
   );
   const registry = AtomRegistry.make();
   using _registry = { [Symbol.dispose]: () => registry.dispose() };
-  using _subscription = vi
+  using subscription = vi
     .spyOn(pluginCardsRpc, "pluginLiveStateAtomFamily")
     .mockReturnValue(snapshot);
 
   function LiveCards() {
     const result = usePluginLiveState(threadRef.environmentId);
-    return <output aria-label="Waiting threads">{result?.waitingThreadIds.length ?? "…"}</output>;
+    return <output aria-label="Live snapshot">{JSON.stringify(result)}</output>;
   }
 
   const first: PluginLiveState = {
@@ -107,33 +139,35 @@ it("keeps the last live snapshot until the subscription delivers a new one", asy
     </RegistryContext.Provider>,
     { router: false },
   );
-  const waitingThreads = screen.getByLabelText("Waiting threads");
-  await expect.element(waitingThreads).toHaveTextContent("…");
+  expect(subscription).toHaveBeenCalledWith({ environmentId: threadRef.environmentId, input: {} });
+  const live = screen.getByLabelText("Live snapshot");
+  expect(live.element().textContent).toBe("null");
   await act(() => registry.set(snapshot, AsyncResult.success(first)));
-  await expect.element(waitingThreads).toHaveTextContent("1");
-  await act(() =>
-    registry.set(
-      snapshot,
-      AsyncResult.failureWithPrevious(Cause.fail(new PluginCardError({ reason: "unavailable" })), {
-        previous: Option.some(registry.get(snapshot)),
-        waiting: true,
-      }),
-    ),
-  );
-  await expect.element(waitingThreads).toHaveTextContent("1");
-  await act(() => registry.set(snapshot, AsyncResult.success({ ...first, waitingThreadIds: [] })));
-  await expect.element(waitingThreads).toHaveTextContent("0");
+  expect(live.element().textContent).toBe(JSON.stringify(first));
+
+  const unavailable = new PluginCardError({ reason: "unavailable" });
+  await act(() => registry.set(snapshot, AsyncResult.fail(unavailable)));
+  expect(live.element().textContent).toBe(JSON.stringify(first));
+  await act(() => registry.set(snapshot, AsyncResult.initial(true)));
+  expect(live.element().textContent).toBe(JSON.stringify(first));
+
+  const next = { ...first, asOf: "2026-11-21T00:01:00Z", waitingThreadIds: [] };
+  await act(() => registry.set(snapshot, AsyncResult.success(next)));
+  expect(live.element().textContent).toBe(JSON.stringify(next));
 });
 
 it("keeps the placeholder until the image loads and revokes its URL when the renderer unmounts", async () => {
   const asset = Promise.withResolvers<{ mediaType: string; bytes: Uint8Array }>();
-  using _read = vi
+  using read = vi
     .spyOn(pluginCardsRpc.readPluginCardAsset, "run")
     .mockReturnValue(asset.promise.then((value) => AsyncResult.success(value)));
-  using revoke = vi.spyOn(URL, "revokeObjectURL");
-
   // The card renders outside navigation.
   await using screen = await render(<AssetCard />, { router: false });
+  using revoke = vi.spyOn(URL, "revokeObjectURL");
+  expect(read).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId, cardId, assetId: "screenshot" },
+  });
   await expect.element(screen.getByText("Loading screenshot")).toBeVisible();
   await expect.element(screen.getByRole("img")).not.toBeInTheDocument();
 
@@ -150,7 +184,7 @@ it("keeps the placeholder until the image loads and revokes its URL when the ren
   await expect.element(screen.getByText("Loading screenshot")).not.toBeInTheDocument();
   expect(revoke).not.toHaveBeenCalled();
 
-  await screen.rerender(<div />);
+  await screen.unmount();
   expect(revoke).toHaveBeenCalledExactlyOnceWith(imageElement.src);
 });
 
@@ -167,4 +201,56 @@ it("keeps the failed asset placeholder without retrying on rerender", async () =
   await expect.element(screen.getByText(error.message)).toBeVisible();
   await expect.element(screen.getByRole("img")).not.toBeInTheDocument();
   expect(read).toHaveBeenCalledTimes(1);
+});
+
+it("does not allocate an object URL when the asset arrives after unmount", async () => {
+  const asset =
+    Promise.withResolvers<AsyncResult.Success<{ mediaType: string; bytes: Uint8Array }>>();
+  using _read = vi.spyOn(pluginCardsRpc.readPluginCardAsset, "run").mockReturnValue(asset.promise);
+
+  // The card renders outside navigation.
+  await using screen = await render(<AssetCard />, { router: false });
+  using createUrl = vi.spyOn(URL, "createObjectURL");
+  await expect.element(screen.getByText("Loading screenshot")).toBeVisible();
+  await screen.unmount();
+  await act(async () => {
+    asset.resolve(AsyncResult.success({ mediaType: "image/png", bytes: new Uint8Array([1]) }));
+    await asset.promise;
+  });
+  expect(createUrl).not.toHaveBeenCalled();
+});
+
+it("queues a card message through the same start-turn command as the composer", async () => {
+  const shell = makeThreadFixture({
+    environmentId: threadRef.environmentId,
+    id: threadRef.threadId,
+    runtimeMode: "approval-required",
+  });
+  using _shell = vi.spyOn(entities, "useThreadShell").mockReturnValue(shell);
+  using _scope = vi.spyOn(session, "readEnvironmentScope").mockReturnValue(true);
+  const sent = Promise.withResolvers<boolean>();
+  const message = "Open the verification result";
+
+  function PostMessage() {
+    const post = usePostPluginCardMessage(threadRef);
+    return <button onClick={() => void post(message).then(sent.resolve)}>Post message</button>;
+  }
+
+  // Posting uses the scoped thread directly.
+  await using screen = await render(<PostMessage />, { router: false });
+  using startTurn = vi
+    .spyOn(threadEnvironment.startTurn, "run")
+    .mockResolvedValue(AsyncResult.success({ sequence: 1 }));
+  await screen.getByRole("button", { name: "Post message" }).click();
+  await expect(sent.promise).resolves.toBe(true);
+  expect(startTurn).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    environmentId: threadRef.environmentId,
+    input: {
+      threadId: threadRef.threadId,
+      message: { messageId: expect.any(String), role: "user", text: message, attachments: [] },
+      runtimeMode: shell.runtimeMode,
+      interactionMode: "default",
+      dispatchMode: "queue",
+    },
+  });
 });
