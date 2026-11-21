@@ -1,5 +1,6 @@
 import { CircleAlertIcon } from "lucide-react";
 
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { splitPath } from "./iter8GittyCards.logic";
 import { PluginCardShell } from "../core/PluginCardShell";
 import type { PluginCardRendererProps } from "../core/types";
@@ -17,12 +18,15 @@ export function GittyConflictCard({ card, threadRef }: PluginCardRendererProps<"
             <CircleAlertIcon aria-hidden className="size-3.5" />
             Conflict
           </span>
-          <span className="flex min-w-0 font-mono font-normal" title={data.file}>
-            {file.folder === "" ? null : (
-              <span className="min-w-0 truncate text-muted-foreground">{file.folder}</span>
-            )}
-            <span className="max-w-full shrink-0 truncate">{file.name}</span>
-          </span>
+          <Tooltip>
+            <TooltipTrigger render={<span className="flex min-w-0 font-mono font-normal" />}>
+              {file.folder === "" ? null : (
+                <span className="min-w-0 truncate text-muted-foreground">{file.folder}</span>
+              )}
+              <span className="max-w-full shrink-0 truncate">{file.name}</span>
+            </TooltipTrigger>
+            <TooltipPopup side="top">{data.file}</TooltipPopup>
+          </Tooltip>
         </span>
       }
     >

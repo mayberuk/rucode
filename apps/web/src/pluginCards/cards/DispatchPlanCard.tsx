@@ -7,6 +7,7 @@ import {
   phaseStatus,
   phasesByWave,
   planSummary,
+  tierLabel,
 } from "./dispatchCards.logic";
 import { CardStatusLabel } from "./shared/CardStatusLabel";
 import { PluginCardActionButton } from "./shared/PluginCardActionButton";
@@ -34,6 +35,9 @@ export function DispatchPlanCard({ card, threadRef }: PluginCardRendererProps<"d
               {withUniqueKeys(group.phases, (phase) => phase.id).map(({ key, item: phase }) => (
                 <li key={key} className="flex items-center gap-2 py-1 text-sm">
                   <span className="min-w-0 truncate text-foreground/85">{phase.name}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {tierLabel(phase.tier)}
+                  </span>
                   {phase.risk ? (
                     <Badge variant="warning" size="sm">
                       Risk

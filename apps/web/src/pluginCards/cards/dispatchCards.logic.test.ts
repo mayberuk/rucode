@@ -14,6 +14,7 @@ import {
   runStepTrailing,
   runSummary,
   settledReason,
+  tierLabel,
   toneClassName,
 } from "./dispatchCards.logic";
 
@@ -212,6 +213,16 @@ describe("phaseStatus", () => {
 
   it("says pending the way the verify card does", () => {
     expect(phaseStatus("pending")).toEqual(checkTone("pending"));
+  });
+});
+
+describe("tierLabel", () => {
+  it.each([
+    ["light", "Light"],
+    ["standard", "Standard"],
+    ["heavy", "Heavy"],
+  ])("shows the dp tier %s as %s", (tier, label) => {
+    expect(tierLabel(tier)).toBe(label);
   });
 });
 

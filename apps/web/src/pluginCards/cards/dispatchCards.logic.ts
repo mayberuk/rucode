@@ -38,6 +38,10 @@ export function planSummary(data: { readonly phases: ReadonlyArray<PlanPhase> })
   return `${countLabel(data.phases.length, "phase", "phases")} in ${countLabel(waves, "wave", "waves")}`;
 }
 
+export function tierLabel(tier: string): string {
+  return tier.charAt(0).toUpperCase() + tier.slice(1);
+}
+
 export function isDraftPlan(data: { readonly status: string }): boolean {
   return data.status === "draft";
 }
