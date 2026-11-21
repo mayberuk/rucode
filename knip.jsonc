@@ -51,8 +51,6 @@
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
       "entry": [
-        // Nothing imports this reader until the live-surfaces part consumes it; remove with that import.
-        "src/pluginCards/dispatch/initiativeState.ts",
         "src/bin.ts!",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",

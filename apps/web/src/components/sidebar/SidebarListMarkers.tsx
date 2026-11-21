@@ -1,24 +1,26 @@
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useNavigate } from "@tanstack/react-router";
+import { LayoutDashboardIcon } from "lucide-react";
 import { type ReactNode, useLayoutEffect } from "react";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import { cn } from "~/lib/utils";
-import {
-  animateSidebarLayoutChanges,
-  sidebarMarkerId,
-  type SidebarListMarker,
-} from "../Sidebar.logic";
+import { useAnyThreadHasOpenDecision } from "../../pluginCards/live/liveAtoms";
+import { animateSidebarLayoutChanges, sidebarMarkerId } from "../Sidebar.logic";
+import { FOLDER_DOT_CLASS_NAME, FOLDER_DOT_LABEL } from "./SidebarProjectFolderHeader";
 import { SIDEBAR_SORTABLE_DRAG_DISABLED } from "./SidebarThreadRow";
 
 function SortableSidebarMarker(props: {
-  marker: SidebarListMarker;
+  sortableId: string;
+  placeholder?: boolean;
   className?: string;
   children?: ReactNode;
   revealOverflow?: boolean;
   "data-testid"?: string;
 }) {
   const { node, setNodeRef, transform, transition } = useSortable({
-    id: sidebarMarkerId(props.marker),
+    id: props.sortableId,
     disabled: SIDEBAR_SORTABLE_DRAG_DISABLED,
     animateLayoutChanges: animateSidebarLayoutChanges,
   });
@@ -36,7 +38,7 @@ function SortableSidebarMarker(props: {
       className={cn("list-none", props.className)}
       style={{
         transform: CSS.Translate.toString(transform),
-        transition: props.marker.endsWith("-placeholder") ? "none" : transition,
+        transition: props.placeholder ? "none" : transition,
         visibility: transform?.scaleY === 0 ? "hidden" : undefined,
       }}
     >
@@ -53,7 +55,8 @@ export function SidebarSectionPlaceholder(props: {
 }) {
   return (
     <SortableSidebarMarker
-      marker={props.marker}
+      sortableId={sidebarMarkerId(props.marker)}
+      placeholder
       data-testid={`sidebar-${props.marker}`}
       className="relative mx-0.5 -mb-px h-0"
       // Revealing on every drag scrolls the list out from under the pointer.
@@ -83,7 +86,7 @@ export function SidebarDragBoundary(props: {
 }) {
   return (
     <SortableSidebarMarker
-      marker={props.marker}
+      sortableId={sidebarMarkerId(props.marker)}
       data-testid={`sidebar-${props.marker}`}
       className="pointer-events-none relative mx-0.5 -mb-px h-0"
     >
@@ -128,7 +131,7 @@ export function SidebarSectionHeader(props: {
         : "settled";
   return (
     <SortableSidebarMarker
-      marker={props.marker}
+      sortableId={sidebarMarkerId(props.marker)}
       data-testid={`sidebar-${props.marker}`}
       className={cn("relative mx-0.5 h-8", props.className)}
     >
@@ -142,6 +145,80 @@ export function SidebarSectionHeader(props: {
       >
         {props.label}
       </CollapsibleSectionHeader>
+    </SortableSidebarMarker>
+  );
+}
+
+export function initiativeGroupHeaderId(groupKey: string): string {
+  return `sidebar-initiative-header:${groupKey}`;
+}
+
+export function initiativeGroupEndId(groupKey: string): string {
+  return `sidebar-initiative-end:${groupKey}`;
+}
+
+export function initiativeGroupRowId(groupKey: string): string {
+  return `initiative:${groupKey}`;
+}
+
+export function InitiativeGroupHeader(props: {
+  groupKey: string;
+  label: string;
+  count: number;
+  expanded: boolean;
+  hiddenThreads: ReadonlyArray<ScopedThreadRef>;
+  onToggle: (groupKey: string) => void;
+}) {
+  const openDecision = useAnyThreadHasOpenDecision(props.expanded ? [] : props.hiddenThreads);
+  return (
+    <SortableSidebarMarker
+      sortableId={initiativeGroupHeaderId(props.groupKey)}
+      data-testid="sidebar-initiative-header"
+      className="relative mx-0.5 h-8"
+    >
+      <CollapsibleSectionHeader
+        data-sidebar-row={initiativeGroupRowId(props.groupKey)}
+        onClick={() => props.onToggle(props.groupKey)}
+        expanded={props.expanded}
+        accessory={
+          <span className="flex items-center gap-1.5">
+            {openDecision ? (
+              <span
+                className={cn("size-1.5 shrink-0 rounded-full", FOLDER_DOT_CLASS_NAME.attention)}
+              >
+                <span className="sr-only">{FOLDER_DOT_LABEL.attention}</span>
+              </span>
+            ) : null}
+            <span className="font-normal tabular-nums">{props.count}</span>
+          </span>
+        }
+      >
+        {props.label}
+      </CollapsibleSectionHeader>
+    </SortableSidebarMarker>
+  );
+}
+
+export function InitiativeGroupEnd(props: {
+  groupKey: string;
+  label: string;
+  hiddenCount: number;
+}) {
+  const navigate = useNavigate();
+  return (
+    <SortableSidebarMarker sortableId={initiativeGroupEndId(props.groupKey)} className="pb-2">
+      <button
+        type="button"
+        data-sidebar-row={`${initiativeGroupRowId(props.groupKey)}:end`}
+        data-sidebar-parent={initiativeGroupRowId(props.groupKey)}
+        onClick={() => void navigate({ to: "/board" })}
+        className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+      >
+        <LayoutDashboardIcon aria-hidden className="size-4 shrink-0" />
+        <span className="min-w-0 truncate">
+          {props.hiddenCount > 0 ? `Show ${props.hiddenCount} more · ${props.label}` : props.label}
+        </span>
+      </button>
     </SortableSidebarMarker>
   );
 }

@@ -1,6 +1,6 @@
 import { EnvironmentId, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import { describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   WAITING_SOURCES,
@@ -10,6 +10,20 @@ import {
   orderJumpCandidates,
   threadShellKey,
 } from "./waitingThreads";
+
+const openDecisionChats = vi.hoisted(() => new Set<string>());
+
+vi.mock(import("../pluginCards/live/liveAtoms"), () => ({
+  readThreadHasOpenDecision: (environmentId: string, threadId: string) =>
+    openDecisionChats.has(`${environmentId}:${threadId}`),
+}));
+
+function setOpenDecisionChats(keys: ReadonlyArray<string>): void {
+  openDecisionChats.clear();
+  for (const key of keys) openDecisionChats.add(key);
+}
+
+beforeEach(() => setOpenDecisionChats([]));
 
 const COMPLETED_AT = "2026-03-01T12:00:00.000Z";
 const BEFORE_COMPLETION = "2026-03-01T11:00:00.000Z";
@@ -63,7 +77,18 @@ describe("isThreadWaiting", () => {
       name: "a failed turn newer than the server visit",
       thread: { latestRun: finishedRun("failed"), lastVisitedAt: BEFORE_COMPLETION },
     },
-  ] as const)("is waiting on $name", ({ thread }) => {
+    {
+      name: "an open dispatch decision on this chat",
+      thread: {},
+      decisionsOn: ["env:t"],
+    },
+    {
+      name: "an open dispatch decision on this chat in another environment",
+      thread: { environmentId: EnvironmentId.make("env-b") },
+      decisionsOn: ["env-b:t"],
+    },
+  ] as const)("is waiting on $name", ({ thread, decisionsOn = [] }) => {
+    setOpenDecisionChats(decisionsOn);
     expect(isThreadWaiting(shell({ id: "t", ...thread }), NO_LOCAL)).toBe(true);
   });
 
@@ -104,7 +129,20 @@ describe("isThreadWaiting", () => {
       thread: { latestRun: finishedRun("completed"), lastVisitedAt: null },
       local: BEFORE_COMPLETION,
     },
-  ] as const)("is not waiting on $name", ({ thread, local }) => {
+    {
+      name: "an open dispatch decision on another chat",
+      thread: {},
+      local: undefined,
+      decisionsOn: ["env:other"],
+    },
+    {
+      name: "an open dispatch decision on a chat with this id in another environment",
+      thread: {},
+      local: undefined,
+      decisionsOn: ["env-b:t"],
+    },
+  ] as const)("is not waiting on $name", ({ thread, local, decisionsOn = [] }) => {
+    setOpenDecisionChats(decisionsOn);
     expect(isThreadWaiting(shell({ id: "t", ...thread }), { localLastVisitedAt: local })).toBe(
       false,
     );
@@ -155,6 +193,15 @@ describe("orderJumpCandidates", () => {
 
   it("returns nothing for no threads", () => {
     expect(orderJumpCandidates([])).toEqual([]);
+  });
+
+  it("leaves out an archived chat even when it has an open dispatch decision", () => {
+    setOpenDecisionChats(["env:gone"]);
+    const archived = shell({ id: "gone", archivedAt: "2026-03-02" });
+    expect(isThreadWaiting(archived, NO_LOCAL)).toBe(true);
+
+    const ordered = orderJumpCandidates([archived, shell({ id: "live" })]);
+    expect(ordered.map((thread) => thread.id)).toEqual(["live"]);
   });
 });
 

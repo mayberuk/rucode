@@ -2,6 +2,7 @@ import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { assert, it } from "@effect/vitest";
 import { type DispatchDecisionCard, ThreadId, TurnItemId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -70,6 +71,8 @@ const watchingFileSystem = (ready: Queue.Queue<string>, events: Queue.Queue<stri
 const setup = Effect.fnUntraced(function* (options?: {
   readonly transcriptFor?: ThreadId;
   readonly firstRaise?: boolean;
+  /** Passes the root as DISPATCH_INITIATIVES_ROOT instead of as an option. */
+  readonly rootFromEnv?: boolean;
   /** Written to checkout `a` before any watcher starts. */
   readonly seed?: ReadonlyArray<ReturnType<typeof decisionRecord>>;
 }) {
@@ -126,8 +129,14 @@ const setup = Effect.fnUntraced(function* (options?: {
         ),
       checkouts: Effect.succeed([checkoutA, checkoutB]),
     });
-    const source = yield* makeDispatchDecisionSource({ initiativesRoot }).pipe(
+    const source = yield* makeDispatchDecisionSource(
+      options?.rootFromEnv === true ? undefined : { initiativesRoot },
+    ).pipe(
       Effect.provide(Layer.mergeAll(index, Layer.mock(ProcessRunner.ProcessRunner)({}))),
+      Effect.provideService(
+        HostProcess.Environment,
+        options?.rootFromEnv === true ? { DISPATCH_INITIATIVES_ROOT: initiativesRoot } : {},
+      ),
     );
     return {
       source,
@@ -429,5 +438,18 @@ it.effect("notices a checkout's first decision raised outside the chat", () =>
     yield* TestClock.adjust("250 millis");
     yield* Queue.take(changed);
     assert.deepStrictEqual((yield* source.live).waitingThreadIds, [THREAD_A]);
+  }),
+);
+
+it.effect("watches the registry under DISPATCH_INITIATIVES_ROOT, like the live source", () =>
+  Effect.gen(function* () {
+    const { checkoutA, decisionsDir, initiativesRoot, ready } = yield* setup({
+      rootFromEnv: true,
+      seed: [decisionRecord("mine")],
+    });
+    const watched = new Set<string>();
+    for (let count = 0; count < 3; count++) watched.add(yield* Queue.take(ready));
+    assert.isTrue(watched.has(decisionsDir(checkoutA)));
+    assert.isTrue(watched.has(`${initiativesRoot}/.live`));
   }),
 );

@@ -32,7 +32,7 @@ import {
   listDecisionRecords,
   toDecisionCardData,
 } from "./decisionRecord.ts";
-import { listLiveInitiatives } from "./liveRegistry.ts";
+import { dispatchInitiativesRoot, listLiveInitiatives } from "./liveRegistry.ts";
 import { mapDecisionToThread } from "./threadMapping.ts";
 
 const CARD_KIND = "dispatch.decision";
@@ -154,7 +154,7 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
     const index = yield* PluginThreadIndex;
     const scope = yield* Scope.Scope;
     const home = yield* HostProcess.HomeDirectory;
-    const initiativesRoot = options?.initiativesRoot ?? path.join(home, ".claude", "initiatives");
+    const initiativesRoot = options?.initiativesRoot ?? (yield* dispatchInitiativesRoot);
     const services = yield* Effect.context<PluginCardSourceServices>();
 
     const signals = yield* PubSub.unbounded<void>();

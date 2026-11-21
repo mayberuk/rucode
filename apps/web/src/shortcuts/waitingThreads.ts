@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-sort";
 
 import { hasUnseenCompletion, resolveThreadLastVisitedAt } from "../components/Sidebar.logic";
+import { readThreadHasOpenDecision } from "../pluginCards/live/liveAtoms";
 
 export interface WaitingContext {
   readonly localLastVisitedAt: string | undefined;
@@ -26,10 +27,14 @@ const hasUnseenFinishedTurn: WaitingSource = (thread, context) =>
     lastVisitedAt: resolveThreadLastVisitedAt(thread.lastVisitedAt, context.localLastVisitedAt),
   });
 
+const hasOpenDispatchDecision: WaitingSource = (thread) =>
+  readThreadHasOpenDecision(thread.environmentId, thread.id);
+
 export const WAITING_SOURCES: ReadonlyArray<WaitingSource> = [
   hasPendingApproval,
   hasPendingQuestion,
   hasUnseenFinishedTurn,
+  hasOpenDispatchDecision,
 ];
 
 export function isThreadWaiting(
