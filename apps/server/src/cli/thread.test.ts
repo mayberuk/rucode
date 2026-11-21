@@ -28,6 +28,7 @@ import {
   launchModelSelection,
   readLatestMessages,
   resolveProject,
+  ThreadServerNotRunningError,
   threadCommand,
   type ThreadTools,
   titleFromMessage,
@@ -176,7 +177,7 @@ it.effect("does not sign in to whatever took over a dead server's port", () =>
           baseDir,
         ]).pipe(Effect.flip);
 
-        assert.strictEqual(error._tag, "ThreadServerNotRunningError");
+        assert.instanceOf(error, ThreadServerNotRunningError);
         assert.strictEqual(error[Runtime.errorExitCode], 3);
         assert.strictEqual(
           error.message,
