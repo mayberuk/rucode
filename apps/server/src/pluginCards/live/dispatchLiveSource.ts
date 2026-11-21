@@ -20,7 +20,11 @@ import type {
 import { PluginThreadIndex } from "../core/PluginThreadIndex.ts";
 import { listDecisionRecords } from "../dispatch/decisionRecord.ts";
 import { type DispatchInitiativeState, readInitiativeState } from "../dispatch/initiativeState.ts";
-import { type DispatchLiveInitiative, listLiveInitiatives } from "../dispatch/liveRegistry.ts";
+import {
+  type DispatchLiveInitiative,
+  dispatchInitiativesRoot,
+  listLiveInitiatives,
+} from "../dispatch/liveRegistry.ts";
 import { type RunFeedCursor, readRunFeed, runFeedPath } from "../dispatch/runFeed.ts";
 import { mapRunToThread } from "../dispatch/threadMapping.ts";
 import {
@@ -296,11 +300,10 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
 
 export const dispatchLiveSource: PluginLiveSourceFactory = Effect.suspend(() =>
   Effect.gen(function* () {
-    const path = yield* Path.Path;
     const home = yield* HostProcess.HomeDirectory;
     const env = yield* HostProcess.Environment;
     return yield* makeDispatchLiveSource({
-      initiativesRoot: env.DISPATCH_INITIATIVES_ROOT || path.join(home, ".claude", "initiatives"),
+      initiativesRoot: yield* dispatchInitiativesRoot,
       runFeedPath: runFeedPath(env, home),
       procRoot: "/proc",
     });

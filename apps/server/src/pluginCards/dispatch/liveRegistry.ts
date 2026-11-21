@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -41,6 +42,14 @@ export const DispatchLiveInitiative = Schema.Struct({
 export type DispatchLiveInitiative = typeof DispatchLiveInitiative.Type;
 
 const decodeInitiative = Schema.decodeUnknownOption(Schema.fromJsonString(DispatchLiveInitiative));
+
+/** dp honours `DISPATCH_INITIATIVES_ROOT`, so every reader of its files must too. */
+export const dispatchInitiativesRoot = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
+  const env = yield* HostProcess.Environment;
+  return env.DISPATCH_INITIATIVES_ROOT || path.join(home, ".claude", "initiatives");
+});
 
 /** Reads `<initiativesRoot>/.live/*.json`, where `initiativesRoot` is `~/.claude/initiatives`. */
 export const listLiveInitiatives = Effect.fn("DispatchReader.listLiveInitiatives")(function* (
