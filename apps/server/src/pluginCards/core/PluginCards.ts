@@ -28,6 +28,7 @@ import {
   type DispatchDecisionSource,
   makeDispatchDecisionSource,
 } from "../dispatch/decisionSource.ts";
+import { ExternalSessionHolds } from "../../orchestration-v2/ExternalSessionHolds.ts";
 import { pluginLiveSources } from "../live/index.ts";
 import { pluginCardSources } from "../sources/index.ts";
 import type {
@@ -166,6 +167,11 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
   }
 
   if (decisionSource !== null) {
+    // A hold changes every decision card's answerable value, in whichever chat it sits.
+    yield* ((yield* ExternalSessionHolds).changes ?? Stream.empty).pipe(
+      Stream.runForEach(() => PubSub.publish(sourceChanges, null)),
+      Effect.forkScoped({ startImmediately: true }),
+    );
     yield* decisionSource.progressChanges.pipe(
       Stream.runForEach((threadId) => PubSub.publish(sourceChanges, threadId)),
       Effect.forkScoped({ startImmediately: true }),

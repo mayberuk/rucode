@@ -18,6 +18,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -247,7 +248,9 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
     });
 
     const services = Layer.mergeAll(index, threadManagement, runner);
+    const holdChanges = yield* PubSub.unbounded<void>();
     const holds = Layer.succeed(ExternalSessionHolds, {
+      changes: Stream.fromPubSub(holdChanges),
       heldBy: (threadId) => {
         const owner = options.held?.get(threadId);
         return owner === undefined ? null : { owner, name: null };
@@ -291,6 +294,18 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
     return {
       flow,
       cardsIn,
+      holdChanged: PubSub.publish(holdChanges, undefined),
+      cardsChanging: (threadId: ThreadId) =>
+        Effect.gen(function* () {
+          const snapshots = yield* Queue.unbounded<ReadonlyArray<DispatchDecisionCard>>();
+          yield* cards.subscribeThread(threadId).pipe(
+            Stream.runForEach(({ cards }) =>
+              Queue.offer(snapshots, cards as ReadonlyArray<DispatchDecisionCard>),
+            ),
+            Effect.forkScoped,
+          );
+          return snapshots;
+        }),
       cardId: `dispatch.decision:${checkout}#d-1`,
       checkout,
       transcriptPath,
@@ -446,6 +461,33 @@ it.effect("tells the person to close the terminal, then answers once it lets go"
     assert.deepStrictEqual(yield* answer(h), { delivery: "started" });
     yield* Queue.take(h.dpRuns);
     assert.strictEqual(h.sends.length, 1);
+  }),
+);
+
+it.effect("pushes the card again, with its new answerable value, when a hold starts or ends", () =>
+  Effect.gen(function* () {
+    const held = new Map<ThreadId, "terminal" | "other">();
+    const h = yield* harness({ held });
+    const snapshots = yield* h.cardsChanging(THREAD);
+    const pushed = Effect.map(Queue.takeAll(snapshots), (batches) =>
+      batches.map((cards) => cards.map((card) => card.data.answerable)),
+    );
+    assert.deepStrictEqual(
+      yield* Queue.take(snapshots).pipe(
+        Effect.map((cards) => cards.map((card) => card.data.answerable)),
+      ),
+      ["yes"],
+    );
+
+    held.set(THREAD, "terminal");
+    yield* h.holdChanged;
+    yield* TestClock.adjust("1 second");
+    assert.deepStrictEqual(yield* pushed, [["terminal-only"]]);
+
+    held.delete(THREAD);
+    yield* h.holdChanged;
+    yield* TestClock.adjust("1 second");
+    assert.deepStrictEqual(yield* pushed, [["yes"]]);
   }),
 );
 
