@@ -73,6 +73,11 @@ import { mcpAppReferencesEqual, type McpAppReference } from "@t3tools/shared/mcp
 import { dynamicToolTitle } from "@t3tools/shared/toolActivity";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {
+  cardPresence,
+  cardRendersAsLine,
+  type CardPresence,
+} from "../../pluginCards/core/cardPresence.logic";
+import {
   collectToolFilePaths,
   formatReadToolLabel,
   formatSearchToolLabel,
@@ -667,6 +672,9 @@ type MessagesTimelineRowContent =
       id: string;
       createdAt: string;
       card: PluginCard;
+      presence: CardPresence;
+      /** A line card whose id is not in the expanded work-group set. */
+      collapsed: boolean;
     };
 
 export interface StableMessagesTimelineRowsState {
@@ -1587,6 +1595,7 @@ export function deriveMessagesTimelineRows(input: {
     input.pluginCards,
     input.timelineEntries,
     timelineEntries,
+    input.expandedWorkGroupIds,
   );
   const embeddedResultRunIds = new Set<RunId>();
   for (const entry of timelineEntries) {
@@ -2410,8 +2419,16 @@ export function deriveMessagesTimelineRows(input: {
   });
 }
 
-function pluginCardRow(card: PluginCard, createdAt: string): MessagesTimelineRow {
-  return { kind: "plugin-card", id: `plugin-card:${card.id}`, createdAt, card };
+function pluginCardRow(
+  card: PluginCard,
+  createdAt: string,
+  cards: ReadonlyArray<PluginCard>,
+  expandedIds: ReadonlySet<string> | undefined,
+): Extract<MessagesTimelineRow, { kind: "plugin-card" }> {
+  const id = `plugin-card:${card.id}`;
+  const presence = cardPresence(card, cards);
+  const collapsed = cardRendersAsLine(card, presence) && expandedIds?.has(id) !== true;
+  return { kind: "plugin-card", id, createdAt, card, presence, collapsed };
 }
 
 function isoMillis(value: string | null): number | null {
@@ -2429,6 +2446,7 @@ function placePluginCards(
   cards: ReadonlyArray<PluginCard> | undefined,
   loadedEntries: ReadonlyArray<TimelineEntry>,
   shownEntries: ReadonlyArray<TimelineEntry>,
+  expandedIds: ReadonlySet<string> | undefined,
 ): {
   anchoredCards: Map<number, MessagesTimelineRow[]>;
   timeCards: ReadonlyArray<{ readonly row: MessagesTimelineRow; readonly at: number | null }>;
@@ -2452,7 +2470,7 @@ function placePluginCards(
   for (const card of cards) {
     if (card.placement.type === "time") {
       timeCards.push({
-        row: pluginCardRow(card, card.placement.at),
+        row: pluginCardRow(card, card.placement.at, cards, expandedIds),
         at: isoMillis(card.placement.at),
       });
       continue;
@@ -2467,7 +2485,7 @@ function placePluginCards(
         break;
       }
     }
-    const row = pluginCardRow(card, loadedEntries[loadedIndex]!.createdAt);
+    const row = pluginCardRow(card, loadedEntries[loadedIndex]!.createdAt, cards, expandedIds);
     const slot = anchoredCards.get(shownIndex);
     if (slot === undefined) anchoredCards.set(shownIndex, [row]);
     else slot.push(row);
@@ -2833,12 +2851,24 @@ function replacePluginCardRows(
   }
   const cardById = new Map(cards.map((card) => [card.id, card]));
   let changed = false;
+  // Presence reads the whole snapshot, so a change to one card can collapse another.
   const rows = previous.rows.map((row) => {
     if (row.kind !== "plugin-card") return row;
-    const card = cardById.get(row.card.id);
-    if (card === undefined || card === row.card) return row;
+    const next = pluginCardRow(
+      cardById.get(row.card.id) ?? row.card,
+      row.createdAt,
+      cards,
+      input.expandedWorkGroupIds,
+    );
+    if (
+      next.card === row.card &&
+      next.presence === row.presence &&
+      next.collapsed === row.collapsed
+    ) {
+      return row;
+    }
     changed = true;
-    return { ...row, card };
+    return next;
   });
   return changed ? rows : previous.rows;
 }
@@ -2970,6 +3000,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bp = b as typeof a;
       return (
         a.createdAt === bp.createdAt &&
+        a.presence === bp.presence &&
+        a.collapsed === bp.collapsed &&
         a.card.updatedAt === bp.card.updatedAt &&
         pluginCardAnswerProgress(a.card) === pluginCardAnswerProgress(bp.card)
       );

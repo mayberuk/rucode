@@ -5286,7 +5286,36 @@ describe("plugin card rows", () => {
     type: "turnItem",
     turnItemId: TurnItemId.make(id),
   });
+  const runCard = (
+    key: string,
+    outcome: "running" | "passed" | "failed",
+    startSecond: number,
+  ): PluginCard => ({
+    id: `dispatch.runProgress:${key}`,
+    threadId,
+    placement: onItem("answer"),
+    updatedAt: time(30),
+    actions: [],
+    kind: "dispatch.runProgress",
+    data: {
+      runId: key,
+      dir: "/repo",
+      part: "api",
+      wave: 2,
+      initiative: null,
+      spec: "api.md",
+      outcome,
+      reason: null,
+      phases: [],
+      phasesTotal: 0,
+      startedAt: time(startSecond),
+      settledAt: null,
+      costUsd: null,
+    },
+  });
   const ids = (rows: ReadonlyArray<MessagesTimelineRow>) => rows.map((row) => row.id);
+  const rowById = (rows: ReadonlyArray<MessagesTimelineRow>, id: string) =>
+    rows.find((row) => row.id === id);
   const neighbours = (rows: ReadonlyArray<MessagesTimelineRow>, rowId: string) => {
     const index = rows.findIndex((row) => row.id === rowId);
     expect(index).toBeGreaterThanOrEqual(0);
@@ -5476,6 +5505,34 @@ describe("plugin card rows", () => {
     const next = computeStableMessagesTimelineRows(after, stable);
     expect(next.result.find((row) => row.kind === "plugin-card")).toMatchObject({
       card: { data: { answer: failed } },
+    });
+  });
+
+  it("draws a background card collapsed until its id is expanded, and a failed card open", () => {
+    const passed = runCard("passed", "passed", 1);
+    const failed = runCard("failed", "failed", 2);
+    const passedId = "plugin-card:dispatch.runProgress:passed";
+    const failedId = "plugin-card:dispatch.runProgress:failed";
+    const rows = deriveMessagesTimelineRows(rowsInput([passed, failed]));
+    expect(rowById(rows, passedId)).toMatchObject({ presence: "background", collapsed: true });
+    expect(rowById(rows, failedId)).toMatchObject({ presence: "failed", collapsed: false });
+
+    const expanded = deriveMessagesTimelineRows(rowsInput([passed, failed], new Set([passedId])));
+    expect(rowById(expanded, passedId)).toMatchObject({ presence: "background", collapsed: false });
+  });
+
+  it("collapses a failed run's row once a later run of its part passes", () => {
+    const failed = runCard("first", "failed", 1);
+    const previous = deriveMessagesTimelineRowsWithState(
+      rowsInput([failed, runCard("second", "running", 2)]),
+    );
+    const next = deriveMessagesTimelineRowsWithState(
+      rowsInput([failed, runCard("second", "passed", 2)]),
+      previous,
+    );
+    expect(rowById(next.rows, "plugin-card:dispatch.runProgress:first")).toMatchObject({
+      presence: "background",
+      collapsed: true,
     });
   });
 

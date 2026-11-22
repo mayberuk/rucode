@@ -1,4 +1,4 @@
-import { CheckIcon, CircleIcon, SplitIcon } from "lucide-react";
+import { CheckIcon, SplitIcon } from "lucide-react";
 
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
@@ -30,25 +30,7 @@ export function DecisionCard({ card }: PluginCardRendererProps<"dispatch.decisio
           {data.question}
         </p>
         {outcome === null ? (
-          <>
-            <ul className="mt-1.5 flex flex-col gap-1">
-              {data.options.map((option) => (
-                <li
-                  key={option.key}
-                  className="flex items-start gap-1.5 text-sm text-foreground/70"
-                >
-                  <CircleIcon aria-hidden className="mt-0.5 size-3.5 shrink-0 text-icon-muted" />
-                  <div>
-                    {option.label}
-                    {option.recommended ? (
-                      <p className="text-xs text-secondary-label">Recommended</p>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-1.5 text-2xs text-secondary-label">Answer it in the composer.</p>
-          </>
+          <p className="mt-1.5 text-2xs text-secondary-label">Answer it in the composer.</p>
         ) : (
           <div className="mt-1.5 flex flex-col gap-0.5">
             <p className="inline-flex items-center gap-1.5 text-sm text-foreground">
