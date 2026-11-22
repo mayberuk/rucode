@@ -206,6 +206,18 @@ import {
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
+import {
+  distinctExternalHistory,
+  externalEntryEvents,
+  externalEntryItemId,
+  externalHistoryRangeRun,
+  externalHistoryThreadUpdate,
+  externalMessageId,
+  externalNoticeEvent,
+  externalNoticeItemId,
+  unsettledByNewWork,
+} from "./ExternalHistory.ts";
+import { ExternalSessionHolds, externalSessionHeldMessage } from "./ExternalSessionHolds.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -315,6 +327,38 @@ export class OrchestratorProviderSelectionBusyError extends Schema.TaggedError<O
   }
 }
 
+export class OrchestratorSessionHeldExternallyError extends Schema.TaggedError<OrchestratorSessionHeldExternallyError>()(
+  "OrchestratorSessionHeldExternallyError",
+  {
+    commandId: CommandId,
+    threadId: ThreadId,
+    owner: Schema.Literals(["terminal", "other"]),
+    sessionName: Schema.NullOr(Schema.String),
+  },
+) {
+  override get message(): string {
+    return externalSessionHeldMessage({ owner: this.owner, name: this.sessionName });
+  }
+}
+
+export class OrchestratorThreadDeletedError extends Schema.TaggedError<OrchestratorThreadDeletedError>()(
+  "OrchestratorThreadDeletedError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} is deleted.`;
+  }
+}
+
+export class OrchestratorThreadRunActiveError extends Schema.TaggedError<OrchestratorThreadRunActiveError>()(
+  "OrchestratorThreadRunActiveError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} has an active run. Retry after it ends.`;
+  }
+}
+
 const isOrchestratorDispatchError = Schema.is(OrchestratorDispatchError);
 
 /** The ceiling refusal under however many dispatch errors wrapped it on the way out. */
@@ -381,6 +425,9 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorThreadAboveModeLimitError,
   OrchestratorProviderSelectionBusyError,
   OrchestratorRuntimeModeAboveCeilingError,
+  OrchestratorSessionHeldExternallyError,
+  OrchestratorThreadDeletedError,
+  OrchestratorThreadRunActiveError,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -658,6 +705,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.project.adopt-folder":
+    case "thread.external-history.append":
     case "thread.runtime-mode.set":
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
@@ -1528,6 +1576,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
+  const externalSessionHolds = yield* ExternalSessionHolds;
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
       Partial<Pick<OrchestrationV2ThreadProjection, "turnItems">>,
@@ -5621,6 +5670,137 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  const dispatchExternalHistoryAppend = Effect.fn("orchestrationV2.dispatch.externalHistoryAppend")(
+    function* (
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "thread.external-history.append" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const { threadId } = command;
+      yield* Effect.annotateCurrentSpan({
+        "orchestration_v2.external_session_id": command.sessionId,
+        "orchestration_v2.external_entry_count": command.entries.length,
+      });
+      const { thread, runs } = yield* projectionStore
+        .getThreadRecords(threadId, ["runs"])
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      if (thread.deletedAt !== null) {
+        return yield* new OrchestratorThreadDeletedError({
+          commandId: command.commandId,
+          threadId,
+        });
+      }
+      if (runs.some(isActiveRun)) {
+        return yield* new OrchestratorThreadRunActiveError({
+          commandId: command.commandId,
+          threadId,
+        });
+      }
+      const candidates = distinctExternalHistory(command);
+      const messageEntries = candidates.entries.filter((entry) => entry.role !== "reasoning");
+      const existingMessages =
+        messageEntries.length === 0
+          ? new Map()
+          : yield* projectionStore
+              .getMessagesById(
+                threadId,
+                messageEntries.map((entry) => externalMessageId(threadId, entry.uuid)),
+              )
+              .pipe(mapDispatchError(command));
+      const itemExists = (itemId: TurnItemId) =>
+        projectionStore.getTurnItem({ threadId, itemId }).pipe(
+          Effect.map((item) => item !== null),
+          mapDispatchError(command),
+        );
+      const entries = yield* Effect.filter(candidates.entries, (entry) =>
+        entry.role === "reasoning"
+          ? itemExists(externalEntryItemId(threadId, entry.uuid)).pipe(
+              Effect.map((found) => !found),
+            )
+          : Effect.succeed(!existingMessages.has(externalMessageId(threadId, entry.uuid))),
+      );
+      const notices = yield* Effect.filter(candidates.notices, (notice) =>
+        itemExists(externalNoticeItemId(threadId, notice.key)).pipe(Effect.map((found) => !found)),
+      );
+
+      const now = yield* DateTime.now;
+      const rangeRunId = externalHistoryRangeRun(runs);
+      const historyEvents = [
+        ...entries.flatMap((entry) =>
+          externalEntryEvents({ threadId, entry, rangeRunId, occurredAt: now }),
+        ),
+        ...notices.map((notice) =>
+          externalNoticeEvent({ threadId, notice, rangeRunId, occurredAt: now }),
+        ),
+      ];
+      yield* Ref.update(events, (existing) => [...existing, ...historyEvents]);
+
+      let current = thread;
+      const unsettled =
+        command.activity === "live" && entries.some((entry) => entry.role === "user")
+          ? unsettledByNewWork(current, now)
+          : undefined;
+      if (unsettled !== undefined) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.unsettled",
+          threadId,
+          providerInstanceId: unsettled.providerInstanceId,
+          occurredAt: now,
+          payload: unsettled,
+        });
+        current = unsettled;
+      }
+      const updated = externalHistoryThreadUpdate(current, {
+        title: command.title,
+        newestEntryAt: entries.reduce<DateTime.Utc | undefined>(
+          (newest, entry) =>
+            newest === undefined || DateTime.isGreaterThan(entry.createdAt, newest)
+              ? entry.createdAt
+              : newest,
+          undefined,
+        ),
+      });
+      if (updated !== undefined) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId,
+          providerInstanceId: updated.providerInstanceId,
+          occurredAt: now,
+          payload: updated,
+        });
+      }
+    },
+  );
+
+  /** Before commit, so a turn on a session another process has open is refused, not failed later. */
+  const refuseExternallyHeldSession = (
+    command: OrchestrationV2ServerCommand,
+    events: ReadonlyArray<OrchestrationV2DomainEvent>,
+  ): Effect.Effect<void, OrchestratorSessionHeldExternallyError> => {
+    for (const threadId of threadsStartingWork(events)) {
+      const holder = externalSessionHolds.heldBy(threadId);
+      if (holder !== null) {
+        return Effect.fail(
+          new OrchestratorSessionHeldExternallyError({
+            commandId: command.commandId,
+            threadId,
+            owner: holder.owner,
+            sessionName: holder.name,
+          }),
+        );
+      }
+    }
+    return Effect.void;
+  };
+
   const refuseAboveDispatchModeLimit = Effect.fn("orchestrationV2.dispatch.refuseAboveModeLimit")(
     function* (
       command: OrchestrationV2ServerCommand,
@@ -6987,27 +7167,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : run.id === command.restartContinuationOfRunId,
     )?.delegatedTaskId;
 
-    if (projection.thread.settledOverride !== null) {
-      const now = yield* DateTime.now;
-      const thread: OrchestrationV2AppThread = {
-        ...projection.thread,
-        settledOverride: null,
-        settledAt: null,
-        unsettledAt:
-          projection.thread.settledOverride === "active"
-            ? (projection.thread.unsettledAt ?? null)
-            : now,
-        updatedAt: now,
-      };
+    const unsettled = unsettledByNewWork(projection.thread, yield* DateTime.now);
+    if (unsettled !== undefined) {
       const event = yield* emit(
         events,
         command,
       )({
         type: "thread.unsettled",
         threadId: command.threadId,
-        providerInstanceId: thread.providerInstanceId,
-        occurredAt: now,
-        payload: thread,
+        providerInstanceId: unsettled.providerInstanceId,
+        occurredAt: unsettled.updatedAt,
+        payload: unsettled,
       });
       projection = applyToProjection(projection, event);
     }
@@ -15143,6 +15313,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.project.adopt-folder":
         yield* dispatchThreadProjectAdoptFolder(command, events);
         break;
+      case "thread.external-history.append":
+        yield* dispatchExternalHistoryAppend(command, events);
+        break;
       case "message.dispatch": {
         const thread = yield* refuseNativeSubagentMessage(command);
         const guestSend =
@@ -15487,11 +15660,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const plan = yield* dispatchOnce(command, sideChatIds).pipe(
       Effect.tap((planned) => refuseAboveRuntimeModeCeiling(command, planned.events)),
+      Effect.tap((planned) => refuseExternallyHeldSession(command, planned.events)),
       Effect.filterOrFail(
         (planned) =>
           planned.events.length > 0 ||
           isUnobservedAcknowledgement(command) ||
           command.type === "thread.background-work.settle" ||
+          // A transcript read again holds nothing new.
+          command.type === "thread.external-history.append" ||
           // A stale visit changes no read state.
           command.type === "thread.visit" ||
           // A read can answer a watch again before a push's reopen lands; nothing is left to clear.
@@ -15511,10 +15687,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {
-          // Refusals depend on modes the user can change; a recorded rejection would block the retry.
+          // These refusals depend on state that changes; a recorded rejection would block the retry.
           if (
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
-            cause._tag === "OrchestratorRuntimeModeAboveCeilingError"
+            cause._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
+            cause._tag === "OrchestratorSessionHeldExternallyError" ||
+            cause._tag === "OrchestratorThreadRunActiveError" ||
+            cause._tag === "OrchestratorThreadDeletedError"
           ) {
             return yield* cause;
           }

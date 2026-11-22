@@ -3642,6 +3642,32 @@ const OrchestrationV2InternalCommand = Schema.Union([
     projectId: ProjectId,
   }),
   /**
+   * History a provider session wrote outside T3 Code, in transcript order. Entries and notices
+   * already on the thread are skipped by `uuid` and `key`, so re-reading a transcript adds nothing.
+   * `title` applies only while the thread's title still equals `expected`.
+   */
+  Schema.Struct({
+    type: Schema.Literal("thread.external-history.append"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    sessionId: TrimmedNonEmptyString,
+    leafUuid: Schema.NullOr(TrimmedNonEmptyString),
+    /** `live`: written while the session was open elsewhere, so new human entries unsettle. */
+    activity: Schema.Literals(["live", "backfill"]),
+    entries: Schema.Array(
+      Schema.Struct({
+        uuid: TrimmedNonEmptyString,
+        role: Schema.Literals(["user", "assistant", "reasoning"]),
+        text: Schema.String,
+        createdAt: Schema.DateTimeUtc,
+      }),
+    ),
+    notices: Schema.Array(
+      Schema.Struct({ key: TrimmedNonEmptyString, text: TrimmedNonEmptyString }),
+    ),
+    title: Schema.NullOr(Schema.Struct({ value: TrimmedNonEmptyString, expected: Schema.String })),
+  }),
+  /**
    * After a push, the thread's watches forget whether their checks were running, since the push
    * can start new ones. Applied to the watches as they are then, so no earlier read overwrites them.
    */

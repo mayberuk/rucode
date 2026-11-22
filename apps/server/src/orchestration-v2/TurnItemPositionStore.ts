@@ -27,9 +27,11 @@ export interface TurnItemPositionStoreV2Shape {
     // Keep an existing position even when it lies outside the run's range.
     readonly keepExisting?: boolean;
   }) => Effect.Effect<number, TurnItemPositionStoreError>;
+  /** `rangeRunId` places a run-less item in that run's range instead of ahead of every run. */
   readonly normalize: (
     item: OrchestrationV2TurnItem,
     runOrdinal?: number,
+    rangeRunId?: RunId,
   ) => Effect.Effect<OrchestrationV2TurnItem, TurnItemPositionStoreError>;
 }
 
@@ -140,11 +142,11 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
     return TurnItemPositionStoreV2.of({
       allocate,
       // Per-event normalization shares the enclosing orchestration span.
-      normalize: Effect.fnUntraced(function* (item, runOrdinal) {
+      normalize: Effect.fnUntraced(function* (item, runOrdinal, rangeRunId) {
         return yield* allocate({
           threadId: item.threadId,
           turnItemId: item.id,
-          runId: item.runId,
+          runId: item.runId ?? rangeRunId ?? null,
           // Queued steers keep their submission order until their run starts (see Orchestrator).
           keepExisting: item.status === "pending",
           ...(runOrdinal === undefined ? {} : { runOrdinal }),
