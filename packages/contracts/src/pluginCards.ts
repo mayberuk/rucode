@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
+import { PluginLiveCliSession } from "./cliSessions.ts";
 
 /** Format `${kind}:${key}`; the source picks the key. */
 export const PluginCardId = TrimmedNonEmptyString;
@@ -435,6 +436,7 @@ export const PluginLiveState = Schema.Struct({
   children: Schema.Array(PluginLiveChild),
   decisions: Schema.Array(PluginLiveDecision),
   waitingThreadIds: Schema.Array(ThreadId),
+  cliSessions: Schema.optionalKey(Schema.Array(PluginLiveCliSession)),
 });
 export type PluginLiveState = typeof PluginLiveState.Type;
 
