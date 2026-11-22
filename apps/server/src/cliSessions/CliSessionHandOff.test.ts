@@ -369,9 +369,7 @@ it.effect("releases rucode's own process and offers the command to copy, typing 
   withHandOff({ entry: null }, ({ handOff, steps, releases }) =>
     Effect.gen(function* () {
       expect(yield* handOff.continueInTerminal({ threadId })).toEqual({
-        delivery: "copy",
         command: `cd '/w' && claude --resume ${SESSION}`,
-        paneLabel: null,
       });
       expect(releases).toHaveLength(1);
       expect(steps).toEqual([`release ${providerSessionId}`]);

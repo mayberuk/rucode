@@ -5,7 +5,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { cliSessionTakeOver, handOffSessionName, isClaudeThread } from "./cliSession.logic";
+import { cliSessionTakeOver, isClaudeThread } from "./cliSession.logic";
 
 const instance = (id: string) => ProviderInstanceId.make(id);
 const providers = [
@@ -45,16 +45,5 @@ describe("cliSessionTakeOver", () => {
     [session({ owner: "other" }), "hidden"],
   ] as const)("%o is %s", (input, expected) => {
     expect(cliSessionTakeOver(input)).toBe(expected);
-  });
-});
-
-describe("handOffSessionName", () => {
-  it.each([
-    ["rucode-sync-probe:%37", "rucode-sync-probe"],
-    ["main:%28", "main"],
-    ["%37", null],
-    [null, null],
-  ] as const)("%s names %s", (paneLabel, expected) => {
-    expect(handOffSessionName(paneLabel)).toBe(expected);
   });
 });

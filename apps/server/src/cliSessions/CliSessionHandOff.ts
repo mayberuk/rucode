@@ -222,7 +222,7 @@ export const make = Effect.fn("CliSessionHandOff.make")(function* (options?: {
     yield* releaseOwnProcesses(input.threadId, session.own);
     // Nothing outside a shell can tell whether its prompt holds a half-typed line, and typing
     // after one would run both; the user runs the command where they choose.
-    return { delivery: "copy", command, paneLabel: null } satisfies CliSessionContinueResult;
+    return { command } satisfies CliSessionContinueResult;
   }, Effect.provideContext(services));
 
   return CliSessionHandOff.of({ takeOver, continueInTerminal });

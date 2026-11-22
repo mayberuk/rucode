@@ -5,13 +5,13 @@ import {
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useGT, useMessages } from "gt-react";
 
-import { cliSessionRefusal, handOffSessionName } from "../components/cliSession.logic";
+import { cliSessionRefusal } from "../components/cliSession.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { continueCliSessionInTerminal } from "../rpc/cliSessions";
 import { useAtomCommand } from "../state/use-atom-command";
 import { writeTextToClipboard } from "./useCopyToClipboard";
 
-/** Hands a Claude thread to a terminal: typed into its last shell pane, or copied to run by hand. */
+/** Releases a Claude thread to a terminal and copies the command that resumes it. */
 export function useContinueInTerminal() {
   const gt = useGT();
   const m = useMessages();
@@ -42,18 +42,7 @@ export function useContinueInTerminal() {
       );
       return;
     }
-    const { delivery, command, paneLabel } = result.value;
-    if (delivery === "sent") {
-      const sessionName = handOffSessionName(paneLabel);
-      toastManager.add({
-        type: "success",
-        title:
-          sessionName === null
-            ? gt("Resumed in your terminal")
-            : gt("Resumed in {session}", { session: sessionName }),
-      });
-      return;
-    }
+    const { command } = result.value;
     const copied = await writeTextToClipboard(command, "command").then(
       () => true,
       () => false,

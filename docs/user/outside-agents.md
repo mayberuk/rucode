@@ -117,8 +117,8 @@ write to the same conversation at once. Exit it there, or press **Take over**
 when it is idle in tmux, to continue here.
 
 To move a Claude thread the other way, choose **Continue in terminal** from the
-thread menu or the command palette. T3 Code types the resume command into the
-session's last tmux shell pane, or copies it for you to run.
+thread menu or the command palette. T3 Code releases the thread and copies the
+resume command; run it in the terminal you want to continue in.
 
 Turn this off in **Settings > General > Claude Code**.
 

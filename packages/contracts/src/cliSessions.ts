@@ -20,11 +20,9 @@ export type CliSessionTakeOverInput = typeof CliSessionTakeOverInput.Type;
 export const CliSessionContinueInput = Schema.Struct({ threadId: ThreadId });
 export type CliSessionContinueInput = typeof CliSessionContinueInput.Type;
 
-/** `copy`: no pane to type into, so the client offers `command` for the user to run. */
+/** The shell command the user runs to resume the thread's session. */
 export const CliSessionContinueResult = Schema.Struct({
-  delivery: Schema.Literals(["sent", "copy"]),
   command: Schema.String,
-  paneLabel: Schema.NullOr(Schema.String),
 });
 export type CliSessionContinueResult = typeof CliSessionContinueResult.Type;
 
