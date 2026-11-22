@@ -27,6 +27,12 @@ export function cliSessionTakeOver(
   return session.status === "idle" && session.inTmux ? "available" : "unavailable";
 }
 
+/** The server labels a pane `session:%id` or `%id`; the `%id` pane id is tmux-internal notation. */
+export function handOffSessionName(paneLabel: string | null): string | null {
+  const name = paneLabel?.replace(/:?%\d+$/, "") ?? "";
+  return name === "" ? null : name;
+}
+
 const REFUSALS = {
   "not-attached": msg("This chat is no longer open in a terminal."),
   "not-idle": msg("The terminal session is busy. Try again once it is idle."),

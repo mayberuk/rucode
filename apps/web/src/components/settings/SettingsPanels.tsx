@@ -838,8 +838,8 @@ export function GeneralSettingsPanel() {
           {...setting("claude-terminal-sessions")}
           description={
             <T>
-              List Claude Code sessions from your terminals as threads. While one is open there,
-              this app follows along and sending waits until it exits.
+              List Claude Code sessions from your terminals as threads. While one is open in a
+              terminal, follow along here and take over when you want to continue.
             </T>
           }
           resetAction={

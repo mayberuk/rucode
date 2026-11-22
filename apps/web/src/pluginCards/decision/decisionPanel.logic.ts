@@ -177,24 +177,25 @@ export function decisionLine(
   data: DispatchDecisionCardData,
   formatTime: (iso: string) => string,
 ): string {
+  const prefix = `Decision · ${decisionContextLabel(data)}`;
   const at = data.applyAfter === null ? "" : ` at ${formatTime(data.applyAfter)}`;
   switch (data.state) {
     case "open":
       if (data.protection !== null && !data.needsPerson) {
-        return `Holding off${at} unless you approve`;
+        return `${prefix} · Holding off${at} unless you approve`;
       }
-      if (data.defaultKey === null || decisionWaitsOnPerson(data)) {
-        return `Decision · ${decisionContextLabel(data)} · waiting for you`;
-      }
-      return `Decision · going with ${optionLabel(data, data.defaultKey)}${at}`;
+      if (data.defaultKey === null || decisionWaitsOnPerson(data)) return prefix;
+      return `${prefix} · ${optionLabel(data, data.defaultKey)}${at}`;
     case "answered":
     case "defaulted": {
-      const who = decisionOutcome(data)?.who ?? null;
-      const chosen = data.choice === null ? "an answer" : optionLabel(data, data.choice);
-      return who === null ? `Went with ${chosen}` : `Went with ${chosen} · ${who}`;
+      const outcome = decisionOutcome(data);
+      const who = outcome?.who ?? null;
+      const chosen =
+        data.choice === null ? (outcome?.headline ?? "Answered") : optionLabel(data, data.choice);
+      return who === null ? `${prefix} · ${chosen}` : `${prefix} · ${chosen} · ${who}`;
     }
     case "superseded":
-      return "Decision superseded";
+      return `${prefix} · Superseded`;
   }
 }
 

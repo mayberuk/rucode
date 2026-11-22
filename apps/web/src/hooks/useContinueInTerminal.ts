@@ -5,7 +5,7 @@ import {
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useGT, useMessages } from "gt-react";
 
-import { cliSessionRefusal } from "../components/cliSession.logic";
+import { cliSessionRefusal, handOffSessionName } from "../components/cliSession.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { continueCliSessionInTerminal } from "../rpc/cliSessions";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -44,12 +44,13 @@ export function useContinueInTerminal() {
     }
     const { delivery, command, paneLabel } = result.value;
     if (delivery === "sent") {
+      const sessionName = handOffSessionName(paneLabel);
       toastManager.add({
         type: "success",
         title:
-          paneLabel === null
+          sessionName === null
             ? gt("Resumed in your terminal")
-            : gt("Resumed in {pane}", { pane: paneLabel }),
+            : gt("Resumed in {session}", { session: sessionName }),
       });
       return;
     }

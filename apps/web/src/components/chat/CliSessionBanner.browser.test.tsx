@@ -105,7 +105,7 @@ it("holds Send while a terminal has the chat open and releases it once the termi
   await using screen = await renderComposer(env);
   await env.publish([session()]);
 
-  await expect.element(screen.getByText("Open in a terminal (work) · idle")).toBeVisible();
+  await expect.element(screen.getByText("Open in a terminal · idle")).toBeVisible();
   await expect
     .element(screen.getByRole("button", { name: "Open in a terminal", exact: true }))
     .toBeDisabled();
@@ -131,5 +131,12 @@ it.each([
 
     if (available) await expect.element(takeOverButton(screen)).toBeEnabled();
     else await expect.element(takeOverButton(screen)).toBeDisabled();
+    await expect
+      .element(
+        screen.getByText(
+          available ? "Exit it there, or take over here." : "Exit it there to continue here.",
+        ),
+      )
+      .toBeVisible();
   },
 );

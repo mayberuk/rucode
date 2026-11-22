@@ -97,7 +97,13 @@ function verifyOutcome(
 export function cardSummary(card: PluginCard, formatTime: (iso: string) => string): CardSummary {
   switch (card.kind) {
     case "dispatch.decision":
-      return { label: decisionLine(card.data, formatTime), outcome: null };
+      return {
+        label: decisionLine(card.data, formatTime),
+        outcome:
+          card.data.state === "open" && decisionWaitsOnPerson(card.data)
+            ? { label: "Waiting", tone: "warning" }
+            : null,
+      };
     case "dispatch.plan": {
       const status = phaseStatus(card.data.status);
       return {

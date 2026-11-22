@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { cardPresence } from "./cardPresence.logic";
+import { cardPresence, cardSummary } from "./cardPresence.logic";
 
 const at = "2026-11-21T09:00:00Z";
 const shell = (id: string, actions: ReadonlyArray<PluginCardAction> = []) => ({
@@ -235,5 +235,49 @@ describe("cardPresence", () => {
     const failed = run("r1", { outcome: "failed", startedAt: "2026-11-21T09:00:00Z" });
     const other = run("r2", { outcome: "passed", startedAt: "2026-11-21T09:30:00Z", ...overrides });
     expect(cardPresence(failed, [failed, other])).toBe("failed");
+  });
+});
+
+describe("cardSummary", () => {
+  const waiting = { label: "Waiting", tone: "warning" } as const;
+  it.each([
+    [
+      "an open ordinary decision",
+      decision({}),
+      "Decision · nov18 · wave 2 · Continue at 09:05",
+      null,
+    ],
+    [
+      "an open needs-person decision",
+      decision({ needsPerson: true, defaultKey: null }),
+      "Decision · nov18 · wave 2",
+      waiting,
+    ],
+    [
+      "an open protected decision",
+      decision({ protection: "outward", defaultKey: "stop" }),
+      "Decision · nov18 · wave 2 · Holding off at 09:05 unless you approve",
+      waiting,
+    ],
+    [
+      "an answered decision",
+      decision({ state: "answered", choice: "go", chosenBy: "person" }),
+      "Decision · nov18 · wave 2 · Continue · You",
+      null,
+    ],
+    [
+      "a defaulted decision",
+      decision({ state: "defaulted", choice: "stop" }),
+      "Decision · nov18 · wave 2 · Stop · Default",
+      null,
+    ],
+    [
+      "a superseded decision",
+      decision({ state: "superseded" }),
+      "Decision · nov18 · wave 2 · Superseded",
+      null,
+    ],
+  ] as const)("labels %s", (_label, card, label, outcome) => {
+    expect(cardSummary(card, (iso) => iso.slice(11, 16))).toEqual({ label, outcome });
   });
 });

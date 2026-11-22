@@ -802,7 +802,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           icon: cliStatus === "terminal-busy" ? ("working" as const) : ("terminal" as const),
           className:
             cliStatus === "terminal-busy" ? "text-info-foreground" : "text-muted-foreground",
-          terminalGlyph: cliStatus === "terminal-busy",
         }
       : status === "preparing" || status === "working"
         ? {
@@ -1401,9 +1400,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         )}
                       >
                         <TopStatusIcon icon={topStatus.icon} className="size-3" />
-                        {topStatus.terminalGlyph ? (
-                          <TopStatusIcon icon="terminal" className="size-3" />
-                        ) : null}
                         {topStatus.label}
                       </span>
                     ) : (
@@ -1592,9 +1588,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           )}
                         >
                           <TopStatusIcon icon={topStatus.icon} className="size-4" />
-                          {topStatus.terminalGlyph ? (
-                            <TopStatusIcon icon="terminal" className="size-4" />
-                          ) : null}
                           {/* Not a live region: a collapsed sidebar is inert, so
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}

@@ -66,7 +66,15 @@ export function PluginCardTimelineRow({
         trailing={
           <>
             {summary.outcome === null ? null : (
-              <span className={cn("shrink-0 text-xs", toneClassName(summary.outcome.tone))}>
+              <span
+                className={cn(
+                  "shrink-0 text-xs",
+                  // Work-log rows keep routine outcomes muted and colour only failures and warnings.
+                  summary.outcome.tone === "destructive" || summary.outcome.tone === "warning"
+                    ? toneClassName(summary.outcome.tone)
+                    : "text-muted-foreground",
+                )}
+              >
                 {summary.outcome.label}
               </span>
             )}

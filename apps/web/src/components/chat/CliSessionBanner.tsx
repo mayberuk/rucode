@@ -49,11 +49,7 @@ export function useCliSessionComposer(
   ]);
   const current = attempt?.key === attemptKey ? attempt : null;
   const inTerminal = session.owner === "terminal";
-  const place = inTerminal
-    ? session.name === null
-      ? gt("Open in a terminal")
-      : gt("Open in a terminal ({name})", { name: session.name })
-    : gt("Open in another Claude process");
+  const place = inTerminal ? gt("Open in a terminal") : gt("Open in another Claude process");
   const statusLabel =
     session.status === "busy"
       ? gt("working")
@@ -106,7 +102,12 @@ export function useCliSessionComposer(
     group: "attention",
     icon: <SquareTerminalIcon />,
     title: statusLabel === null ? place : `${place} · ${statusLabel}`,
-    description: notes.length > 0 ? notes.join(" ") : gt("Exit it there to continue here."),
+    description:
+      notes.length > 0
+        ? notes.join(" ")
+        : takeOverState === "available"
+          ? gt("Exit it there, or take over here.")
+          : gt("Exit it there to continue here."),
   };
   return {
     bannerItem:

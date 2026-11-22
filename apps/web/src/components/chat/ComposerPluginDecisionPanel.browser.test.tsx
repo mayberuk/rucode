@@ -261,7 +261,7 @@ it("goes with a needs-person decision's recommendation in one step", async () =>
   await expect.element(screen.getByRole("button", { name: "Recording answer…" })).toBeDisabled();
 });
 
-it("shows an ordinary decision as the course it will take until Change opens its options", async () => {
+it("shows an ordinary decision as the course it will take until its header opens its options", async () => {
   using env = setup();
   using answer = stubAnswer();
   await using screen = await render(
@@ -277,7 +277,7 @@ it("shows an ordinary decision as the course it will take until Change opens its
     .element(screen.getByText("Close the initiative without d-1?"))
     .not.toBeInTheDocument();
 
-  await screen.getByText("Change", { exact: true }).click();
+  await screen.getByTitle("Show the decision and its options").click();
   await expect
     .element(screen.getByRole("button", { name: /^Drop the wave and close/ }))
     .toMatchTextContent(/Default ·/);
@@ -539,8 +539,9 @@ it("draws an open decision as one timeline line, its options left to the compose
       </TimelineRowCtx>
     </RegistryContext.Provider>,
   );
-  const line = screen.getByRole("button", { name: /Decision · nov18 · wave 3 · waiting for you/ });
+  const line = screen.getByRole("button", { name: /Decision · nov18 · wave 3/ });
   await expect.element(line).toHaveAttribute("aria-expanded", "false");
+  await expect.element(line).toMatchTextContent(/Waiting/);
   expect(screen.container.textContent).not.toMatch(/Keep it open|Close the initiative/);
   await line.click();
   expect(onToggleWorkGroup).toHaveBeenCalledExactlyOnceWith(row.id, row.id);

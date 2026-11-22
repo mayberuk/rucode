@@ -239,9 +239,6 @@ export const ComposerPluginDecisionPanel = memo(function ComposerPluginDecisionP
               {index + 1}/{total}
             </ComposerBanner.Count>
           ) : null}
-          {collapsed && headline !== null ? (
-            <span className="px-1 text-xs text-muted-foreground">Change</span>
-          ) : null}
           <ComposerBanner.ToggleIcon expanded={!collapsed} />
         </ComposerBanner.Actions>
       </CollapsibleTrigger>
