@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import { type DrainableWorker, makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveSelectableModel } from "@t3tools/shared/model";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Context from "effect/Context";
@@ -53,6 +54,7 @@ import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.t
 import { importedThreadRows } from "../project/AgentSessionImporter.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ClaudeSessionRegistry from "./ClaudeSessionRegistry.ts";
 import { CliSessionsLive } from "./cliSessionsLiveSource.ts";
@@ -173,6 +175,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const homeDir = yield* HostProcess.HomeDirectory;
   const hostEnvironment = yield* HostProcess.Environment;
+  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
 
   const claudeHome = yield* Effect.gen(function* () {
     const current = yield* settings.getSettings.pipe(Effect.option);
@@ -311,6 +314,38 @@ const make = Effect.gen(function* () {
       ? ceiling
       : DEFAULT_RUNTIME_MODE;
 
+  const knownModel = Effect.fn("CliSessionSync.knownModel")(function* (reported: string | null) {
+    if (reported === null) return null;
+    const models =
+      (yield* providerRegistry.getProviders).find(
+        (provider) => provider.instanceId === CLAUDE_INSTANCE,
+      )?.models ?? [];
+    // Transcripts carry dated ids, such as `claude-haiku-4-5-20251001`, that the instance lists undated.
+    return (
+      resolveSelectableModel(CLAUDE_DRIVER, reported, models) ??
+      resolveSelectableModel(CLAUDE_DRIVER, reported.replace(/-\d{8}$/, ""), models)
+    );
+  });
+
+  const followModel = Effect.fn("CliSessionSync.followModel")(function* (input: {
+    readonly commandId: string;
+    readonly threadId: ThreadId;
+    readonly reported: string | null;
+  }) {
+    const model = yield* knownModel(input.reported);
+    if (model === null) return;
+    const thread = yield* projection.findThread(input.threadId);
+    const current = thread?.modelSelection;
+    if (current === undefined || current.instanceId !== CLAUDE_INSTANCE || current.model === model)
+      return;
+    yield* orchestrator.dispatch({
+      type: "thread.model-selection.set",
+      commandId: CommandId.make(input.commandId),
+      threadId: input.threadId,
+      modelSelection: { instanceId: CLAUDE_INSTANCE, model },
+    });
+  });
+
   const append = Effect.fn("CliSessionSync.append")(function* (input: {
     readonly commandId: string;
     readonly threadId: ThreadId;
@@ -442,6 +477,18 @@ const make = Effect.gen(function* () {
         return;
       }
       if (outcome === "failed") return;
+      yield* followModel({
+        commandId: `cli-sync:${sessionId}:${inode}:${start}-${read.offset}:model`,
+        threadId: synced.threadId,
+        reported: read.model,
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("cli session sync could not follow the session's model", {
+            sessionId,
+            cause,
+          }),
+        ),
+      );
     }
     waitingOnRun.delete(synced.threadId);
     updateSession(sessionId, {
@@ -530,7 +577,10 @@ const make = Effect.gen(function* () {
       title: read.title ?? "",
       providerInstanceId: CLAUDE_INSTANCE,
       driver: CLAUDE_DRIVER,
-      model: DEFAULT_MODEL_BY_PROVIDER[CLAUDE_DRIVER] ?? DEFAULT_MODEL,
+      model:
+        (yield* knownModel(read.model)) ??
+        DEFAULT_MODEL_BY_PROVIDER[CLAUDE_DRIVER] ??
+        DEFAULT_MODEL,
       runtimeMode: mode,
       worktree,
       providerThreadId,

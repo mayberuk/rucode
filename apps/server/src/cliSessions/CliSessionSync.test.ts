@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  DEFAULT_MODEL_BY_PROVIDER,
   EventId,
   MessageId,
   type OrchestrationProjectShell,
@@ -10,6 +11,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -42,6 +44,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import { importedThreadRows } from "../project/AgentSessionImporter.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ClaudeSessionRegistry from "./ClaudeSessionRegistry.ts";
 import * as CliSessionSync from "./CliSessionSync.ts";
@@ -74,7 +77,16 @@ const layerOrchestration = Layer.mergeAll(
   ),
 ).pipe(Layer.provideMerge(CliSessionSync.layerHolds));
 
-const record = (type: "user" | "assistant", uuid: string, text: string) =>
+const claudeModel = (slug: string) => ({ slug, name: slug, isCustom: false, capabilities: null });
+const providers = [
+  {
+    instanceId: CLAUDE_INSTANCE,
+    driver: CLAUDE,
+    models: [claudeModel("claude-haiku-4-5"), claudeModel("claude-sonnet-4-6")],
+  } as unknown as ServerProvider,
+];
+
+const record = (type: "user" | "assistant", uuid: string, text: string, model?: string) =>
   `${JSON.stringify(
     type === "user"
       ? {
@@ -92,7 +104,11 @@ const record = (type: "user" | "assistant", uuid: string, text: string) =>
           timestamp: "2026-11-20T10:00:05.000Z",
           entrypoint: "cli",
           cwd: "__CWD__",
-          message: { role: "assistant", content: [{ type: "text", text }] },
+          message: {
+            role: "assistant",
+            ...(model === undefined ? {} : { model }),
+            content: [{ type: "text", text }],
+          },
         },
   )}\n`;
 
@@ -195,6 +211,9 @@ const withFixture = <A, E, R>(
             claudeTerminalSessions: options.enabled,
           }),
           projects,
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed(providers),
+          }),
         ),
       ),
     );
@@ -299,6 +318,51 @@ it.effect("adopts a terminal session and appends each new record once", () =>
         "Now add a test",
         "Added.",
       ]);
+    }),
+  ),
+);
+
+it.effect("follows the terminal's model when the Claude instance knows it", () =>
+  withFixture({ enabled: true }, (fixture) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const model = Effect.map(store.findThread(THREAD), (thread) => thread?.modelSelection);
+      let transcript =
+        record("user", "u-1", "Fix the login bug") +
+        record("assistant", "a-1", "Done.", "claude-haiku-4-5-20251001");
+      yield* fixture.write(transcript);
+      yield* attach(fixture);
+      const { sync } = yield* fixture.start;
+      yield* sync.drain;
+      assert.deepEqual(yield* model, { instanceId: CLAUDE_INSTANCE, model: "claude-haiku-4-5" });
+
+      const terminalWrites = Effect.fn(function* (uuid: string, text: string, reported: string) {
+        transcript += record("assistant", uuid, text, reported);
+        yield* fixture.write(transcript);
+        yield* fixture.touch;
+        yield* awaitMessage(THREAD, text);
+        yield* sync.drain;
+      });
+      yield* terminalWrites("a-2", "Unknown model.", "claude-unreleased-9");
+      assert.deepEqual(yield* model, { instanceId: CLAUDE_INSTANCE, model: "claude-haiku-4-5" });
+      yield* terminalWrites("a-3", "Switched.", "claude-sonnet-4-6");
+      assert.deepEqual(yield* model, { instanceId: CLAUDE_INSTANCE, model: "claude-sonnet-4-6" });
+    }),
+  ),
+);
+
+it.effect("adopts a session with no model the instance knows on the default model", () =>
+  withFixture({ enabled: true }, (fixture) =>
+    Effect.gen(function* () {
+      yield* fixture.write(
+        record("user", "u-1", "Fix the login bug") +
+          record("assistant", "a-1", "Done.", "claude-unreleased-9"),
+      );
+      yield* attach(fixture);
+      const { sync } = yield* fixture.start;
+      yield* sync.drain;
+      const thread = yield* (yield* ProjectionStore.ProjectionStoreV2).findThread(THREAD);
+      assert.equal(thread?.modelSelection.model, DEFAULT_MODEL_BY_PROVIDER[CLAUDE]);
     }),
   ),
 );

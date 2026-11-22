@@ -19,6 +19,8 @@ export interface TranscriptRead {
   readonly agentName: string | null;
   /** The last uuid on any record read, including ones that emit no entry. */
   readonly leafUuid: string | null;
+  /** The model of the last visible assistant record read, as Claude reports it. */
+  readonly model: string | null;
 }
 
 const ContentBlock = Schema.Struct({
@@ -41,6 +43,7 @@ const TranscriptRecord = Schema.Struct({
   agentName: Schema.optional(Schema.String),
   message: Schema.optional(
     Schema.Struct({
+      model: Schema.optional(Schema.String),
       content: Schema.optional(Schema.Union([Schema.String, Schema.Array(ContentBlock)])),
     }),
   ),
@@ -109,6 +112,7 @@ export function readTranscript(bytes: Uint8Array, offset: number): TranscriptRea
   let agentName: string | null = null;
   let firstPrompt: string | null = null;
   let leafUuid: string | null = null;
+  let model: string | null = null;
   let start = 0;
   for (let end = bytes.indexOf(NEWLINE); end !== -1; end = bytes.indexOf(NEWLINE, start)) {
     const line = decoder.decode(bytes.subarray(start, end));
@@ -126,6 +130,10 @@ export function readTranscript(bytes: Uint8Array, offset: number): TranscriptRea
       aiTitle = record.aiTitle.trim();
     } else if (record.type === "agent-name" && record.agentName?.trim()) {
       agentName = record.agentName.trim();
+    } else if (record.type === "assistant" && !isHidden(record)) {
+      const reported = record.message?.model?.trim();
+      // Claude labels its own error and notice records `<synthetic>`; no model wrote them.
+      if (reported && reported !== "<synthetic>") model = reported;
     }
     for (const entry of entriesOf(record)) {
       if (firstPrompt === null && entry.role === "user") {
@@ -141,5 +149,6 @@ export function readTranscript(bytes: Uint8Array, offset: number): TranscriptRea
     customTitle: customTitle ?? null,
     agentName,
     leafUuid,
+    model,
   };
 }

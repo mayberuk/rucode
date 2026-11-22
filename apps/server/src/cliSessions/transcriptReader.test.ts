@@ -69,6 +69,27 @@ describe("readTranscript", () => {
     ]);
   });
 
+  it("reports the model of the last assistant record the terminal wrote", () => {
+    const withModel = (uuid: string, model: string, fields: Record<string, unknown> = {}) =>
+      assistantText(uuid, "reply", {
+        message: { role: "assistant", model, content: [{ type: "text", text: "reply" }] },
+        ...fields,
+      });
+    const model = (text: string) => readTranscript(bytes(text), 0).model;
+    expect(model(lines(human("u1", "hi")))).toBeNull();
+    expect(
+      model(
+        lines(
+          withModel("a1", "claude-opus-4-6"),
+          withModel("a2", "claude-haiku-4-5-20251001"),
+          withModel("a3", "<synthetic>"),
+          withModel("a4", "claude-sonnet-4-6", { entrypoint: "t3-code" }),
+          withModel("a5", "claude-sonnet-4-6", { isSidechain: true }),
+        ),
+      ),
+    ).toBe("claude-haiku-4-5-20251001");
+  });
+
   it("skips records rucode wrote itself", () => {
     expect(
       uuids(
