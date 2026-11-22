@@ -19,6 +19,7 @@ import { resolveServerInstallation } from "../cli/invocation.ts";
 import { readAgentActivityPublishingActive } from "../cloud/config.ts";
 import { resolveServerSelfUpdateCapability } from "../cloud/selfUpdate.ts";
 import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
+import { claudeTerminalSessionsDefault as resolveClaudeTerminalSessionsDefault } from "../cliSessions/terminalSessionsDefault.ts";
 import * as ServerConfig from "../config.ts";
 import { databaseMigrationHead } from "../persistence/databaseMigrationHead.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -207,6 +208,9 @@ export const make = Effect.gen(function* () {
     serverConfig.desktopAppUpdate === true &&
     serverConfig.desktopTelemetryControlFd !== undefined;
 
+  const claudeTerminalSessionsDefault = yield* resolveClaudeTerminalSessionsDefault(
+    serverConfig.baseDir,
+  );
   const databaseMigration = databaseMigrationHead(serverConfig.dbPath);
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
@@ -260,6 +264,7 @@ export const make = Effect.gen(function* () {
       threadPinReorder: true,
       threadActiveReorder: true,
       threadAutoSettleOptOut: true,
+      claudeTerminalSessionsDefault,
       threadProjectFromScratch: true,
       threadTitleRegeneration: true,
       commandOutputStreaming: true,

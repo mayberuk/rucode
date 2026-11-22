@@ -691,6 +691,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["notification sound alert completion input approval desktop"],
   },
   {
+    id: "claude-terminal-sessions",
+    title: msg("Show Claude terminal sessions"),
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["claude code cli tmux terminal sessions sync resume"],
+  },
+  {
     id: "in-app-notifications",
     title: msg("In-app notifications"),
     to: "/settings/general",

@@ -8,6 +8,7 @@ import {
 import { expect, it } from "vite-plus/test";
 import {
   boardInitiatives,
+  cliSessionForThread,
   formatAsOf,
   partStatusLabel,
   hasOpenDecision,
@@ -123,6 +124,23 @@ it("initiativeForThread ignores closed initiatives, unknown chats and missing st
   expect(initiativeForThread(closedByChild, t("x"))).toBeNull();
   expect(initiativeForThread(live({ initiatives: [initiative()] }), t("y"))).toBeNull();
   expect(initiativeForThread(null, t("x"))).toBeNull();
+});
+
+it("cliSessionForThread finds the thread's terminal session, and none from an older server", () => {
+  const held = {
+    threadId: t("x"),
+    sessionId: "s-1",
+    owner: "terminal",
+    status: "idle",
+    name: "rucode-b0",
+    inTmux: true,
+    backgroundWorkKept: false,
+  } as const;
+  const state = live({ cliSessions: [held] });
+  expect(cliSessionForThread(state, t("x"))).toEqual(held);
+  expect(cliSessionForThread(state, t("y"))).toBeNull();
+  expect(cliSessionForThread(live(), t("x"))).toBeNull();
+  expect(cliSessionForThread(null, t("x"))).toBeNull();
 });
 
 it("sidebar groups list orchestrator, then parts, then children, without repeats", () => {

@@ -65,6 +65,24 @@ describe("buildThreadActionMenuItems", () => {
     },
   );
 
+  it("offers Continue in terminal only for a Claude thread, and needs permission", () => {
+    const continueItem = (state: Partial<ThreadActionMenuState>) =>
+      buildThreadActionMenuItems({ ...baseState, ...state }).find(
+        (item) => item.id === "continue-in-terminal",
+      );
+    const claude = { label: "Continue in terminal", disabled: false };
+    expect(continueItem({ continueInTerminal: claude })).toMatchObject({
+      label: "Continue in terminal",
+    });
+    expect(continueItem({ continueInTerminal: claude })?.disabled).toBeFalsy();
+    expect(continueItem({ continueInTerminal: { ...claude, disabled: true } })?.disabled).toBe(
+      true,
+    );
+    expect(continueItem({ continueInTerminal: null })).toBeUndefined();
+    expect(continueItem({})).toBeUndefined();
+    expect(continueItem({ continueInTerminal: claude, canOperate: false })?.disabled).toBe(true);
+  });
+
   it("disables archive and turning into a project while the thread is running", () => {
     const items = buildThreadActionMenuItems({
       ...baseState,

@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
+  PluginLiveCliSession,
   PluginLiveInitiative,
   PluginLiveState,
   ScopedThreadRef,
@@ -16,6 +17,7 @@ import { pluginLiveStateAtomFamily } from "~/rpc/pluginCards";
 
 import {
   boardInitiatives,
+  cliSessionForThread,
   hasOpenDecision,
   initiativeForThread,
   initiativeSidebarGroups,
@@ -61,6 +63,7 @@ const threadAtom = <A>(select: (state: PluginLiveState | null, threadId: ThreadI
 
 const threadHasOpenDecisionAtom = threadAtom(hasOpenDecision);
 const threadInitiativeAtom = threadAtom(initiativeForThread);
+const threadCliSessionAtom = threadAtom(cliSessionForThread);
 
 const anyThreadHasOpenDecisionAtom = Atom.family((key: string) => {
   const threads: ReadonlyArray<ScopedThreadRef> = JSON.parse(key);
@@ -157,6 +160,20 @@ export function useThreadInitiative(
   threadId: ThreadId,
 ): PluginLiveInitiative | null {
   return useAtomValue(threadInitiativeAtom(environmentId)(threadId));
+}
+
+export function useThreadCliSession(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): PluginLiveCliSession | null {
+  return useAtomValue(threadCliSessionAtom(environmentId)(threadId));
+}
+
+export function readThreadCliSession(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): PluginLiveCliSession | null {
+  return appAtomRegistry.get(threadCliSessionAtom(environmentId)(threadId));
 }
 
 export function useInitiativeSidebarGroups(

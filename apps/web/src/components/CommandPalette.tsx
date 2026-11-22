@@ -1,4 +1,9 @@
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
+import { useGT } from "gt-react";
+import { useContinueInTerminal } from "../hooks/useContinueInTerminal";
+import { readThreadCliSession } from "../pluginCards/live/liveAtoms";
+import { readEnvironmentProviders } from "../state/environments";
+import { isClaudeThread } from "./cliSession.logic";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -72,6 +77,7 @@ import {
   MessageSquareIcon,
   PaletteIcon,
   RotateCcwIcon,
+  SquareTerminalIcon,
   SettingsIcon,
   MonitorIcon,
   PinIcon,
@@ -474,6 +480,8 @@ function OpenCommandPaletteDialog(props: {
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
+  const gt = useGT();
+  const continueInTerminal = useContinueInTerminal();
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
     reportFailure: false,
   });
@@ -1499,6 +1507,22 @@ function OpenCommandPaletteDialog(props: {
       run: async () => {
         openGuestShareDialog(threadRef);
       },
+    });
+  }
+
+  if (
+    activeThread !== null &&
+    isClaudeThread(activeThread, readEnvironmentProviders(activeThread.environmentId) ?? [])
+  ) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:continue-in-terminal",
+      searchTerms: ["terminal", "tmux", "claude", "resume", "hand off", "cli"],
+      title: gt("Continue in terminal"),
+      disabled: readThreadCliSession(activeThread.environmentId, activeThread.id) !== null,
+      icon: <SquareTerminalIcon className={ITEM_ICON_CLASS} />,
+      run: () => continueInTerminal(threadRef),
     });
   }
 

@@ -135,6 +135,9 @@ import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { useContinueInTerminal } from "../hooks/useContinueInTerminal";
+import { useGT } from "gt-react";
+import { isClaudeThread } from "./cliSession.logic";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
 import {
@@ -142,6 +145,7 @@ import {
   useConnectedEnvironmentIds,
   useEnvironmentMachines,
   usePrimaryEnvironmentId,
+  readEnvironmentProviders,
 } from "../state/environments";
 import {
   readThreadShell,
@@ -287,6 +291,7 @@ import {
   SidebarSectionPlaceholder,
 } from "./sidebar/SidebarListMarkers";
 import {
+  readThreadCliSession,
   useInitiativeSidebarGroups,
   useOpenDecisionThreadKeys,
 } from "../pluginCards/live/liveAtoms";
@@ -1061,6 +1066,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       );
     },
   });
+  const gt = useGT();
+  const continueInTerminal = useContinueInTerminal();
   const { copyToClipboard: copyThreadIdToClipboard } = useCopyToClipboard<{ threadId: ThreadId }>({
     onError: (error) => {
       toastManager.add(
@@ -2782,6 +2789,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 canShareWithGuestAtom(threadRef.environmentId),
               ),
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+              continueInTerminal: isClaudeThread(
+                thread,
+                readEnvironmentProviders(thread.environmentId) ?? [],
+              )
+                ? {
+                    label: gt("Continue in terminal"),
+                    disabled: readThreadCliSession(thread.environmentId, thread.id) !== null,
+                  }
+                : null,
               supports: {
                 settlement: configLoaded,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -2906,6 +2922,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           case "share-guest":
             openGuestShareDialog(threadRef);
+            return;
+          case "continue-in-terminal":
+            await continueInTerminal(threadRef);
             return;
           case "regenerate-title": {
             if (isRegeneratingTitle) return;

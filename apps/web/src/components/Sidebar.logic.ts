@@ -987,6 +987,21 @@ export function resolveSidebarThreadStatus(
   return "ready";
 }
 
+export type SidebarTerminalStatus = "terminal-busy" | "terminal-idle";
+
+/** A thread open in a terminal shows that in its status slot unless it needs the person here. */
+export function resolveSidebarTerminalStatus(
+  status: SidebarThreadStatus,
+  session: { readonly status: "busy" | "idle" | "shell" | "unknown" } | null,
+): SidebarTerminalStatus | null {
+  if (session === null) return null;
+  if (status === "approval" || status === "input" || status === "decision" || status === "request")
+    return null;
+  return session.status === "busy" || session.status === "shell"
+    ? "terminal-busy"
+    : "terminal-idle";
+}
+
 /** Sidebar row status: a failure the user has already opened settles to ready, like Done. */
 export function resolveSidebarRowStatus(
   thread: ThreadStatusInput & SidebarThreadStatusInput,

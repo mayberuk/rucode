@@ -21,6 +21,7 @@ export type ThreadActionMenuId =
   | "regenerate-title"
   | "mark-unread"
   | "share-guest"
+  | "continue-in-terminal"
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -95,6 +96,8 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** Set for Claude threads only. Translated here because native menus show labels as given. */
+  readonly continueInTerminal?: { readonly label: string; readonly disabled: boolean } | null;
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -181,6 +184,16 @@ export function buildThreadActionMenuItems(
     { id: "mark-unread", label: "Mark unread", icon: "mail-open" },
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: "Share with guest", icon: "user-plus" }]
+      : []),
+    ...(state.continueInTerminal
+      ? [
+          {
+            id: "continue-in-terminal" as const,
+            label: state.continueInTerminal.label,
+            icon: "square-terminal",
+            disabled: state.continueInTerminal.disabled,
+          },
+        ]
       : []),
     ...(state.projectFilter
       ? [

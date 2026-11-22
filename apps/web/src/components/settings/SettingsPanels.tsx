@@ -801,6 +801,10 @@ export function GeneralSettingsPanel() {
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
   );
+  const { environment: settingsEnvironment } = useSettingsScope();
+  const claudeTerminalSessionsDefault =
+    settingsEnvironment?.serverConfig?.environment.capabilities.claudeTerminalSessionsDefault ??
+    true;
   const languageValue = SUPPORTED_LOCALES.includes(settings.language)
     ? settings.language
     : SYSTEM_LANGUAGE;
@@ -822,6 +826,38 @@ export function GeneralSettingsPanel() {
               checked={settings.inAppNotificationsEnabled}
               onCheckedChange={(checked) => updateSettings({ inAppNotificationsEnabled: checked })}
               aria-label={gt("In-app notifications")}
+            />
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection id="claude-terminal" title={gt("Claude Code")}>
+        <SettingsRow
+          serverScoped
+          settingKeys={["claudeTerminalSessions"]}
+          {...setting("claude-terminal-sessions")}
+          description={
+            <T>
+              List Claude Code sessions from your terminals as threads. While one is open there,
+              this app follows along and sending waits until it exits.
+            </T>
+          }
+          resetAction={
+            settings.claudeTerminalSessions !== null ? (
+              <SettingResetButton
+                label="Claude terminal sessions"
+                onClick={() => updateSettings({ claudeTerminalSessions: null })}
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["claudeTerminalSessions"]}
+              checked={settings.claudeTerminalSessions ?? claudeTerminalSessionsDefault}
+              onCheckedChange={(checked) =>
+                updateSettings({ claudeTerminalSessions: Boolean(checked) })
+              }
+              aria-label={gt("Show Claude terminal sessions")}
             />
           }
         />

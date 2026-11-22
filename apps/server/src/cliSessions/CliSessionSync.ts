@@ -35,6 +35,10 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ServerConfig from "../config.ts";
+import {
+  claudeTerminalSessionsDefault,
+  claudeTerminalSessionsEnabled,
+} from "./terminalSessionsDefault.ts";
 import { isActiveRun } from "../orchestration-v2/CommandPolicy.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import { externalMessageId } from "../orchestration-v2/ExternalHistory.ts";
@@ -192,13 +196,11 @@ const make = Effect.gen(function* () {
   const projectsDir = path.join(claudeHome, "projects");
   const pairsDir = path.join(homeDir, ".claude", "initiatives", ".pairs");
 
-  // A server run from a dev worktree defaults off, so it does not adopt the developer's sessions.
-  const devWorktree = yield* fs.stat(path.join(path.dirname(config.baseDir), ".git")).pipe(
-    Effect.map((info) => info.type === "File"),
-    Effect.orElseSucceed(() => false),
-  );
+  const enabledByDefault = yield* claudeTerminalSessionsDefault(config.baseDir);
   const isEnabled = settings.getSettings.pipe(
-    Effect.map((current) => current.claudeTerminalSessions ?? !devWorktree),
+    Effect.map((current) =>
+      claudeTerminalSessionsEnabled(current.claudeTerminalSessions, enabledByDefault),
+    ),
     Effect.orElseSucceed(() => false),
   );
 

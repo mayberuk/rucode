@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  PluginLiveCliSession,
   PluginLiveInitiative,
   PluginLiveState,
   ThreadId,
@@ -54,6 +55,13 @@ function openInitiatives(state: PluginLiveState | null): ReadonlyArray<PluginLiv
 
 export function hasOpenDecision(state: PluginLiveState | null, threadId: ThreadId): boolean {
   return state !== null && state.waitingThreadIds.includes(threadId);
+}
+
+export function cliSessionForThread(
+  state: PluginLiveState | null,
+  threadId: ThreadId,
+): PluginLiveCliSession | null {
+  return state?.cliSessions?.find((session) => session.threadId === threadId) ?? null;
 }
 
 export function initiativeForThread(

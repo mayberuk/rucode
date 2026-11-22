@@ -15,6 +15,7 @@ import {
   pinOrderKeyBetween,
   resolveSidebarSweepKeys,
   resolveSidebarRowStatus,
+  resolveSidebarTerminalStatus,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWindowTitleThreadStatus,
@@ -393,6 +394,28 @@ describe("resolveSidebarRowStatus", () => {
     expect(
       resolveSidebarRowStatus({ ...opened, hasPendingApprovals: true }, { openDecision: true }),
     ).toBe("approval");
+  });
+
+  it.each([
+    ["working", "busy", "terminal-busy"],
+    ["ready", "busy", "terminal-busy"],
+    ["ready", "shell", "terminal-busy"],
+    ["ready", "idle", "terminal-idle"],
+    ["waiting", "idle", "terminal-idle"],
+    ["failed", "unknown", "terminal-idle"],
+    ["decision", "busy", null],
+    ["approval", "idle", null],
+    ["input", "idle", null],
+  ] as const)(
+    "a %s row open in a terminal that is %s shows %s",
+    (rowStatus, terminalStatus, expected) => {
+      expect(resolveSidebarTerminalStatus(rowStatus, { status: terminalStatus })).toBe(expected);
+    },
+  );
+
+  it("leaves the row's own status alone when no terminal holds it", () => {
+    expect(resolveSidebarTerminalStatus("working", null)).toBeNull();
+    expect(resolveSidebarTerminalStatus("ready", null)).toBeNull();
   });
 
   it("does not show a stopped run as an unseen completion", () => {
