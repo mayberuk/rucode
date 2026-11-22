@@ -112,6 +112,11 @@ const LATE_DEFAULT_KEYBINDINGS: ReadonlyArray<{
       when: "composerFocus && draftThreadRoute",
     },
   },
+  {
+    id: "chat.new:prefix+c",
+    alongside: { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
+    rule: { key: "c", command: "chat.new", when: "prefixActive" },
+  },
 ];
 
 function keybindingShortcutContext(rule: KeybindingRule): string | null {

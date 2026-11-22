@@ -2,6 +2,7 @@ import { assert, describe, expect, it } from "vite-plus/test";
 import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import {
   compileResolvedKeybindingsConfig,
+  mergeWithDefaultKeybindings,
   parseKeybindingShortcut,
 } from "@t3tools/shared/keybindings";
 
@@ -12,6 +13,7 @@ import {
   buildWhenVariableOptions,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
+  keybindingRowShortcutLabel,
   parseWhenExpressionDraft,
   shortcutToKeybindingInput,
   unknownWhenVariables,
@@ -311,5 +313,132 @@ describe("KeybindingsSettings.logic", () => {
     );
 
     expect(rows.map((row) => row.conflicts)).toEqual([[], []]);
+  });
+});
+
+describe("keybindingRowShortcutLabel", () => {
+  const labelFor = (
+    rules: Parameters<typeof compileResolvedKeybindingsConfig>[0],
+    platform: string,
+    pick: (row: ReturnType<typeof buildKeybindingRows>[number]) => boolean,
+  ) => {
+    const rows = buildKeybindingRows(
+      mergeWithDefaultKeybindings(compileResolvedKeybindingsConfig(rules)),
+      platform,
+    );
+    const row = rows.find(pick);
+    assert(row);
+    return keybindingRowShortcutLabel(row, platform);
+  };
+  const nextWaiting = (row: { command: string }) => row.command === "thread.nextWaiting";
+
+  it.each([
+    {
+      name: "next waiting on Linux",
+      platform: "Linux",
+      pick: nextWaiting,
+      expected: "Ctrl+Space, A",
+    },
+    {
+      name: "next waiting on macOS",
+      platform: "MacIntel",
+      pick: nextWaiting,
+      expected: "⌃Space, A",
+    },
+    {
+      name: "new chat after the prefix",
+      platform: "Linux",
+      pick: (row: { command: string; key: string }) =>
+        row.command === "chat.new" && row.key === "c",
+      expected: "Ctrl+Space, C",
+    },
+    {
+      name: "new chat without the prefix",
+      platform: "Linux",
+      pick: (row: { command: string; key: string }) =>
+        row.command === "chat.new" && row.key === "mod+n",
+      expected: "Ctrl+N",
+    },
+    {
+      name: "the prefix itself",
+      platform: "Linux",
+      pick: (row: { command: string }) => row.command === "prefix.start",
+      expected: "Ctrl+Space",
+    },
+  ])("reads $name as $expected", ({ platform, pick, expected }) => {
+    expect(labelFor([], platform, pick)).toBe(expected);
+  });
+
+  it("keeps prefixShortcut null on rows that do not need the prefix", () => {
+    const rows = buildKeybindingRows(mergeWithDefaultKeybindings([]), "Linux");
+    const plain = rows.find((row) => row.command === "chat.new" && row.key === "mod+n");
+    const prefixed = rows.find((row) => row.command === "thread.nextWaiting");
+    expect(plain?.prefixShortcut).toBeNull();
+    expect(prefixed?.prefixShortcut).toMatchObject({ key: " ", ctrlKey: true });
+  });
+
+  it("relabels every prefix row when the prefix is rebound, leaving the rules alone", () => {
+    const rules = [{ command: "prefix.start" as const, key: "ctrl+b" }];
+    expect(labelFor(rules, "Linux", nextWaiting)).toBe("Ctrl+B, A");
+    expect(labelFor(rules, "Linux", (row) => row.command === "chat.new" && row.key === "c")).toBe(
+      "Ctrl+B, C",
+    );
+    const rows = buildKeybindingRows(
+      mergeWithDefaultKeybindings(compileResolvedKeybindingsConfig(rules)),
+      "Linux",
+    );
+    expect(rows.find(nextWaiting)?.key).toBe("a");
+    expect(rows.find(nextWaiting)?.when).toBe("prefixActive");
+  });
+
+  it("shows the bare key when the prefix is unassigned", () => {
+    expect(
+      labelFor(
+        [{ command: "prefix.start", key: "ctrl+space", when: "false" }],
+        "Linux",
+        nextWaiting,
+      ),
+    ).toBe("A");
+  });
+
+  it("shows the bare key when no prefix rule exists", () => {
+    const rows = buildKeybindingRows(
+      compileResolvedKeybindingsConfig([
+        { command: "thread.nextWaiting", key: "a", when: "prefixActive" },
+      ]),
+      "Linux",
+    );
+    const row = rows.find(nextWaiting);
+    assert(row);
+    expect(keybindingRowShortcutLabel(row, "Linux")).toBe("A");
+    expect(row.when).toBe("prefixActive");
+  });
+
+  it.each([
+    { when: "prefixActive && terminalFocus", expected: "Ctrl+Space, X" },
+    { when: "terminalFocus && prefixActive", expected: "Ctrl+Space, X" },
+    { when: "(terminalFocus && prefixActive) && isDesktop", expected: "Ctrl+Space, X" },
+    { when: "!prefixActive", expected: "X" },
+    { when: "!prefixActive && terminalFocus", expected: "X" },
+    { when: "prefixActive || terminalFocus", expected: "X" },
+    { when: "terminalFocus", expected: "X" },
+  ])("labels a rule with condition `$when` as $expected", ({ when, expected }) => {
+    const rows = buildKeybindingRows(
+      compileResolvedKeybindingsConfig([
+        { command: "prefix.start", key: "ctrl+space" },
+        { command: "chat.newLocal", key: "x", when },
+      ]),
+      "Linux",
+    );
+    const row = rows.find((candidate) => candidate.command === "chat.newLocal");
+    assert(row);
+    expect(keybindingRowShortcutLabel(row, "Linux")).toBe(expected);
+  });
+
+  it("reads an unassigned row as Unassigned even when it carries a prefix", () => {
+    const rows = buildKeybindingRows(mergeWithDefaultKeybindings([]), "Linux");
+    const row = rows.find(nextWaiting);
+    assert(row);
+    expect(keybindingRowShortcutLabel({ ...row, isUnassigned: true }, "Linux")).toBe("Unassigned");
   });
 });

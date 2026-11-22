@@ -53,11 +53,13 @@ const READ_PAGE_LIMIT = 100;
 const READ_ITEM_MAX_CHARS = 20_000;
 const TITLE_MAX_CHARS = 80;
 
+/** Exit 3 means nothing was sent, so a launcher can fall back. */
 export class ThreadServerNotRunningError extends Schema.TaggedError<ThreadServerNotRunningError>()(
   "ThreadServerNotRunningError",
   { baseDir: Schema.String },
 ) {
   override readonly [Runtime.errorReported] = false;
+  override readonly [Runtime.errorExitCode] = 3;
   override get message(): string {
     return `No running T3 Code server uses ${this.baseDir}. Start T3 Code, then retry.`;
   }
@@ -700,22 +702,66 @@ export const titleFromMessage = (message: string) => {
   return `${firstLine.slice(0, end).trimEnd()}…`;
 };
 
-const launchWorkspaceStrategy = (input: {
+const launchWorkspaceStrategy = Effect.fn("cli.thread.launchWorkspaceStrategy")(function* (input: {
   readonly worktree: Option.Option<string>;
+  readonly existingWorktree: Option.Option<string>;
   readonly branch: Option.Option<string>;
-}) =>
-  Option.match(input.worktree, {
-    onNone: () =>
-      Option.isSome(input.branch)
-        ? Effect.fail(new ThreadUsageError({ detail: "--branch needs --worktree <base-ref>." }))
-        : Effect.void,
-    onSome: (baseRef) =>
-      Effect.succeed({
-        type: "worktree" as const,
-        baseRef,
-        ...Option.match(input.branch, { onNone: () => ({}), onSome: (branch) => ({ branch }) }),
-      }),
-  });
+}) {
+  if (Option.isSome(input.worktree) && Option.isSome(input.existingWorktree)) {
+    return yield* new ThreadUsageError({
+      detail: "--worktree and --existing-worktree cannot be used together.",
+    });
+  }
+  if (Option.isSome(input.existingWorktree)) {
+    const path = yield* Path.Path;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const requestedPath = input.existingWorktree.value;
+    const invalidFolder = () =>
+      new ThreadUsageError({ detail: `--existing-worktree '${requestedPath}' is not a folder.` });
+    const worktreePath = yield* fileSystem
+      .realPath(
+        path.resolve(yield* HostProcess.WorkingDirectory, yield* expandHomePath(requestedPath)),
+      )
+      .pipe(Effect.mapError(invalidFolder));
+    const info = yield* fileSystem.stat(worktreePath).pipe(Effect.mapError(invalidFolder));
+    if (info.type !== "Directory") return yield* invalidFolder();
+    let branch = Option.getOrUndefined(input.branch);
+    if (branch === undefined) {
+      const head = yield* ProcessRunner.ProcessRunner.pipe(
+        Effect.flatMap((runner) =>
+          runner.run({
+            command: "git",
+            args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd: worktreePath,
+          }),
+        ),
+        Effect.option,
+        Effect.provide(ProcessRunner.layer),
+      );
+      if (Option.isSome(head) && head.value.code === 0) {
+        branch = head.value.stdout.trim() || undefined;
+      }
+    }
+    return {
+      type: "existing_worktree" as const,
+      worktreePath,
+      ...(branch === undefined ? {} : { branch }),
+    };
+  }
+  if (Option.isSome(input.worktree)) {
+    return {
+      type: "worktree" as const,
+      baseRef: input.worktree.value,
+      ...Option.match(input.branch, { onNone: () => ({}), onSome: (branch) => ({ branch }) }),
+    };
+  }
+  if (Option.isSome(input.branch)) {
+    return yield* new ThreadUsageError({
+      detail: "--branch needs --worktree <base-ref> or --existing-worktree <path>.",
+    });
+  }
+  return undefined;
+});
 
 /**
  * Options are model specific, so they need an explicit model. `true` and
@@ -844,14 +890,24 @@ const threadStartCommand = Command.make("start", {
     ),
     Flag.optional,
   ),
+  existingWorktree: Flag.String("existing-worktree").pipe(
+    Flag.withDescription(
+      "Run in this existing git worktree of the project instead of the project folder.",
+    ),
+    Flag.optional,
+  ),
   branch: Flag.String("branch").pipe(
-    Flag.withDescription("Branch name for the new worktree."),
+    Flag.withDescription(
+      "Branch name for the new worktree, or the branch to record for --existing-worktree. Defaults to the checkout's current branch.",
+    ),
     Flag.optional,
   ),
   wait: waitFlag,
   json: jsonFlag,
 }).pipe(
-  Command.withDescription("Start a thread in a project and print its id."),
+  Command.withDescription(
+    "Start a thread in a project and print its id. Exits 3 when no T3 Code server is running.",
+  ),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const message = yield* readMessageArgument(flags.message);

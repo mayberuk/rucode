@@ -33,6 +33,7 @@ import {
 } from "./ThreadDetailsUsage";
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
 import { resolveThreadDetailsVisibility, THREAD_DETAILS_ITEMS } from "./threadDetailsItems";
+import { InitiativeDetailsSection } from "../../pluginCards/live/InitiativeDetailsSection";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useProject, useServerConfigs } from "../../state/entities";
 import { ThreadDetailsThreadPrRows } from "./ThreadDetailsPrRows";
@@ -281,6 +282,13 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   threadId={props.threadId}
                   showLineage={visible.lineage}
                   showSideChats={visible.sideChats}
+                />
+              ) : null}
+
+              {visible.initiative && !props.draftId ? (
+                <InitiativeDetailsSection
+                  environmentId={props.environmentId}
+                  threadId={props.threadId}
                 />
               ) : null}
 

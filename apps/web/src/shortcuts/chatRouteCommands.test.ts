@@ -1,7 +1,9 @@
-import { DEFAULT_CLIENT_SETTINGS, EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS, EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import type { AnyRouter } from "@tanstack/react-router";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { toastManager } from "~/components/ui/toast";
 import * as commandPalette from "../commandPaletteBus";
 import { DraftId, useComposerDraftStore } from "../composerDraftStore";
 import * as previewActions from "../components/preview/previewActionBus";
@@ -104,5 +106,111 @@ describe("preview commands", () => {
     register.mock.calls[0]![0][command]!(event);
 
     expect(dispatch).toHaveBeenCalledWith(action);
+  });
+});
+
+describe("thread.nextWaiting", () => {
+  function shell(id: string, createdAt: string, waiting: boolean): EnvironmentThreadShell {
+    return {
+      environmentId: EnvironmentId.make("local"),
+      id: ThreadId.make(id),
+      projectId: ProjectId.make("active"),
+      createdAt,
+      unsettledAt: null,
+      latestRun: null,
+      hasPendingApprovals: waiting,
+      hasPendingUserInput: false,
+      pendingSubagentRequest: null,
+      archivedAt: null,
+      pinnedAt: null,
+      pinOrderKey: null,
+      activeOrderKey: null,
+    } as unknown as EnvironmentThreadShell;
+  }
+
+  function press(input: { shells: EnvironmentThreadShell[]; openThreadId: string | null }) {
+    using _shells = vi.spyOn(entities, "readThreadShells").mockReturnValue(input.shells);
+    using register = vi.spyOn(dispatcher, "registerCommands").mockReturnValue(() => {});
+    const toast = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+    const navigate = vi.fn();
+    const router = {
+      state: {
+        matches: [
+          {
+            routeId: "/_chat/$environmentId/$threadId",
+            params:
+              input.openThreadId === null
+                ? {}
+                : { environmentId: "local", threadId: input.openThreadId },
+          },
+        ],
+      },
+      navigate,
+    } as unknown as AnyRouter;
+    const uninstall = installChatRouteCommands(router);
+    const event = { preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as KeyboardEvent;
+    register.mock.calls[0]![0]["thread.nextWaiting"]!(event);
+    uninstall();
+    const titles = toast.mock.calls.map(([options]) => options.title);
+    toast.mockRestore();
+    return { navigate, titles, event };
+  }
+
+  // Newest first in sidebar order: c, b, a.
+  const A = shell("a", "2026-01-01T00:00:00.000Z", true);
+  const B = shell("b", "2026-01-02T00:00:00.000Z", false);
+  const C = shell("c", "2026-01-03T00:00:00.000Z", true);
+
+  it("opens the next waiting chat after the open one and claims the key", () => {
+    const { navigate, titles, event } = press({ shells: [A, B, C], openThreadId: "c" });
+
+    expect(navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: "local", threadId: "a" },
+    });
+    expect(titles).toEqual([]);
+    expect(event.preventDefault).toHaveBeenCalled();
+  });
+
+  it("wraps to the first waiting chat from the last one", () => {
+    const { navigate } = press({ shells: [A, B, C], openThreadId: "a" });
+
+    expect(navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: "local", threadId: "c" },
+    });
+  });
+
+  it("opens the first waiting chat from a route that is not a thread", () => {
+    const { navigate } = press({ shells: [A, B, C], openThreadId: null });
+
+    expect(navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: "local", threadId: "c" },
+    });
+  });
+
+  it("stays put and says so when the open chat is the only one waiting", () => {
+    const { navigate, titles } = press({ shells: [A, B], openThreadId: "a" });
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(titles).toEqual(["No other chat waiting"]);
+  });
+
+  it("stays put and says so when no chat is waiting", () => {
+    const { navigate, titles } = press({
+      shells: [shell("a", "2026-01-01T00:00:00.000Z", false), B],
+      openThreadId: "a",
+    });
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(titles).toEqual(["No chat waiting"]);
+  });
+
+  it("says no chat is waiting before any thread list has loaded", () => {
+    const { navigate, titles } = press({ shells: [], openThreadId: "a" });
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(titles).toEqual(["No chat waiting"]);
   });
 });

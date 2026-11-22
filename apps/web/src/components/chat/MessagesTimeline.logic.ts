@@ -57,6 +57,7 @@ import {
   type OrchestrationV2IdleCompaction,
   type WorktreeSetupSnapshot,
   type OrchestrationV2ProjectedTurnItem,
+  type PluginCard,
   type RunAttemptId,
   type RuntimeRequestId,
   RunId,
@@ -660,6 +661,12 @@ type MessagesTimelineRowContent =
       itemId: TurnItemId;
       revision: string;
       mcpApp: McpAppReference;
+    }
+  | {
+      kind: "plugin-card";
+      id: string;
+      createdAt: string;
+      card: PluginCard;
     };
 
 export interface StableMessagesTimelineRowsState {
@@ -1573,8 +1580,14 @@ export function deriveMessagesTimelineRows(input: {
   worktreeSetup?: WorktreeSetupSnapshot | null;
   toolCallVisibility?: ToolCallVisibility;
   revealedMessageId?: MessageId | null;
+  pluginCards?: ReadonlyArray<PluginCard>;
 }): MessagesTimelineRow[] {
   const timelineEntries = timelineRowEntries(input);
+  const { anchoredCards, timeCards } = placePluginCards(
+    input.pluginCards,
+    input.timelineEntries,
+    timelineEntries,
+  );
   const embeddedResultRunIds = new Set<RunId>();
   for (const entry of timelineEntries) {
     if ((entry.kind === "html-render" || entry.kind === "mcp-app") && entry.runId !== null) {
@@ -1868,6 +1881,26 @@ export function deriveMessagesTimelineRows(input: {
         activeWorkRow.groupedEntries,
       ),
     );
+    nextRows.push(...cardsAfterActiveWork);
+    cardsAfterActiveWork.length = 0;
+    activeWorkRowsAppended = true;
+  };
+  // The live work row is drawn at its newest entry, so cards on earlier entries wait for it.
+  const cardsAfterActiveWork: MessagesTimelineRow[] = [];
+  let activeWorkRowsAppended = false;
+  let nextCardSlot = -1;
+  const appendAnchoredCards = (throughIndex: number) => {
+    for (; nextCardSlot <= throughIndex; nextCardSlot += 1) {
+      const cards = anchoredCards.get(nextCardSlot);
+      if (cards === undefined) continue;
+      const entryId = timelineEntries[nextCardSlot]?.id;
+      const waitsForActiveWork =
+        activeWorkRow !== null &&
+        !activeWorkRowsAppended &&
+        entryId !== undefined &&
+        activeWorkEntryIds.has(entryId);
+      (waitsForActiveWork ? cardsAfterActiveWork : nextRows).push(...cards);
+    }
   };
 
   for (let index = 0; index < timelineEntries.length; index += 1) {
@@ -1875,6 +1908,8 @@ export function deriveMessagesTimelineRows(input: {
     if (!timelineEntry) {
       continue;
     }
+
+    appendAnchoredCards(index - 1);
 
     if (input.isWorking && index === activeTurnHeaderIndex) {
       appendWorkingRow();
@@ -2266,6 +2301,8 @@ export function deriveMessagesTimelineRows(input: {
           : undefined,
     });
   }
+  appendAnchoredCards(timelineEntries.length - 1);
+  nextRows.push(...cardsAfterActiveWork);
 
   const setupHandedOff =
     input.worktreeSetup !== null &&
@@ -2352,8 +2389,11 @@ export function deriveMessagesTimelineRows(input: {
     }
   }
 
-  const result = attachTrailingToolGroupsToAssistant(
-    attachCreatedThreadSummaries(nextRows, timelineEntries, collapsedFoldMemberIds),
+  const result = insertTimePlacedCards(
+    attachTrailingToolGroupsToAssistant(
+      attachCreatedThreadSummaries(nextRows, timelineEntries, collapsedFoldMemberIds),
+    ),
+    timeCards,
   );
   return result.map((row, index) => {
     if (timelineRowIsWorkLog(row) && timelineRowIsWorkLog(result[index + 1])) {
@@ -2368,6 +2408,106 @@ export function deriveMessagesTimelineRows(input: {
     if (!groupedWithNext && !groupedWithPrevious) return row;
     return { ...row, groupedWithNext, groupedWithPrevious, continuesSteer };
   });
+}
+
+function pluginCardRow(card: PluginCard, createdAt: string): MessagesTimelineRow {
+  return { kind: "plugin-card", id: `plugin-card:${card.id}`, createdAt, card };
+}
+
+function isoMillis(value: string | null): number | null {
+  if (value === null) return null;
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) ? millis : null;
+}
+
+/**
+ * Turn-item cards keyed by the index of the shown entry they follow (-1 before every entry). An
+ * anchor hidden by tool-call visibility follows the nearest shown entry above it; an anchor that
+ * is not loaded yields no card.
+ */
+function placePluginCards(
+  cards: ReadonlyArray<PluginCard> | undefined,
+  loadedEntries: ReadonlyArray<TimelineEntry>,
+  shownEntries: ReadonlyArray<TimelineEntry>,
+): {
+  anchoredCards: Map<number, MessagesTimelineRow[]>;
+  timeCards: ReadonlyArray<{ readonly row: MessagesTimelineRow; readonly at: number | null }>;
+} {
+  const anchoredCards = new Map<number, MessagesTimelineRow[]>();
+  const timeCards: Array<{ row: MessagesTimelineRow; at: number | null }> = [];
+  if (cards === undefined || cards.length === 0) return { anchoredCards, timeCards };
+  const entryIndexByItemId = new Map<string, number>();
+  for (const [index, entry] of loadedEntries.entries()) {
+    const projectedItem =
+      entry.kind === "work"
+        ? entry.entry.projectedItem
+        : entry.kind === "event" || entry.kind === "message"
+          ? entry.projectedItem
+          : undefined;
+    if (projectedItem === undefined) continue;
+    entryIndexByItemId.set(projectedItem.item.id, index);
+    entryIndexByItemId.set(projectedItem.sourceItemId, index);
+  }
+  const shownIndexById = new Map(shownEntries.map((entry, index) => [entry.id, index]));
+  for (const card of cards) {
+    if (card.placement.type === "time") {
+      timeCards.push({
+        row: pluginCardRow(card, card.placement.at),
+        at: isoMillis(card.placement.at),
+      });
+      continue;
+    }
+    const loadedIndex = entryIndexByItemId.get(card.placement.turnItemId);
+    if (loadedIndex === undefined) continue;
+    let shownIndex = -1;
+    for (let index = loadedIndex; index >= 0; index -= 1) {
+      const shown = shownIndexById.get(loadedEntries[index]!.id);
+      if (shown !== undefined) {
+        shownIndex = shown;
+        break;
+      }
+    }
+    const row = pluginCardRow(card, loadedEntries[loadedIndex]!.createdAt);
+    const slot = anchoredCards.get(shownIndex);
+    if (slot === undefined) anchoredCards.set(shownIndex, [row]);
+    else slot.push(row);
+  }
+  return { anchoredCards, timeCards };
+}
+
+/** Live indicators sit below everything else, so a card never follows one. */
+function rowOrdersTimeCards(row: MessagesTimelineRow): boolean {
+  return row.kind !== "working" && row.kind !== "thinking";
+}
+
+function insertTimePlacedCards(
+  rows: MessagesTimelineRow[],
+  timeCards: ReadonlyArray<{ readonly row: MessagesTimelineRow; readonly at: number | null }>,
+): MessagesTimelineRow[] {
+  if (timeCards.length === 0) return rows;
+  const rowTimes = rows.map((row) => (rowOrdersTimeCards(row) ? isoMillis(row.createdAt) : null));
+  const cardsAfterIndex = new Map<number, MessagesTimelineRow[]>();
+  const ordered = timeCards.toSorted(
+    (left, right) => (left.at ?? Infinity) - (right.at ?? Infinity),
+  );
+  for (const { row, at } of ordered) {
+    let afterIndex = -1;
+    if (at === null) {
+      afterIndex = rows.findLastIndex(rowOrdersTimeCards);
+    } else {
+      for (const [index, rowAt] of rowTimes.entries()) {
+        if (rowAt !== null && rowAt <= at) afterIndex = index;
+      }
+    }
+    const slot = cardsAfterIndex.get(afterIndex);
+    if (slot === undefined) cardsAfterIndex.set(afterIndex, [row]);
+    else slot.push(row);
+  }
+  const result = [...(cardsAfterIndex.get(-1) ?? [])];
+  for (const [index, row] of rows.entries()) {
+    result.push(row, ...(cardsAfterIndex.get(index) ?? []));
+  }
+  return result;
 }
 
 function timelineRowIsOwnUserMessage(
@@ -2501,6 +2641,7 @@ function replaceStreamingMessageRows(
     expandedWorkGroupIds: previousExpandedGroups,
     pendingApprovalRequestIds: previousPendingApprovalRequestIds,
     availableRevertTurnCounts: previousAvailableRevertTurnCounts,
+    pluginCards: previousCards,
     ...previousContext
   } = previous.input;
   const {
@@ -2512,12 +2653,14 @@ function replaceStreamingMessageRows(
     expandedWorkGroupIds,
     pendingApprovalRequestIds,
     availableRevertTurnCounts,
+    pluginCards,
     ...context
   } = input;
   // Shell/checkpoint selectors rebuild summaries per event; compare contents.
   if (
     timelineEntries.length !== previousEntries.length ||
     !shallow(previousContext, context) ||
+    !shallow(previousCards, pluginCards) ||
     !shallow(previousRun, latestRun) ||
     !shallow(previousExpandedRuns, expandedRunIds) ||
     !shallow(previousExpandedAttempts, expandedAttemptIds) ||
@@ -2665,6 +2808,41 @@ function isStreamingThoughtUpdate(previous: WorkLogEntry, next: WorkLogEntry): b
   return shallow(rest, nextRest);
 }
 
+function samePluginCardPlacement(left: PluginCard, right: PluginCard): boolean {
+  if (left.id !== right.id || left.placement.type !== right.placement.type) return false;
+  return left.placement.type === "time"
+    ? right.placement.type === "time" && left.placement.at === right.placement.at
+    : right.placement.type === "turnItem" &&
+        left.placement.turnItemId === right.placement.turnItemId;
+}
+
+/** A card snapshot that keeps every card's id and placement patches only the card rows. */
+function replacePluginCardRows(
+  input: MessagesTimelineRowsInput,
+  previous: MessagesTimelineRowsProjection,
+): MessagesTimelineRow[] | null {
+  const { pluginCards: previousCards = [], ...previousRest } = previous.input;
+  const { pluginCards: cards = [], ...rest } = input;
+  if (
+    cards === previousCards ||
+    cards.length !== previousCards.length ||
+    !cards.every((card, index) => samePluginCardPlacement(card, previousCards[index]!)) ||
+    !sameRowsInput(previousRest, rest)
+  ) {
+    return null;
+  }
+  const cardById = new Map(cards.map((card) => [card.id, card]));
+  let changed = false;
+  const rows = previous.rows.map((row) => {
+    if (row.kind !== "plugin-card") return row;
+    const card = cardById.get(row.card.id);
+    if (card === undefined || card === row.card) return row;
+    changed = true;
+    return { ...row, card };
+  });
+  return changed ? rows : previous.rows;
+}
+
 export function deriveMessagesTimelineRowsWithState(
   input: MessagesTimelineRowsInput,
   previous: MessagesTimelineRowsProjection | null = null,
@@ -2672,8 +2850,10 @@ export function deriveMessagesTimelineRowsWithState(
   return {
     input,
     rows:
-      (previous === null ? null : replaceStreamingMessageRows(input, previous)) ??
-      deriveMessagesTimelineRows(input),
+      (previous === null
+        ? null
+        : (replacePluginCardRows(input, previous) ??
+          replaceStreamingMessageRows(input, previous))) ?? deriveMessagesTimelineRows(input),
   };
 }
 
@@ -2786,6 +2966,15 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
 
+    case "plugin-card": {
+      const bp = b as typeof a;
+      return (
+        a.createdAt === bp.createdAt &&
+        a.card.updatedAt === bp.card.updatedAt &&
+        pluginCardAnswerProgress(a.card) === pluginCardAnswerProgress(bp.card)
+      );
+    }
+
     case "event":
       return (
         a.projectedItem === (b as typeof a).projectedItem &&
@@ -2849,6 +3038,12 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   }
 }
 
+function pluginCardAnswerProgress(card: PluginCard): string | null {
+  if (card.kind !== "dispatch.decision" || card.data.answer === null) return null;
+  const { optionKey, status, reason, detail } = card.data.answer;
+  return JSON.stringify([optionKey, status, reason, detail]);
+}
+
 export function handoffRunsSignature(runs: ReadonlyArray<HandoffTimelineRun>): string {
   return runs
     .map(
@@ -2858,8 +3053,7 @@ export function handoffRunsSignature(runs: ReadonlyArray<HandoffTimelineRun>): s
     .join("\n");
 }
 
-// Expanded-id sets can be rebuilt during render; comparing them by content keeps
-// the render-time state update in useIncrementalTimelineRows from repeating forever.
+// Render can rebuild expanded-id sets and filter cards without changing the rows.
 export function sameRowsInput(
   left: MessagesTimelineRowsInput,
   right: MessagesTimelineRowsInput,
@@ -2869,6 +3063,18 @@ export function sameRowsInput(
     const next = right[key];
     if (Object.is(previous, next)) continue;
     if (previous instanceof Set && next instanceof Set && shallow(previous, next)) continue;
+    if (key === "pluginCards") {
+      const previousCards = left.pluginCards;
+      const nextCards = right.pluginCards;
+      if (
+        previousCards !== undefined &&
+        nextCards !== undefined &&
+        previousCards.length === nextCards.length &&
+        previousCards.every((card, index) => card === nextCards[index])
+      ) {
+        continue;
+      }
+    }
     return false;
   }
   return Object.keys(left).length === Object.keys(right).length;

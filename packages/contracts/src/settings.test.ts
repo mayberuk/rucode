@@ -544,6 +544,13 @@ describe("voice settings", () => {
   });
 });
 
+describe("ServerSettings outbound defaults", () => {
+  it("keeps the upstream model list and version lookups off until the user switches them on", () => {
+    expect(decodeServerSettings({}).enableProviderUpdateChecks).toBe(false);
+    expect(DEFAULT_SERVER_SETTINGS.enableProviderUpdateChecks).toBe(false);
+  });
+});
+
 describe("server model preferences", () => {
   it("distinguishes unmigrated lists from deliberately cleared lists", () => {
     expect(decodeServerSettings({})).toMatchObject({

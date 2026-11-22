@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 
-import { ResolvedKeybindingsConfig } from "./keybindings.ts";
+import { KeybindingRule, ResolvedKeybindingsConfig } from "./keybindings.ts";
 
 const decode = <S extends Schema.Top>(
   schema: S,
@@ -29,11 +29,22 @@ it.effect("drops resolved rules with commands this build does not know", () =>
       { command: "terminal.toggle", shortcut },
       { command: "someFuture.toggle", shortcut },
       { command: "filePicker.toggle", shortcut },
+      { command: "prefix.start", shortcut },
+      { command: "thread.nextWaiting", shortcut },
     ]);
     assert.deepEqual(
       parsed.map((rule) => rule.command),
-      ["terminal.toggle", "filePicker.toggle"],
+      ["terminal.toggle", "filePicker.toggle", "prefix.start", "thread.nextWaiting"],
     );
+  }),
+);
+
+it.effect.each([
+  { key: "ctrl+space", command: "prefix.start" },
+  { key: "a", command: "thread.nextWaiting", when: "prefixActive" },
+] as const)("accepts the configurable prefix rule $command", (rule) =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(yield* decode(KeybindingRule, rule), rule);
   }),
 );
 

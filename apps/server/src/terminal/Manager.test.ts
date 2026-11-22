@@ -49,6 +49,15 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as TerminalManager from "./Manager.ts";
+import type { ForegroundCommandSources } from "./foregroundCommand.ts";
+import type {
+  AdoptedTerminalSession,
+  HostedPtyProcess,
+  RestorableTerminalCommand,
+  TerminalLaunchRecord,
+  TerminalSessionHostShape,
+  TerminalSessionKey,
+} from "./sessionHost.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { makePrepareTerminalLaunch } from "../workspace/restoreMissingWorktree.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -184,6 +193,145 @@ class FakePtyAdapter {
   }
 }
 
+class FakeHostedPtyProcess extends FakePtyProcess implements HostedPtyProcess {
+  detachCount = 0;
+
+  detach(): void {
+    this.detachCount += 1;
+  }
+}
+
+class FakeSessionHost implements TerminalSessionHostShape {
+  readonly persistent: boolean;
+  readonly adoptAll: Effect.Effect<ReadonlyArray<AdoptedTerminalSession>>;
+  readonly spawns: Array<{
+    readonly key: TerminalSessionKey;
+    readonly launch: TerminalLaunchRecord;
+    readonly input: PtyAdapter.PtySpawnInput;
+    readonly process: FakeHostedPtyProcess;
+  }> = [];
+  readonly commands: Array<{
+    readonly key: TerminalSessionKey;
+    readonly command: RestorableTerminalCommand | null;
+  }> = [];
+  private readonly restorable:
+    | { readonly key: TerminalSessionKey; readonly command: RestorableTerminalCommand }
+    | undefined;
+  private readonly commandWaiters: Array<{ count: number; done: Deferred.Deferred<void> }> = [];
+  private nextPid = 7000;
+
+  constructor(
+    options: {
+      readonly persistent?: boolean;
+      readonly adoptAll?: Effect.Effect<ReadonlyArray<AdoptedTerminalSession>>;
+      readonly restorable?: FakeSessionHost["restorable"];
+    } = {},
+  ) {
+    this.persistent = options.persistent ?? true;
+    this.adoptAll = options.adoptAll ?? Effect.succeed([]);
+    this.restorable = options.restorable;
+  }
+
+  awaitCommands(count: number): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.commands.length >= count) return Effect.void;
+      const done = Deferred.makeUnsafe<void>();
+      this.commandWaiters.push({ count, done });
+      return Deferred.await(done);
+    });
+  }
+
+  readonly spawn = (
+    key: TerminalSessionKey,
+    launch: TerminalLaunchRecord,
+    input: PtyAdapter.PtySpawnInput,
+  ): Effect.Effect<HostedPtyProcess, PtyAdapter.PtySpawnError> =>
+    Effect.sync(() => {
+      const process = new FakeHostedPtyProcess(this.nextPid++);
+      this.spawns.push({ key, launch, input, process });
+      return process;
+    });
+
+  readonly restorableCommand = (key: TerminalSessionKey) =>
+    Effect.succeed(
+      this.restorable?.key.threadId === key.threadId &&
+        this.restorable.key.terminalId === key.terminalId
+        ? Option.some(this.restorable.command)
+        : Option.none(),
+    );
+
+  readonly recordCommand = (key: TerminalSessionKey, command: RestorableTerminalCommand | null) =>
+    Effect.sync(() => {
+      this.commands.push({ key, command });
+      for (const waiter of this.commandWaiters) {
+        if (this.commands.length >= waiter.count) Deferred.doneUnsafe(waiter.done, Effect.void);
+      }
+    });
+}
+
+// Fixture pids are not real processes, so unrelated tests read nothing from the machine.
+const unreadableProcessSources: ForegroundCommandSources = {
+  readText: () => Effect.succeed(null),
+  readLink: () => Effect.succeed(null),
+  run: () => Effect.succeed(null),
+};
+
+function procSources(
+  processes: Readonly<
+    Record<
+      number,
+      { readonly argv: ReadonlyArray<string>; readonly cwd: string; readonly exe: string }
+    >
+  >,
+): ForegroundCommandSources {
+  return {
+    readText: (path) => {
+      const match = /^\/proc\/(\d+)\/cmdline$/.exec(path);
+      const process = match ? processes[Number(match[1])] : undefined;
+      return Effect.succeed(process ? `${process.argv.join("\0")}\0` : null);
+    },
+    readLink: (path) => {
+      const match = /^\/proc\/(\d+)\/(cwd|exe)$/.exec(path);
+      const process = match ? processes[Number(match[1])] : undefined;
+      return Effect.succeed((match?.[2] === "exe" ? process?.exe : process?.cwd) ?? null);
+    },
+    run: () => Effect.succeed(null),
+  };
+}
+
+function adoptedTerminal(input: {
+  readonly pid: number;
+  readonly threadId?: string;
+  readonly terminalId?: string;
+  readonly backlog?: string;
+  readonly exit?: PtyAdapter.PtyExitEvent;
+  readonly launch?: Partial<TerminalLaunchRecord>;
+}): { readonly session: AdoptedTerminalSession; readonly process: FakeHostedPtyProcess } {
+  const pty = new FakeHostedPtyProcess(input.pid);
+  return {
+    process: pty,
+    session: {
+      key: {
+        threadId: input.threadId ?? "thread-1",
+        terminalId: input.terminalId ?? DEFAULT_TERMINAL_ID,
+      },
+      launch: {
+        cwd: process.cwd(),
+        worktreePath: null,
+        shell: "/bin/zsh",
+        runtimeEnv: null,
+        stopOnSettle: false,
+        cols: 100,
+        rows: 24,
+        ...input.launch,
+      },
+      process: pty,
+      backlog: input.backlog ?? "",
+      exit: input.exit ?? null,
+    },
+  };
+}
+
 // Publishes 9 MiB of output, past a stream's 8 MiB budget, while nothing pulls.
 const publishPastOutputBudget = (
   manager: TerminalManager.TerminalManager["Service"],
@@ -251,6 +399,7 @@ interface CreateManagerOptions {
     never
   >;
   foregroundProcessGroup?: (terminalPid: number) => Effect.Effect<number | null>;
+  foregroundCommandSources?: ForegroundCommandSources;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   registerTerminalProcesses?: Parameters<
@@ -264,6 +413,11 @@ interface CreateManagerOptions {
   >[0]["resolveProviderInstanceEnvironment"];
   managedBinaryCacheDir?: string;
   managedBinaryToolsDir?: string;
+  sessionHost?: TerminalSessionHostShape;
+  /** Saved default-terminal history for thread-1, written before the manager starts. */
+  initialHistory?: string;
+  /** Owns only the manager, so closing it leaves the fixture's directories in place. */
+  managerScope?: Scope.Scope;
 }
 
 interface ManagerFixture {
@@ -288,8 +442,12 @@ const createManager = (
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-terminal-" });
       const logsDir = join(baseDir, "userdata", "logs", "terminals");
       const ptyAdapter = options.ptyAdapter ?? new FakePtyAdapter();
+      if (options.initialHistory !== undefined) {
+        yield* fs.makeDirectory(logsDir, { recursive: true });
+        yield* fs.writeFileString(yield* historyLogPath(logsDir), options.initialHistory);
+      }
 
-      const manager = yield* TerminalManager.makeWithOptions({
+      const makeManager = TerminalManager.makeWithOptions({
         logsDir,
         historyLineLimit,
         ptyAdapter,
@@ -304,6 +462,7 @@ const createManager = (
         ...(options.processTable !== undefined ? { processTable: options.processTable } : {}),
         // Fixture pids are not real processes; default to a shell idle at its prompt.
         foregroundProcessGroup: options.foregroundProcessGroup ?? ((pid) => Effect.succeed(pid)),
+        foregroundCommandSources: options.foregroundCommandSources ?? unreadableProcessSources,
         ...(options.subprocessPollIntervalMs !== undefined
           ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
           : {}),
@@ -323,7 +482,11 @@ const createManager = (
               managedBinaryCacheDir: options.managedBinaryCacheDir,
               managedBinaryToolsDir: options.managedBinaryToolsDir,
             }),
+        ...(options.sessionHost !== undefined ? { sessionHost: options.sessionHost } : {}),
       }).pipe(Effect.provideService(SpawnExecutableResolution, (command) => command));
+      const manager = yield* options.managerScope === undefined
+        ? makeManager
+        : makeManager.pipe(Effect.provideService(Scope.Scope, options.managerScope));
       const eventsRef = yield* Ref.make<ReadonlyArray<TerminalEvent>>([]);
       const unsubscribe = yield* manager.subscribe((event) =>
         Ref.update(eventsRef, (events) => [...events, event]),
@@ -3198,6 +3361,626 @@ it.layer(
       expect(process.writes).toEqual([]);
       expect(process.killSignals).toEqual([]);
       expect(missingEvents).toEqual([]);
+    }),
+  );
+
+  it.effect("detaches every live terminal without a signal when a persistent host shuts down", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const managerScope = yield* Scope.make();
+      const sessionHost = new FakeSessionHost({ persistent: true });
+      const { manager, logsDir } = yield* createManager(5, { sessionHost, managerScope });
+      yield* manager.open(openInput());
+      yield* manager.open(openInput({ terminalId: "term-2" }));
+      const output = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output"
+          ? Deferred.succeed(output, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      sessionHost.spawns[0]!.process.emitData("before shutdown\n");
+      yield* Deferred.await(output);
+      unsubscribe();
+
+      yield* Scope.close(managerScope, Exit.void);
+
+      expect(
+        sessionHost.spawns.map(({ process }) => ({
+          detached: process.detachCount,
+          signals: process.killSignals,
+        })),
+      ).toEqual([
+        { detached: 1, signals: [] },
+        { detached: 1, signals: [] },
+      ]);
+      expect(yield* fs.readFileString(yield* historyLogPath(logsDir))).toBe("before shutdown\n");
+    }),
+  );
+
+  it.effect(
+    "terminates a live terminal with SIGTERM then SIGKILL when an in-process host shuts down",
+    () =>
+      Effect.gen(function* () {
+        const managerScope = yield* Scope.make();
+        const { manager, ptyAdapter } = yield* createManager(5, {
+          processKillGraceMs: 1_000,
+          managerScope,
+        });
+        yield* manager.open(openInput());
+        const process = ptyAdapter.processes[0]!;
+        const sigterm = yield* Deferred.make<void>();
+        process.onKill = (signal) => {
+          if (signal === "SIGTERM") Deferred.doneUnsafe(sigterm, Effect.void);
+        };
+
+        const shutdown = yield* Scope.close(managerScope, Exit.void).pipe(Effect.forkChild);
+        yield* Deferred.await(sigterm);
+        yield* TestClock.adjust("1 second");
+        yield* Fiber.join(shutdown);
+
+        expect(process.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("answers open and observe only after adopting the host's live terminals", () =>
+    Effect.gen(function* () {
+      const release = yield* Deferred.make<void>();
+      const adopted = adoptedTerminal({ pid: 4242 });
+      const sessionHost = new FakeSessionHost({
+        adoptAll: Deferred.await(release).pipe(Effect.as([adopted.session])),
+      });
+      const { manager, ptyAdapter } = yield* createManager(5, { sessionHost });
+      const observed = yield* Deferred.make<TerminalAttachStreamEvent>();
+      const observing = yield* manager
+        .observeStream({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID }, (event) =>
+          Deferred.succeed(observed, event).pipe(Effect.asVoid),
+        )
+        .pipe(Effect.forkChild);
+      const opening = yield* manager.open(openInput()).pipe(Effect.forkChild);
+
+      yield* Deferred.succeed(release, undefined);
+
+      (yield* Fiber.join(observing))();
+      expect(yield* Deferred.await(observed)).toMatchObject({
+        type: "snapshot",
+        snapshot: { pid: 4242, status: "running" },
+      });
+      expect(yield* Fiber.join(opening)).toMatchObject({ pid: 4242, status: "running" });
+      expect(sessionHost.spawns).toEqual([]);
+      expect(ptyAdapter.spawnInputs).toEqual([]);
+      expect(adopted.process.killSignals).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "resumes an adopted terminal with its saved history and backlog and streams new output",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const adopted = adoptedTerminal({ pid: 4242, backlog: "while\u001b[6n away\n" });
+        const sessionHost = new FakeSessionHost({ adoptAll: Effect.succeed([adopted.session]) });
+        const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+          sessionHost,
+          initialHistory: "before restart\n",
+        });
+        const events: TerminalAttachStreamEvent[] = [];
+        const output = yield* Deferred.make<void>();
+        const stop = yield* manager.attachStream(
+          { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, resume: true },
+          (event) =>
+            Effect.sync(() => events.push(event)).pipe(
+              Effect.andThen(
+                event.type === "output" ? Deferred.succeed(output, undefined) : Effect.void,
+              ),
+            ),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(stop));
+
+        expect(events).toMatchObject([
+          {
+            type: "snapshot",
+            snapshot: {
+              pid: 4242,
+              status: "running",
+              history: "before restart\nwhile away\n",
+            },
+          },
+        ]);
+        expect(yield* fs.readFileString(yield* historyLogPath(logsDir))).toBe(
+          "before restart\nwhile away\n",
+        );
+        adopted.process.emitData("after\n");
+        yield* Deferred.await(output);
+        expect(events[1]).toMatchObject({ type: "output", data: "after\n" });
+        expect(sessionHost.spawns).toEqual([]);
+        expect(ptyAdapter.spawnInputs).toEqual([]);
+      }),
+  );
+
+  it.effect("polls an adopted terminal for running commands and registers its processes", () =>
+    Effect.gen(function* () {
+      const adopted = adoptedTerminal({ pid: 4242 });
+      const registered: Array<ReadonlyArray<number>> = [];
+      const { manager } = yield* createManager(5, {
+        sessionHost: new FakeSessionHost({ adoptAll: Effect.succeed([adopted.session]) }),
+        subprocessPollIntervalMs: 1_000,
+        processTable: Effect.succeed([
+          { pid: 4242, ppid: 1, name: "zsh" },
+          { pid: 500, ppid: 4242, name: "node" },
+        ]),
+        registerTerminalProcesses: ({ processIds }) =>
+          Effect.sync(() => {
+            registered.push(processIds);
+          }),
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+      const activity = yield* Deferred.make<TerminalEvent>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "activity"
+          ? Deferred.succeed(activity, event).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      (yield* manager.observeStream(
+        { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID },
+        () => Effect.void,
+      ))();
+
+      yield* TestClock.adjust("1 second");
+
+      expect(yield* Deferred.await(activity)).toMatchObject({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        hasRunningSubprocess: true,
+        label: "node",
+      });
+      expect(registered).toContainEqual([4242, 500]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("exposes an adopted terminal that already exited with its exit code", () =>
+    Effect.gen(function* () {
+      const adopted = adoptedTerminal({ pid: 4242, exit: { exitCode: 3, signal: null } });
+      const sessionHost = new FakeSessionHost({ adoptAll: Effect.succeed([adopted.session]) });
+      const { manager, ptyAdapter } = yield* createManager(5, { sessionHost });
+      const events: TerminalAttachStreamEvent[] = [];
+
+      (yield* manager.observeStream(
+        { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID },
+        (event) => Effect.sync(() => events.push(event)),
+      ))();
+
+      expect(events).toMatchObject([
+        {
+          type: "snapshot",
+          snapshot: { status: "exited", exitCode: 3, exitSignal: null, pid: null },
+        },
+      ]);
+      expect(sessionHost.spawns).toEqual([]);
+      expect(ptyAdapter.spawnInputs).toEqual([]);
+    }),
+  );
+
+  it.effect("closes only the adopted shells idle at a prompt when their thread settles", () =>
+    Effect.gen(function* () {
+      const idle = adoptedTerminal({ pid: 4300, terminalId: "idle" });
+      const busy = adoptedTerminal({ pid: 4301, terminalId: "busy" });
+      const { manager } = yield* createManager(5, {
+        sessionHost: new FakeSessionHost({
+          adoptAll: Effect.succeed([idle.session, busy.session]),
+        }),
+        processTable: Effect.succeed([
+          { pid: 4300, ppid: 1, name: "zsh" },
+          { pid: 4301, ppid: 1, name: "zsh" },
+          { pid: 500, ppid: 4301, name: "node" },
+        ]),
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+
+      yield* manager.closeOnSettle({ threadId: "thread-1" });
+
+      expect(idle.process.killSignals[0]).toBe("SIGTERM");
+      expect(busy.process.killed).toBe(false);
+      expect([idle.process.detachCount, busy.process.detachCount]).toEqual([0, 0]);
+    }),
+  );
+
+  it.effect("keeps an adopted shell for the same launch context and restarts it for another", () =>
+    Effect.gen(function* () {
+      const adopted = adoptedTerminal({
+        pid: 4242,
+        launch: { shell: "/bin/bash", runtimeEnv: { B: "2", A: "1" } },
+      });
+      const sessionHost = new FakeSessionHost({ adoptAll: Effect.succeed([adopted.session]) });
+      const { manager, baseDir } = yield* createManager(5, {
+        sessionHost,
+        shellResolver: () => "/bin/bash",
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+
+      const kept = yield* manager.open(openInput({ env: { A: "1", B: "2" } }));
+
+      expect(kept).toMatchObject({ pid: 4242, status: "running" });
+      expect(adopted.process.killed).toBe(false);
+      expect(sessionHost.spawns).toEqual([]);
+
+      const restarted = yield* manager.open(openInput({ cwd: baseDir }));
+
+      expect(adopted.process.killSignals[0]).toBe("SIGTERM");
+      expect(restarted).toMatchObject({ pid: 7000, status: "running", cwd: baseDir });
+      expect(sessionHost.spawns.map(({ key, launch }) => ({ key, launch }))).toEqual([
+        {
+          key: { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID },
+          launch: {
+            cwd: baseDir,
+            worktreePath: null,
+            shell: "/bin/bash",
+            runtimeEnv: null,
+            stopOnSettle: false,
+            cols: 100,
+            rows: 24,
+          },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("kills an adopted terminal through its host when the user closes or deletes it", () =>
+    Effect.gen(function* () {
+      const closed = adoptedTerminal({ pid: 4300, terminalId: "closed" });
+      const deleted = adoptedTerminal({ pid: 4301, terminalId: "deleted" });
+      const { manager, getEvents } = yield* createManager(5, {
+        sessionHost: new FakeSessionHost({
+          adoptAll: Effect.succeed([closed.session, deleted.session]),
+        }),
+      });
+
+      yield* manager.close({ threadId: "thread-1", terminalId: "closed" });
+      yield* manager.close({ threadId: "thread-1", terminalId: "deleted", deleteHistory: true });
+
+      expect(closed.process.killSignals[0]).toBe("SIGTERM");
+      expect(deleted.process.killSignals[0]).toBe("SIGTERM");
+      expect([closed.process.detachCount, deleted.process.detachCount]).toEqual([0, 0]);
+      expect(
+        (yield* getEvents)
+          .filter((event) => event.type === "closed")
+          .map((event) => event.terminalId),
+      ).toEqual(["closed", "deleted"]);
+    }),
+  );
+
+  it.effect("serves open and attach as if nothing was adopted when adoption fails", () =>
+    Effect.gen(function* () {
+      const sessionHost = new FakeSessionHost({
+        adoptAll: Effect.die(new Error("terminal host unreachable")),
+      });
+      const { manager } = yield* createManager(5, { sessionHost });
+
+      const opened = yield* manager.open(openInput());
+      const missing = yield* manager
+        .attachStream(
+          { threadId: "thread-1", terminalId: "never-opened", resume: true },
+          () => Effect.void,
+        )
+        .pipe(Effect.flip);
+
+      expect(opened).toMatchObject({ pid: 7000, status: "running" });
+      expect(sessionHost.spawns).toHaveLength(1);
+      expect(missing._tag).toBe("TerminalSessionLookupError");
+    }),
+  );
+
+  const threadKey = { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID };
+  const restoreNoticeFor = (line: string) =>
+    `\r\n[terminal] Restored after a restart. Press any key to rerun: ${line}  (Ctrl+C skips)\r\n`;
+  const writeInput = (data: string, reply?: boolean) => ({
+    ...threadKey,
+    data,
+    ...(reply === undefined ? {} : { reply }),
+  });
+
+  // The shell is the host's first spawn (pid 7000); the foreground job is pid 4242.
+  const SHELL_PID = 7000;
+  const JOB_PID = 4242;
+  const retitledJobArgv = ["node: worker"];
+  const createRecordingFixture = (
+    foregroundGroup: number = JOB_PID,
+    jobArgv: ReadonlyArray<string> = ["node", "/app/server.js", "--name", "my app"],
+  ) =>
+    Effect.gen(function* () {
+      const busy = { value: false, label: "node" };
+      const polls = yield* Queue.unbounded<boolean>();
+      const sessionHost = new FakeSessionHost();
+      const fixture = yield* createManager(5, {
+        sessionHost,
+        subprocessPollIntervalMs: 1_000,
+        subprocessInspector: () =>
+          Effect.sync(() => {
+            Queue.offerUnsafe(polls, busy.value);
+            return {
+              hasRunningSubprocess: busy.value,
+              childCommand: busy.value ? busy.label : null,
+              processIds: [],
+            };
+          }),
+        foregroundProcessGroup: () => Effect.succeed(foregroundGroup),
+        foregroundCommandSources: procSources({
+          [SHELL_PID]: { argv: ["-zsh"], cwd: "/work/app", exe: "/usr/bin/zsh" },
+          [JOB_PID]: {
+            argv: jobArgv,
+            cwd: "/work/app/sub",
+            exe: "/usr/bin/node",
+          },
+        }),
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+      yield* fixture.manager.open(openInput());
+      // One poll tick, after which the inspector has read `busy` for that tick.
+      const tick = TestClock.adjust("1 second").pipe(Effect.andThen(Queue.take(polls)));
+      return { ...fixture, sessionHost, busy, tick };
+    });
+
+  const jobCommand = { line: "node /app/server.js --name 'my app'", cwd: "/work/app/sub" };
+
+  it.effect.each([" npm run dev", "a", "echo  a  &&  echo b "])(
+    "records the whole line %j and the shell's directory when the shell starts a subprocess",
+    (line) =>
+      Effect.gen(function* () {
+        const { manager, sessionHost, busy, tick } = yield* createRecordingFixture(
+          JOB_PID,
+          retitledJobArgv,
+        );
+        yield* manager.write(writeInput(`${line}\r`));
+        busy.value = true;
+        yield* tick;
+        yield* sessionHost.awaitCommands(1);
+
+        expect(sessionHost.commands).toEqual([
+          { key: threadKey, command: { line, cwd: "/work/app" } },
+        ]);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect.each([
+    { label: "single characters", writes: ["l", "s", "\r"] },
+    { label: "a line followed by another keystroke", writes: [" echo hi\r", "x"] },
+    { label: "a line followed by a lone Enter", writes: [" echo hi\r", "\r"] },
+    { label: "a multi-line paste", writes: ["a\rb\r"] },
+    { label: "a line with an escape sequence", writes: ["ls\u001b[A\r"] },
+    { label: "a line ended by a line feed", writes: ["echo hi\n"] },
+    { label: "a line with no terminator", writes: ["echo hi"] },
+  ])("records the foreground argv after typed input: $label", ({ writes }) =>
+    Effect.gen(function* () {
+      const { manager, sessionHost, busy, tick } = yield* createRecordingFixture();
+      for (const data of writes) yield* manager.write(writeInput(data));
+      busy.value = true;
+      yield* tick;
+      yield* sessionHost.awaitCommands(1);
+
+      expect(sessionHost.commands).toEqual([{ key: threadKey, command: jobCommand }]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("records nothing for a retitled foreground process after typed input", () =>
+    Effect.gen(function* () {
+      const { manager, sessionHost, busy, tick } = yield* createRecordingFixture(
+        JOB_PID,
+        retitledJobArgv,
+      );
+      yield* manager.write(writeInput("node /app/server.js"));
+      yield* manager.write(writeInput("\r"));
+      busy.value = true;
+      yield* tick;
+      yield* sessionHost.awaitCommands(1);
+
+      expect(sessionHost.commands).toEqual([{ key: threadKey, command: null }]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("keeps a script line across a terminal reply written before the subprocess", () =>
+    Effect.gen(function* () {
+      const { manager, sessionHost, busy, tick } = yield* createRecordingFixture();
+      yield* manager.write(writeInput(" npm test\r"));
+      yield* manager.write(writeInput("\u001b[?1;2c", true));
+      busy.value = true;
+      yield* tick;
+      yield* sessionHost.awaitCommands(1);
+
+      expect(sessionHost.commands[0]?.command).toEqual({ line: " npm test", cwd: "/work/app" });
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect(
+    "records once per transition, not per label change, and clears when the prompt returns",
+    () =>
+      Effect.gen(function* () {
+        const { manager, sessionHost, busy, tick } = yield* createRecordingFixture();
+        yield* manager.write(writeInput("x"));
+        busy.value = true;
+        yield* tick;
+        busy.label = "vite";
+        yield* tick;
+        busy.value = false;
+        yield* tick;
+        yield* sessionHost.awaitCommands(2);
+
+        expect(sessionHost.commands).toEqual([
+          { key: threadKey, command: jobCommand },
+          { key: threadKey, command: null },
+        ]);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("records nothing for a background job that leaves the shell in the foreground", () =>
+    Effect.gen(function* () {
+      const { manager, sessionHost, busy, tick } = yield* createRecordingFixture(SHELL_PID);
+      yield* manager.write(writeInput("x"));
+      busy.value = true;
+      yield* tick;
+      yield* sessionHost.awaitCommands(1);
+
+      expect(sessionHost.commands).toEqual([{ key: threadKey, command: null }]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  const createRestoreFixture = (
+    restorable?: RestorableTerminalCommand,
+    initialHistory = "saved output\n",
+    terminalId = DEFAULT_TERMINAL_ID,
+  ) =>
+    Effect.gen(function* () {
+      const sessionHost = new FakeSessionHost(
+        restorable ? { restorable: { key: threadKey, command: restorable } } : {},
+      );
+      const fixture = yield* createManager(5, { sessionHost, initialHistory });
+      const noticed = yield* Deferred.make<void>();
+      const unsubscribe = yield* fixture.manager.subscribe((event) =>
+        event.type === "output"
+          ? Deferred.succeed(noticed, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      yield* fixture.manager.open(openInput({ terminalId }));
+      return { ...fixture, sessionHost, noticed, shell: sessionHost.spawns[0]!.process };
+    });
+
+  it.effect.each(["saved output\n", ""])(
+    "shows the restore line after saved history %j",
+    (initialHistory) =>
+      Effect.gen(function* () {
+        const { manager, getEvents, noticed } = yield* createRestoreFixture(
+          { line: "npm run dev", cwd: "/other/dir" },
+          initialHistory,
+        );
+        yield* Deferred.await(noticed);
+
+        const outputs = (yield* getEvents).flatMap((event) =>
+          event.type === "output" ? [event.data] : [],
+        );
+        expect(outputs).toEqual([restoreNoticeFor("npm run dev")]);
+        const { history } = yield* manager.open(openInput());
+        expect(history).toBe(initialHistory + restoreNoticeFor("npm run dev"));
+      }),
+  );
+
+  it.effect("reruns the command from its directory on the next key, without sending the key", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("x"));
+      expect(shell.writes).toEqual(["cd -- '/other/dir' && npm run dev\r"]);
+
+      yield* manager.write(writeInput("y"));
+      expect(shell.writes).toEqual(["cd -- '/other/dir' && npm run dev\r", "y"]);
+    }),
+  );
+
+  it.effect("quotes a single quote in the directory it changes to", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "make",
+        cwd: "/it's here",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("x"));
+
+      expect(shell.writes).toEqual([`cd -- '/it'\\''s here' && make\r`]);
+    }),
+  );
+
+  it.effect("reruns without a cd when the command's directory is the terminal's", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: process.cwd(),
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("\r"));
+
+      expect(shell.writes).toEqual(["npm run dev\r"]);
+    }),
+  );
+
+  it.effect("passes a submitted script through and disarms the restore prompt", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("echo hi\r"));
+      expect(shell.writes).toEqual(["echo hi\r"]);
+
+      yield* manager.write(writeInput("\r"));
+      expect(shell.writes).toEqual(["echo hi\r", "\r"]);
+    }),
+  );
+
+  it.effect("skips the rerun on Ctrl+C and passes later keys through", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("\u0003"));
+      expect(shell.writes).toEqual([]);
+
+      yield* manager.write(writeInput("a"));
+      expect(shell.writes).toEqual(["a"]);
+    }),
+  );
+
+  it.effect("keeps waiting through terminal replies, resizes and client attachments", () =>
+    Effect.gen(function* () {
+      const { manager, noticed, shell } = yield* createRestoreFixture({
+        line: "npm run dev",
+        cwd: "/other/dir",
+      });
+      yield* Deferred.await(noticed);
+
+      yield* manager.write(writeInput("\u001b[?1;2c", true));
+      yield* manager.resize({ ...threadKey, cols: 120, rows: 30 });
+      const detach = yield* manager.attachStream(openInput(), () => Effect.void);
+      yield* Effect.addFinalizer(() => Effect.sync(detach));
+      expect(shell.writes).toEqual(["\u001b[?1;2c"]);
+
+      yield* manager.write(writeInput("x"));
+      expect(shell.writes).toEqual(["\u001b[?1;2c", "cd -- '/other/dir' && npm run dev\r"]);
+    }),
+  );
+
+  it.effect("does not restore a command recorded for another terminal", () =>
+    Effect.gen(function* () {
+      const terminalId = "other-terminal";
+      const { manager, shell } = yield* createRestoreFixture(
+        { line: "npm run dev", cwd: "/other/dir" },
+        "",
+        terminalId,
+      );
+
+      yield* manager.write({ ...writeInput("x"), terminalId });
+
+      expect(shell.writes).toEqual(["x"]);
+      expect((yield* manager.open(openInput({ terminalId }))).history).toBe("");
+    }),
+  );
+
+  it.effect("shows only the saved history and passes keys through with nothing to restore", () =>
+    Effect.gen(function* () {
+      const { manager, getEvents, shell } = yield* createRestoreFixture();
+
+      yield* manager.write(writeInput("x"));
+
+      expect(shell.writes).toEqual(["x"]);
+      expect((yield* getEvents).some((event) => event.type === "output")).toBe(false);
+      const { history } = yield* manager.open(openInput());
+      expect(history).not.toContain("Restored after a restart");
+      expect(history.startsWith("saved output")).toBe(true);
     }),
   );
 });

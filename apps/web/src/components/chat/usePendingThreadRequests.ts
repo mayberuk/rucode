@@ -1,6 +1,8 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
+  type DispatchDecisionCard,
   type EnvironmentId,
   type ProviderApprovalDecision,
   type RuntimeRequestId,
@@ -56,6 +58,9 @@ import {
   derivePendingUserInputs,
   type PendingUserInput,
 } from "../../session-logic";
+import { usePluginThreadCards } from "../../pluginCards/core/usePluginCards";
+import { openDecisionsForThread } from "../../pluginCards/decision/decisionPanel.logic";
+import { answerPluginDecision } from "../../rpc/pluginCards";
 import { readEnvironmentScope } from "../../state/session";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -63,6 +68,21 @@ import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { toastManager } from "../ui/toast";
 
 import type { ChatComposerHandle } from "./ChatComposer";
+
+const NO_PLUGIN_DECISIONS: ReadonlyArray<DispatchDecisionCard> = [];
+
+/** Empty until the thread's card snapshot arrives, and for anyone who cannot answer decisions. */
+export function usePendingPluginDecisions(
+  threadRef: ScopedThreadRef | null,
+): ReadonlyArray<DispatchDecisionCard> {
+  const canAnswer = useAtomValue(
+    answerPluginDecision.permissionAtom(threadRef?.environmentId ?? null),
+  );
+  const snapshot = usePluginThreadCards(canAnswer ? threadRef : null);
+  return threadRef === null || !canAnswer
+    ? NO_PLUGIN_DECISIONS
+    : openDecisionsForThread(snapshot, threadRef.threadId);
+}
 
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const NO_PENDING_REQUESTS = { approvals: [], userInputs: [] } as const;

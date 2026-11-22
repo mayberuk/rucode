@@ -12,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Runtime from "effect/Runtime";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 import * as TestConsole from "effect/testing/TestConsole";
@@ -27,6 +28,7 @@ import {
   launchModelSelection,
   readLatestMessages,
   resolveProject,
+  ThreadServerNotRunningError,
   threadCommand,
   type ThreadTools,
   titleFromMessage,
@@ -158,14 +160,76 @@ it.effect("does not sign in to whatever took over a dead server's port", () =>
       .spyOn(McpBridge, "mcpToolSession")
       .mockReturnValue(Effect.die("no session should open"));
 
-    const error = yield* Command.runWith(threadCommand, { version: "0.0.0" })([
-      "list",
-      "--base-dir",
-      baseDir,
-    ]).pipe(Effect.flip);
+    for (const runtimeState of ["stale", "missing"] as const) {
+      if (runtimeState === "missing") {
+        yield* fs.remove(path.join(baseDir, "userdata", "server-runtime.json"));
+      }
+      for (const args of [
+        ["list"],
+        ["start", ".", "hi"],
+        ["send", threadId, "hi"],
+        ["show", threadId],
+      ]) {
+        const errorCount = (yield* TestConsole.errorLines).length;
+        const error = yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+          ...args,
+          "--base-dir",
+          baseDir,
+        ]).pipe(Effect.flip);
 
-    assert.strictEqual(error._tag, "ThreadServerNotRunningError");
-    assert.strictEqual(session.mock.calls.length, 0);
+        assert.instanceOf(error, ThreadServerNotRunningError);
+        assert.strictEqual(error[Runtime.errorExitCode], 3);
+        assert.strictEqual(
+          error.message,
+          `No running T3 Code server uses ${baseDir}. Start T3 Code, then retry.`,
+        );
+        assert.deepStrictEqual((yield* TestConsole.errorLines).slice(errorCount), [error.message]);
+        assert.strictEqual(session.mock.calls.length, 0);
+      }
+    }
+
+    yield* persistServerRuntimeState({
+      path: path.join(baseDir, "userdata", "server-runtime.json"),
+      state,
+    });
+    const refused = new McpBridge.AcpMcpBridgeError({ message: "connection refused" });
+    for (const failure of ["connect", "launch"] as const) {
+      const calls: Array<string> = [];
+      session.mockReturnValue(
+        failure === "connect"
+          ? Effect.fail(refused)
+          : Effect.succeed({
+              call: (tool) => {
+                calls.push(tool);
+                return tool === "t3_project_list"
+                  ? Effect.succeed({
+                      structuredContent: {
+                        projects: [{ id: "project-1", title: "Test", workspaceRoot: baseDir }],
+                        nextCursor: null,
+                      },
+                    })
+                  : Effect.fail(refused);
+              },
+            }),
+      );
+      const error = yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+        "start",
+        "project-1",
+        "hi",
+        "--base-dir",
+        baseDir,
+      ]).pipe(Effect.flip);
+      assert.strictEqual(error._tag, "ThreadServerUnreachableError");
+      assert.strictEqual(Runtime.getErrorExitCode(error), 1);
+      assert.strictEqual(
+        error.message,
+        "Could not reach the T3 Code server at http://127.0.0.1:3773. connection refused",
+      );
+      assert.deepStrictEqual(
+        calls,
+        failure === "connect" ? [] : ["t3_project_list", "t3_thread_launch"],
+      );
+    }
   }).pipe(
     Effect.scoped,
     Effect.provide(
@@ -393,24 +457,56 @@ it.effect("start sends each --option as a typed model option", () =>
   }),
 );
 
-it.effect("start rejects a repeated --option before reaching the server", () =>
+it.effect("start rejects usage errors before reaching the server", () =>
   Effect.gen(function* () {
-    const error = yield* Command.runWith(threadCommand, { version: "0.0.0" })([
-      "start",
-      ".",
-      "hi",
-      "--provider",
-      "codex",
-      "--model",
-      "gpt-6.1-sol",
-      "--option",
-      "reasoningEffort=high",
-      "--option",
-      "reasoningEffort=low",
-    ]).pipe(Effect.flip);
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-thread-usage-" });
+    const missing = path.join(root, "missing");
+    const file = path.join(root, "file");
+    yield* fs.writeFileString(file, "");
+    using session = vi
+      .spyOn(McpBridge, "mcpToolSession")
+      .mockReturnValue(Effect.die("no session should open"));
+    for (const [args, message] of [
+      [
+        [
+          "--provider",
+          "codex",
+          "--model",
+          "gpt-6.1-sol",
+          "--option",
+          "reasoningEffort=high",
+          "--option",
+          "reasoningEffort=low",
+        ],
+        "--option reasoningEffort is given more than once.",
+      ],
+      [
+        ["--worktree", "main", "--existing-worktree", "."],
+        "--worktree and --existing-worktree cannot be used together.",
+      ],
+      [["--branch", "x"], "--branch needs --worktree <base-ref> or --existing-worktree <path>."],
+      [["--existing-worktree", missing], `--existing-worktree '${missing}' is not a folder.`],
+      [["--existing-worktree", file], `--existing-worktree '${file}' is not a folder.`],
+      [["--existing-worktree", "bad\0path"], "--existing-worktree 'bad\0path' is not a folder."],
+    ] as const) {
+      const errorCount = (yield* TestConsole.errorLines).length;
+      const error = yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+        "start",
+        ".",
+        "hi",
+        ...args,
+      ]).pipe(Effect.flip);
 
-    assert.strictEqual(error.message, "--option reasoningEffort is given more than once.");
+      assert.strictEqual(error._tag, "ThreadUsageError");
+      assert.strictEqual(error.message, message);
+      assert.strictEqual(Runtime.getErrorExitCode(error), 1);
+      assert.deepStrictEqual((yield* TestConsole.errorLines).slice(errorCount), [message]);
+      assert.strictEqual(session.mock.calls.length, 0);
+    }
   }).pipe(
+    Effect.scoped,
     Effect.provide(
       Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, TestConsole.layer),
     ),
@@ -529,6 +625,151 @@ const commitAll = (cwd: string) =>
       "initial",
     ]),
   );
+
+it.live("start binds an existing checkout and records its branch", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-thread-existing-worktree-" });
+    const repo = path.join(root, "repo");
+    const worktree = path.join(root, "feature checkout");
+    const link = path.join(root, "checkout-link");
+    const empty = path.join(root, "empty");
+    const baseDir = path.join(root, "state");
+    yield* fs.makeDirectory(repo);
+    yield* fs.makeDirectory(empty);
+    yield* fs.writeFileString(path.join(repo, "index.ts"), "export {};\n");
+    yield* git(repo, ["init", "--quiet", "-b", "main"]);
+    yield* commitAll(repo);
+    yield* git(repo, ["worktree", "add", "--quiet", "-b", "feature", worktree]);
+    yield* fs.symlink(worktree, link);
+    const realWorktree = yield* fs.realPath(worktree);
+    const realRepo = yield* fs.realPath(repo);
+    const realEmpty = yield* fs.realPath(empty);
+    const projectId = ProjectId.make("project-repo");
+    yield* persistServerRuntimeState({
+      path: path.join(baseDir, "userdata", "server-runtime.json"),
+      state: yield* makePersistedServerRuntimeState({
+        config: { host: "127.0.0.1", devUrl: undefined },
+        port: 3_773,
+      }),
+    });
+    const launches: Array<Readonly<Record<string, unknown>>> = [];
+    using _session = vi.spyOn(McpBridge, "mcpToolSession").mockReturnValue(
+      Effect.succeed({
+        call: (tool, args) => {
+          switch (tool) {
+            case "t3_project_list":
+              return Effect.succeed({
+                structuredContent: {
+                  projects: [{ id: projectId, title: "Repo", workspaceRoot: repo }],
+                  nextCursor: null,
+                },
+              });
+            case "t3_thread_launch":
+              launches.push(args);
+              return Effect.succeed({ structuredContent: { threadId, projectId, runId } });
+            default:
+              return Effect.die(`unexpected ${tool} call`);
+          }
+        },
+      }),
+    );
+    const start = (args: ReadonlyArray<string>, json = true) =>
+      Command.runWith(threadCommand, { version: "0.0.0" })([
+        "start",
+        projectId,
+        "Inspect this checkout",
+        ...args,
+        ...(json ? ["--json"] : []),
+        "--base-dir",
+        baseDir,
+      ]).pipe(
+        Effect.provideService(HostProcess.WorkingDirectory, repo),
+        Effect.provideService(HostProcess.HomeDirectory, root),
+      );
+    for (const checkoutPath of [
+      path.relative(repo, worktree),
+      worktree,
+      "~/feature checkout",
+      link,
+    ]) {
+      yield* start(["--existing-worktree", checkoutPath]);
+      assert.deepStrictEqual(launches.at(-1), {
+        projectId,
+        title: "Inspect this checkout",
+        message: "Inspect this checkout",
+        workspaceStrategy: {
+          type: "existing_worktree",
+          worktreePath: realWorktree,
+          branch: "feature",
+        },
+      });
+      assert.strictEqual(
+        (yield* TestConsole.logLines).at(-1),
+        JSON.stringify({ threadId, projectId, runId }),
+      );
+    }
+    yield* start(["--existing-worktree", worktree, "--branch", "other"]);
+    assert.deepStrictEqual(launches.at(-1)?.workspaceStrategy, {
+      type: "existing_worktree",
+      worktreePath: realWorktree,
+      branch: "other",
+    });
+    yield* git(worktree, ["checkout", "--quiet", "--detach"]);
+    yield* start(["--existing-worktree", worktree], false);
+    assert.deepStrictEqual(launches.at(-1)?.workspaceStrategy, {
+      type: "existing_worktree",
+      worktreePath: realWorktree,
+    });
+    assert.strictEqual((yield* TestConsole.logLines).at(-1), threadId);
+    yield* start(["--existing-worktree", worktree, "--branch", "other"]);
+    assert.deepStrictEqual(launches.at(-1)?.workspaceStrategy, {
+      type: "existing_worktree",
+      worktreePath: realWorktree,
+      branch: "other",
+    });
+    yield* start(["--existing-worktree", empty]);
+    assert.deepStrictEqual(launches.at(-1)?.workspaceStrategy, {
+      type: "existing_worktree",
+      worktreePath: realEmpty,
+    });
+    yield* start(["--existing-worktree", ""]);
+    assert.deepStrictEqual(launches.at(-1)?.workspaceStrategy, {
+      type: "existing_worktree",
+      worktreePath: realRepo,
+      branch: "main",
+    });
+    yield* start([]);
+    assert.deepStrictEqual(launches.at(-1), {
+      projectId,
+      title: "Inspect this checkout",
+      message: "Inspect this checkout",
+    });
+    yield* start(["--worktree", "main"]);
+    assert.deepStrictEqual(launches.at(-1)?.workspaceStrategy, {
+      type: "worktree",
+      baseRef: "main",
+    });
+    yield* start(["--worktree", "main", "--branch", "new-branch"]);
+    assert.deepStrictEqual(launches.at(-1)?.workspaceStrategy, {
+      type: "worktree",
+      baseRef: "main",
+      branch: "new-branch",
+    });
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        NetService.layer,
+        TestConsole.layer,
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_PORT: "3773" } })),
+      ),
+    ),
+  ),
+);
 
 it.live("resolves a path inside a git worktree of the project's repository to that project", () =>
   Effect.gen(function* () {

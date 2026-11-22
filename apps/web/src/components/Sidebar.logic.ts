@@ -9,7 +9,12 @@ import {
   isAtomCommandInterrupted,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
+import type { ClientRect } from "@dnd-kit/core";
+import {
+  defaultAnimateLayoutChanges,
+  type AnimateLayoutChanges,
+  type SortingStrategy,
+} from "@dnd-kit/sortable";
 import {
   threadSearchMatchKey,
   threadSearchSubject,
@@ -200,6 +205,17 @@ export function resolveSidebarThreadSection(input: {
   if (input.settled) return "settled";
   if (input.pinned) return "pinned";
   return "active";
+}
+
+/** A chat waiting on the user stays in the inbox even while its run is going. */
+export function resolveInboxShelf(input: {
+  readonly workingShelfEnabled: boolean;
+  readonly working: boolean;
+  readonly hasOpenDecision: boolean;
+}): "working" | "active" {
+  return input.workingShelfEnabled && input.working && !input.hasOpenDecision
+    ? "working"
+    : "active";
 }
 
 const SIDEBAR_MARKER_PREFIX = "sidebar-marker-";
@@ -886,6 +902,7 @@ export function resolveAdjacentThreadId<T>(input: {
 export type SidebarThreadStatus =
   | "approval"
   | "input"
+  | "decision"
   | "request"
   | "preparing"
   | "working"
@@ -893,6 +910,10 @@ export type SidebarThreadStatus =
   | "failed"
   | "limited"
   | "ready";
+
+export interface SidebarStatusContext {
+  readonly openDecision?: boolean;
+}
 
 export function shouldRecedeSidebarThread(input: {
   status: SidebarThreadStatus;
@@ -905,6 +926,7 @@ export function shouldRecedeSidebarThread(input: {
     input.isActive ||
     input.isSelected ||
     input.status === "input" ||
+    input.status === "decision" ||
     input.status === "request"
   ) {
     return false;
@@ -928,13 +950,18 @@ type SidebarThreadStatusInput = Pick<
   | "blockedOnThreadWait"
 >;
 
-export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
+export function resolveSidebarThreadStatus(
+  thread: SidebarThreadStatusInput,
+  context: SidebarStatusContext = {},
+): SidebarThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
   }
   if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
     return "input";
   }
+  // Above working: a `dp decision wait` keeps the turn running while it waits on the user.
+  if (context.openDecision === true) return "decision";
   // A guest is waiting on the owner; the agent's own requests come first.
   if ((thread.pendingGuestMessageCount ?? 0) > 0) {
     return "request";
@@ -963,8 +990,9 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
 /** Sidebar row status: a failure the user has already opened settles to ready, like Done. */
 export function resolveSidebarRowStatus(
   thread: ThreadStatusInput & SidebarThreadStatusInput,
+  context: SidebarStatusContext = {},
 ): SidebarThreadStatus {
-  const status = resolveSidebarThreadStatus(thread);
+  const status = resolveSidebarThreadStatus(thread, context);
   // A runtime failure without a failed run has nothing to date it, so it stays.
   if (status !== "failed" || thread.latestRun?.status !== "failed") return status;
   return hasUnseenRunFailure(thread) ? status : "ready";
@@ -991,13 +1019,16 @@ export function resolveWindowTitleThreadStatus(thread: SidebarThreadStatusInput)
 
 /**
  * The dot on a closed boring-sidebar folder: the most urgent state among its
- * hidden threads. Waiting threads stay quiet, like their rows.
+ * hidden threads. Waiting threads stay quiet, like their rows. `openDecision` is true
+ * when any hidden thread has an open decision.
  */
 export function resolveSidebarFolderDot(
   threads: ReadonlyArray<ThreadStatusInput & SidebarThreadStatusInput>,
+  context: SidebarStatusContext = {},
 ): "attention" | "failed" | "unread" | "working" | null {
-  const statuses = new Set(threads.map(resolveSidebarRowStatus));
+  const statuses = new Set(threads.map((thread) => resolveSidebarRowStatus(thread)));
   if (
+    context.openDecision === true ||
     statuses.has("input") ||
     statuses.has("approval") ||
     statuses.has("request") ||
@@ -1065,8 +1096,150 @@ export function groupSidebarThreadsByProject<
   return folders.filter((folder) => folder.threads.length > 0 || keepEmpty(folder.group));
 }
 
+export interface SidebarSectionLists<TThread> {
+  readonly pinned: readonly TThread[];
+  readonly active: readonly TThread[];
+  readonly working: readonly TThread[];
+  readonly snoozed: readonly TThread[];
+  readonly settled: readonly TThread[];
+}
+
+type InitiativeGroupableSection = "active" | "working" | "settled";
+
+export interface InitiativeGroupThread<TThread> {
+  readonly thread: TThread;
+  readonly section: InitiativeGroupableSection;
+}
+
+export interface InitiativeThreadGroup<TGroup, TThread> {
+  readonly group: TGroup;
+  /** Every listed thread, in the group's order. */
+  readonly members: ReadonlyArray<InitiativeGroupThread<TThread>>;
+  /** The rows to draw: all members, or only the route thread while collapsed. */
+  readonly threads: ReadonlyArray<InitiativeGroupThread<TThread>>;
+  readonly hiddenCount: number;
+}
+
+/**
+ * Moves the threads an initiative lists out of the inbox, Working and Settled lists into
+ * its group. Pinned and snoozed threads stay where the user put them, a thread joins only
+ * the first group listing it, and a group that lists no movable thread is dropped.
+ */
+export function partitionInitiativeThreads<
+  TGroup extends {
+    readonly key: string;
+    readonly environmentId: EnvironmentId;
+    readonly threadIds: ReadonlyArray<ThreadId>;
+  },
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "id">,
+>(
+  sections: SidebarSectionLists<TThread>,
+  groups: readonly TGroup[],
+  options: {
+    readonly routeThreadKey: string | null;
+    readonly collapsedKeys: Readonly<Record<string, true>>;
+  },
+): {
+  readonly groups: ReadonlyArray<InitiativeThreadGroup<TGroup, TThread>>;
+  readonly remaining: SidebarSectionLists<TThread>;
+} {
+  if (groups.length === 0) return { groups: [], remaining: sections };
+  const placement = new Map<string, { readonly groupIndex: number; readonly rank: number }>();
+  for (const [groupIndex, group] of groups.entries()) {
+    for (const [rank, threadId] of group.threadIds.entries()) {
+      const key = scopedThreadKey(scopeThreadRef(group.environmentId, threadId));
+      if (!placement.has(key)) placement.set(key, { groupIndex, rank });
+    }
+  }
+  const buckets = groups.map(() => [] as Array<InitiativeGroupThread<TThread> & { rank: number }>);
+  const take = (list: readonly TThread[], section: InitiativeGroupableSection) => {
+    const kept = list.filter((thread) => {
+      const place = placement.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)));
+      if (place === undefined) return true;
+      buckets[place.groupIndex]!.push({ thread, section, rank: place.rank });
+      return false;
+    });
+    return kept.length === list.length ? list : kept;
+  };
+  const remaining = {
+    pinned: sections.pinned,
+    active: take(sections.active, "active"),
+    working: take(sections.working, "working"),
+    snoozed: sections.snoozed,
+    settled: take(sections.settled, "settled"),
+  };
+  const result: Array<InitiativeThreadGroup<TGroup, TThread>> = [];
+  for (const [groupIndex, group] of groups.entries()) {
+    const bucket = buckets[groupIndex]!;
+    if (bucket.length === 0) continue;
+    const members = bucket
+      .toSorted((left, right) => left.rank - right.rank)
+      .map(({ thread, section }) => ({ thread, section }));
+    const threads =
+      options.collapsedKeys[group.key] === true
+        ? members.filter(
+            ({ thread }) =>
+              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) ===
+              options.routeThreadKey,
+          )
+        : members;
+    result.push({ group, members, threads, hiddenCount: members.length - threads.length });
+  }
+  return { groups: result, remaining };
+}
+
+/**
+ * Runs a sorting strategy as if the items at `fixedIndices` were not in the list: they stay
+ * still and the rows below them keep their place, so a block the strategy does not model
+ * can sit inside a sortable list.
+ */
+export function skipFixedSortableItems(
+  strategy: SortingStrategy,
+  fixedIndices: ReadonlySet<number>,
+): SortingStrategy {
+  if (fixedIndices.size === 0) return strategy;
+  let sourceRects: ClientRect[] | undefined;
+  let innerRects: ClientRect[] = [];
+  const innerIndex: number[] = [];
+  return (args) => {
+    if (fixedIndices.has(args.index) || fixedIndices.has(args.activeIndex)) return null;
+    if (sourceRects !== args.rects) {
+      sourceRects = args.rects;
+      innerRects = [];
+      innerIndex.length = 0;
+      let shift = 0;
+      for (let index = 0; index < args.rects.length; index += 1) {
+        const rect = args.rects[index];
+        if (fixedIndices.has(index)) {
+          // The sidebar list spaces its rows with a 1px gap.
+          if (rect) shift += rect.height + 1;
+          innerIndex.push(-1);
+          continue;
+        }
+        innerIndex.push(innerRects.length);
+        innerRects.length += 1;
+        if (rect) {
+          innerRects[innerRects.length - 1] = {
+            ...rect,
+            top: rect.top - shift,
+            bottom: rect.bottom - shift,
+          };
+        }
+      }
+    }
+    const activeIndex = innerIndex[args.activeIndex] ?? -1;
+    const overIndex = fixedIndices.has(args.overIndex)
+      ? activeIndex
+      : (innerIndex[args.overIndex] ?? -1);
+    const index = innerIndex[args.index] ?? -1;
+    if (activeIndex < 0 || index < 0) return null;
+    return strategy({ ...args, rects: innerRects, activeIndex, overIndex, index });
+  };
+}
+
 export type SidebarV2TopStatusKind =
   | "approval"
+  | "decision"
   | "done"
   | "failed"
   | "limited"

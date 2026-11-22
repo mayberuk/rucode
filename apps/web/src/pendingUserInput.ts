@@ -74,6 +74,48 @@ export function threadContextsReferencedByAnswer(
   return threadContexts.filter((record) => referencedIds.has(record.contextId));
 }
 
+export type ComposerDrawerContent<Q, D> =
+  | { readonly type: "question"; readonly userInput: Q }
+  | {
+      readonly type: "decision";
+      readonly decision: D;
+      readonly index: number;
+      readonly total: number;
+    }
+  | null;
+
+function raisedAtMs(decision: { readonly data: { readonly raisedAt: string } }): number {
+  const ms = Date.parse(decision.data.raisedAt);
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
+/** A provider question outranks plugin decisions, and a pending approval hides them. */
+export function composerDrawerContent<
+  Q,
+  D extends { readonly data: { readonly raisedAt: string } },
+>({
+  pendingUserInputs,
+  pendingApprovals,
+  openDecisions,
+}: {
+  readonly pendingUserInputs: ReadonlyArray<Q>;
+  readonly pendingApprovals: ReadonlyArray<unknown>;
+  readonly openDecisions: ReadonlyArray<D>;
+}): ComposerDrawerContent<Q, D> {
+  const userInput = pendingUserInputs[0];
+  if (userInput !== undefined) return { type: "question", userInput };
+  if (pendingApprovals.length > 0) return null;
+  // Parsed, not compared as text: dp writes nanosecond fractions, so text order misplaces whole seconds.
+  const oldest = openDecisions.reduce<D | undefined>(
+    (current, decision) =>
+      current === undefined || raisedAtMs(decision) < raisedAtMs(current) ? decision : current,
+    undefined,
+  );
+  return oldest === undefined
+    ? null
+    : { type: "decision", decision: oldest, index: 0, total: openDecisions.length };
+}
+
 export interface PendingUserInputProgress<Q extends UserInputQuestion = UserInputQuestion> {
   questionIndex: number;
   activeQuestion: Q | null;

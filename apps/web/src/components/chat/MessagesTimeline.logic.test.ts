@@ -1,4 +1,10 @@
-import { ThreadId, type WorktreeSetupSnapshot } from "@t3tools/contracts";
+import {
+  ThreadId,
+  type PluginCard,
+  type PluginCardPlacement,
+  type PluginDecisionAnswerProgress,
+  type WorktreeSetupSnapshot,
+} from "@t3tools/contracts";
 import {
   CheckpointRef,
   NodeId,
@@ -34,6 +40,7 @@ import {
   deriveMessagesTimelineRowsWithState,
   isTimelineMinimapTurnVisible,
   resolveAssistantMessageCopyState,
+  sameRowsInput,
   type MessagesTimelineRow,
   workEntryDisplayLabel,
 } from "./MessagesTimeline.logic";
@@ -5157,4 +5164,376 @@ describe("isTimelineMinimapTurnVisible", () => {
     expect(isTimelineMinimapTurnVisible(10, 500, 500, 510)).toBe(false);
     expect(isTimelineMinimapTurnVisible(10, 500, null, null)).toBe(false);
   });
+});
+
+describe("plugin card rows", () => {
+  const threadId = ThreadId.make("card-thread");
+  const runId = RunId.make("card-run");
+  const time = (second: number) => new Date(Date.UTC(2026, 10, 21, 0, 0, second)).toISOString();
+  const base = (id: string, second: number) => ({
+    id: TurnItemId.make(id),
+    threadId,
+    runId,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: second,
+    status: "completed" as const,
+    title: null,
+    startedAt: DateTime.makeUnsafe(time(second)),
+    completedAt: DateTime.makeUnsafe(time(second)),
+    updatedAt: DateTime.makeUnsafe(time(second)),
+  });
+  const command = (id: string, second: number): OrchestrationV2TurnItem => ({
+    ...base(id, second),
+    type: "command_execution",
+    input: `dp decision show ${id}`,
+    output: "",
+    exitCode: 0,
+  });
+  const assistant = (id: string, second: number, text: string): OrchestrationV2TurnItem => ({
+    ...base(id, second),
+    type: "assistant_message",
+    messageId: MessageId.make(id),
+    text,
+    streaming: false,
+  });
+  const items: OrchestrationV2TurnItem[] = [
+    {
+      ...base("prompt", 0),
+      type: "user_message",
+      messageId: MessageId.make("prompt"),
+      text: "Run the plan",
+      attachments: [],
+      inputIntent: "turn_start",
+      createdBy: "user",
+      creationSource: "web",
+    },
+    command("raise", 1),
+    command("wait", 2),
+    command("show", 3),
+    assistant("progress", 4, "Waiting on a decision"),
+    command("answer", 5),
+    assistant("final", 6, "Done"),
+  ];
+  const timelineEntries = deriveTimelineEntriesFromVisibleTurnItems({
+    visibleTurnItems: items.map((item, position) => ({
+      position,
+      visibility: "local",
+      sourceThreadId: threadId,
+      sourceItemId: item.id,
+      item,
+    })),
+    optimisticMessages: [],
+  });
+  const rowsInput = (
+    pluginCards?: ReadonlyArray<PluginCard>,
+    expandedWorkGroupIds: ReadonlySet<string> = new Set(),
+  ) => ({
+    timelineEntries,
+    latestRun: {
+      runId,
+      status: "completed" as const,
+      startedAt: time(0),
+      completedAt: time(6),
+      turnEnded: true,
+    },
+    isWorking: false,
+    expandedRunIds: new Set([runId]),
+    expandedWorkGroupIds,
+    turnDiffSummaries: [],
+    supportsConversationRollback: false,
+    ...(pluginCards === undefined ? {} : { pluginCards }),
+  });
+  const decisionCard = (
+    key: string,
+    placement: PluginCardPlacement,
+    overrides: { updatedAt?: string; answer?: PluginDecisionAnswerProgress | null } = {},
+  ): PluginCard => ({
+    id: `dispatch.decision:${key}`,
+    threadId,
+    placement,
+    updatedAt: overrides.updatedAt ?? time(30),
+    actions: [],
+    kind: "dispatch.decision",
+    data: {
+      decisionId: key,
+      dir: "/repo",
+      decisionKind: "choice",
+      question: "Ship it?",
+      options: [{ key: "a", label: "Yes", recommended: true }],
+      defaultKey: null,
+      state: "open",
+      choice: null,
+      chosenBy: null,
+      chosenVia: null,
+      raisedAt: time(1),
+      applyAfter: null,
+      resolvedAt: null,
+      needsPerson: true,
+      protection: null,
+      initiative: null,
+      part: "core",
+      wave: 1,
+      phase: null,
+      answerable: "yes",
+      answer: overrides.answer ?? null,
+    },
+  });
+  const onItem = (id: string): PluginCardPlacement => ({
+    type: "turnItem",
+    turnItemId: TurnItemId.make(id),
+  });
+  const ids = (rows: ReadonlyArray<MessagesTimelineRow>) => rows.map((row) => row.id);
+  const neighbours = (rows: ReadonlyArray<MessagesTimelineRow>, rowId: string) => {
+    const index = rows.findIndex((row) => row.id === rowId);
+    expect(index).toBeGreaterThanOrEqual(0);
+    return [rows[index - 1]?.id ?? null, rows[index + 1]?.id ?? null];
+  };
+
+  it("draws a card on a single command directly after that command's row", () => {
+    const rows = deriveMessagesTimelineRows(rowsInput([decisionCard("d1", onItem("answer"))]));
+    expect(neighbours(rows, "plugin-card:dispatch.decision:d1")).toEqual(["answer", "final"]);
+  });
+
+  it.each([
+    ["the first", "raise"],
+    ["a middle", "wait"],
+    ["the last", "show"],
+  ])("draws a card on %s item of a collapsed group after the whole group", (_label, itemId) => {
+    const rows = deriveMessagesTimelineRows(rowsInput([decisionCard("d1", onItem(itemId))]));
+    expect(neighbours(rows, "plugin-card:dispatch.decision:d1")).toEqual([
+      "work-toggle:raise",
+      "progress",
+    ]);
+  });
+
+  it("draws a card on a grouped item after the group's expanded details", () => {
+    const rows = deriveMessagesTimelineRows(
+      rowsInput([decisionCard("d1", onItem("raise"))], new Set(["work-group:raise"])),
+    );
+    expect(neighbours(rows, "plugin-card:dispatch.decision:d1")).toEqual([
+      "work-group:raise:details",
+      "progress",
+    ]);
+  });
+
+  it("keeps the anchor's turn and every other row in place", () => {
+    const without = deriveMessagesTimelineRows(rowsInput());
+    const rows = deriveMessagesTimelineRows(rowsInput([decisionCard("d1", onItem("wait"))]));
+    expect(ids(rows).filter((id) => !id.startsWith("plugin-card:"))).toEqual(ids(without));
+    expect(rows.find((row) => row.kind === "plugin-card")).toMatchObject({
+      createdAt: time(2),
+      card: { id: "dispatch.decision:d1" },
+    });
+  });
+
+  it.each([
+    ["exactly at a row's time", time(4), ["progress", "answer"]],
+    ["between two rows", time(4).replace(".000Z", ".500Z"), ["progress", "answer"]],
+    ["in another offset", "2026-11-21T03:00:04.500+03:00", ["progress", "answer"]],
+    ["after every row", time(59), ["final", null]],
+  ] as const)(
+    "draws a time card placed %s after the last row at or before it",
+    (_l, at, around) => {
+      const rows = deriveMessagesTimelineRows(
+        rowsInput([decisionCard("d1", { type: "time", at })]),
+      );
+      expect(neighbours(rows, "plugin-card:dispatch.decision:d1")).toEqual(around);
+      expect(rows.find((row) => row.kind === "plugin-card")?.createdAt).toBe(at);
+    },
+  );
+
+  it("draws a time card older than every row first", () => {
+    const at = "2026-11-20T23:59:59.000Z";
+    const rows = deriveMessagesTimelineRows(rowsInput([decisionCard("d1", { type: "time", at })]));
+    expect(ids(rows)[0]).toBe("plugin-card:dispatch.decision:d1");
+  });
+
+  it("keeps the live thinking row last below a time card", () => {
+    const input = {
+      ...rowsInput([decisionCard("d1", { type: "time", at: time(59) })]),
+      isWorking: true,
+      latestRun: {
+        runId,
+        status: "running" as const,
+        startedAt: time(0),
+        completedAt: null,
+      },
+      runningRunId: runId,
+      activeTurnStartedAt: time(0),
+    };
+    const rows = deriveMessagesTimelineRows(input);
+    expect(rows.at(-1)?.kind).toBe("thinking");
+    expect(rows.at(-2)?.id).toBe("plugin-card:dispatch.decision:d1");
+  });
+
+  it("orders time cards by their time, each after the last row at or before it", () => {
+    const rows = deriveMessagesTimelineRows(
+      rowsInput([
+        decisionCard("late", { type: "time", at: time(5) }),
+        decisionCard("early", { type: "time", at: time(4) }),
+        decisionCard("anchored", onItem("answer")),
+      ]),
+    );
+    expect(ids(rows).slice(-5)).toEqual([
+      "plugin-card:dispatch.decision:early",
+      "answer",
+      "plugin-card:dispatch.decision:anchored",
+      "plugin-card:dispatch.decision:late",
+      "final",
+    ]);
+  });
+
+  it("does not draw a card whose anchor is not loaded until the item loads", () => {
+    const missing = decisionCard("d1", onItem("not-loaded"));
+    const rows = deriveMessagesTimelineRows(rowsInput([missing]));
+    expect(rows).toEqual(deriveMessagesTimelineRows(rowsInput()));
+    const loaded = deriveMessagesTimelineRows(rowsInput([decisionCard("d1", onItem("answer"))]));
+    expect(ids(loaded)).toContain("plugin-card:dispatch.decision:d1");
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", []],
+  ] as const)("draws a timeline with a %s card snapshot exactly as without cards", (_l, cards) => {
+    const plain = deriveMessagesTimelineRows(rowsInput());
+    expect(deriveMessagesTimelineRows(rowsInput(cards))).toEqual(plain);
+  });
+
+  it("treats a copied card list as the same row input only if the cards stay the same", () => {
+    const first = decisionCard("d1", onItem("raise"));
+    const second = decisionCard("d2", onItem("answer"));
+    const input = rowsInput([first, second]);
+    expect(sameRowsInput(input, { ...input, pluginCards: [first, second] })).toBe(true);
+    expect(sameRowsInput(input, { ...input, pluginCards: [second, first] })).toBe(false);
+    expect(sameRowsInput(input, { ...input, pluginCards: [{ ...first }, second] })).toBe(false);
+  });
+
+  it("rebuilds only the changed card's row when one card's data changes", () => {
+    const first = decisionCard("d1", onItem("raise"));
+    const second = decisionCard("d2", { type: "time", at: time(5) });
+    const shared = rowsInput();
+    const previous = deriveMessagesTimelineRowsWithState({
+      ...shared,
+      pluginCards: [first, second],
+    });
+    const stable = computeStableMessagesTimelineRows(previous.rows, {
+      byId: new Map(),
+      result: [],
+    });
+    const updated = decisionCard("d1", onItem("raise"), { updatedAt: time(40) });
+    const next = deriveMessagesTimelineRowsWithState(
+      { ...shared, pluginCards: [updated, second] },
+      previous,
+    );
+    expect(ids(next.rows)).toEqual(ids(previous.rows));
+    for (const [index, row] of next.rows.entries()) {
+      if (row.id === "plugin-card:dispatch.decision:d1") {
+        expect(row).toMatchObject({ card: { updatedAt: time(40) } });
+        expect(row).not.toBe(previous.rows[index]);
+      } else {
+        expect(row).toBe(previous.rows[index]);
+      }
+    }
+    const nextStable = computeStableMessagesTimelineRows(next.rows, stable);
+    expect(
+      nextStable.result.filter((row, index) => row !== stable.result[index]).map((row) => row.id),
+    ).toEqual(["plugin-card:dispatch.decision:d1"]);
+  });
+
+  it.each([
+    ["a new updatedAt", { updatedAt: time(40) }, true],
+    [
+      "new answer progress",
+      { answer: { optionKey: "a", status: "posting", reason: null, detail: null } },
+      true,
+    ],
+    ["an equal snapshot decoded again", {}, false],
+  ] as const)("treats a card row with %s as changed: %s", (_l, overrides, changed) => {
+    const placement = onItem("answer");
+    const before = deriveMessagesTimelineRows(rowsInput([decisionCard("d1", placement)]));
+    const stable = computeStableMessagesTimelineRows(before, { byId: new Map(), result: [] });
+    const after = deriveMessagesTimelineRows(rowsInput([decisionCard("d1", placement, overrides)]));
+    const next = computeStableMessagesTimelineRows(after, stable);
+    const index = next.result.findIndex((row) => row.id === "plugin-card:dispatch.decision:d1");
+    expect(next.result[index] !== stable.result[index]).toBe(changed);
+  });
+
+  it("treats answer progress moving from posting to failed as a change", () => {
+    const placement = onItem("answer");
+    const posting = { optionKey: "a", status: "posting", reason: null, detail: null } as const;
+    const failed = { ...posting, status: "failed", reason: "dp-failed", detail: "exit 1" } as const;
+    const before = deriveMessagesTimelineRows(
+      rowsInput([decisionCard("d1", placement, { answer: posting })]),
+    );
+    const stable = computeStableMessagesTimelineRows(before, { byId: new Map(), result: [] });
+    const after = deriveMessagesTimelineRows(
+      rowsInput([decisionCard("d1", placement, { answer: failed })]),
+    );
+    const next = computeStableMessagesTimelineRows(after, stable);
+    expect(next.result.find((row) => row.kind === "plugin-card")).toMatchObject({
+      card: { data: { answer: failed } },
+    });
+  });
+
+  it("moves a card whose placement changes", () => {
+    const previous = deriveMessagesTimelineRowsWithState(
+      rowsInput([decisionCard("d1", onItem("raise"))]),
+    );
+    const next = deriveMessagesTimelineRowsWithState(
+      rowsInput([decisionCard("d1", onItem("answer"))]),
+      previous,
+    );
+    expect(neighbours(next.rows, "plugin-card:dispatch.decision:d1")).toEqual(["answer", "final"]);
+  });
+
+  it.each([false, true])(
+    "keeps streaming updates incremental with a copied card list: %s",
+    (copyCards) => {
+      const source = makeStreamingTimelineFixture("Hel");
+      const cards = [
+        decisionCard("d1", { type: "time", at: source.time(1) }),
+      ] satisfies ReadonlyArray<PluginCard>;
+      const input = (entries: ReadonlyArray<TimelineEntry>) => ({
+        timelineEntries: entries,
+        latestRun: {
+          runId: source.runId,
+          status: "running" as const,
+          startedAt: source.time(5),
+          completedAt: null,
+        },
+        runningRunId: source.runId,
+        isWorking: true,
+        activeTurnStartedAt: source.time(5),
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        pluginCards: copyCards ? [...cards] : cards,
+      });
+      const timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState({
+        visibleTurnItems: source.visibleTurnItems,
+        optimisticMessages: [],
+      });
+      const previous = deriveMessagesTimelineRowsWithState(input(timeline.entries));
+      const streamed = deriveTimelineEntriesFromVisibleTurnItemsWithState(
+        {
+          visibleTurnItems: source.visibleTurnItems.map((row) =>
+            row.item.type === "assistant_message" && row.item.streaming
+              ? { ...row, item: { ...row.item, text: "Hello" } }
+              : row,
+          ),
+          optimisticMessages: [],
+        },
+        timeline,
+      );
+      const next = deriveMessagesTimelineRowsWithState(input(streamed.entries), previous);
+      expect(previous.rows.some((row) => row.kind === "plugin-card")).toBe(true);
+      expect(next.rows).toEqual(deriveMessagesTimelineRows(input(streamed.entries)));
+      expect(
+        next.rows.filter((row, index) => row !== previous.rows[index]).map((row) => row.id),
+      ).toEqual(["live-assistant"]);
+    },
+  );
 });
