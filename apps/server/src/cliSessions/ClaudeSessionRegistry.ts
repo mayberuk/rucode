@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -31,6 +32,9 @@ import {
 
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
+// Claude leaves its file behind when killed or hung up on, so no file event reports the death;
+// this bounds how long such a dead holder keeps its chat blocked.
+const HOLDER_LIVENESS_INTERVAL = "15 seconds";
 
 export interface Attachment {
   readonly sessionId: string;
@@ -198,21 +202,25 @@ export const make = Effect.fn("ClaudeSessionRegistry.make")(function* (options?:
       startField,
       startOf: (pid) => starts.get(pid) ?? null,
     };
-    return entries.filter((entry) => isLive(entry, probe)).map(toAttachment);
+    return entries
+      .filter((entry) => isLive(entry, probe))
+      .map((entry) => ({ attachment: toAttachment(entry), start: starts.get(entry.pid) ?? null }));
   });
 
   const attachments = yield* SubscriptionRef.make<ReadonlyMap<string, Attachment>>(new Map());
+  // The start time each outside holder's pid had when last read; a change means it died.
+  let holderStarts: ReadonlyMap<number, string | null> = new Map();
 
   const refresh = Effect.fn("ClaudeSessionRegistry.refresh")(function* () {
-    const next = bySession(
-      (yield* readLive()).filter((attachment) => attachment.owner !== "rucode"),
-    );
+    const live = (yield* readLive()).filter(({ attachment }) => attachment.owner !== "rucode");
+    holderStarts = new Map(live.map(({ attachment, start }) => [attachment.pid, start]));
+    const next = bySession(live.map(({ attachment }) => attachment));
     if (!sameAttachments(yield* SubscriptionRef.get(attachments), next)) {
       yield* SubscriptionRef.set(attachments, next);
     }
   });
 
-  // A burst of events collapses into one pending re-read, so liveness needs no timer.
+  // A burst of events collapses into one pending re-read.
   const dirty = yield* Queue.sliding<void>(1);
   const ready = yield* Deferred.make<void>();
   yield* fs.watch(sessionsDir, { onReady: () => Deferred.doneUnsafe(ready, Effect.void) }).pipe(
@@ -226,9 +234,28 @@ export const make = Effect.fn("ClaudeSessionRegistry.make")(function* (options?:
   yield* refresh();
   yield* Queue.take(dirty).pipe(Effect.andThen(refresh()), Effect.forever, Effect.forkScoped);
 
+  const holderDied = Effect.gen(function* () {
+    for (const [pid, start] of holderStarts) {
+      if ((yield* startOf(pid)) !== start) return true;
+    }
+    return false;
+  });
+  yield* holderDied.pipe(
+    Effect.flatMap((died) => (died ? Queue.offer(dirty, undefined) : Effect.void)),
+    Effect.repeat(Schedule.spaced(HOLDER_LIVENESS_INTERVAL)),
+    Effect.forkScoped,
+  );
+
   const entry = Effect.fn("ClaudeSessionRegistry.entry")(function* (sessionId: string) {
-    const live = (yield* readLive()).filter((attachment) => attachment.sessionId === sessionId);
-    return bySession(live).get(sessionId) ?? null;
+    const live = (yield* readLive())
+      .map(({ attachment }) => attachment)
+      .filter((attachment) => attachment.sessionId === sessionId);
+    const found = bySession(live).get(sessionId) ?? null;
+    const held = (yield* SubscriptionRef.get(attachments)).get(sessionId);
+    if (held !== undefined && (found === null || found.owner === "rucode")) {
+      yield* Queue.offer(dirty, undefined);
+    }
+    return found;
   });
 
   const awaitGone = Effect.fn("ClaudeSessionRegistry.awaitGone")(function* (

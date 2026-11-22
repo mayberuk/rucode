@@ -18,7 +18,6 @@ const state: SyncState = {
       inode: 1234567,
       offset: 8192,
       syncedTitle: "Fix the sidebar",
-      pane: { socket: "/tmp/tmux-1000/default", pane: "%28", name: "repo-work" },
     },
     "1c8d3b2f-6a4e-4d2b-8f9c-2e3a4b5c6d7e": {
       threadId: ThreadId.make("thread-2"),
@@ -26,7 +25,6 @@ const state: SyncState = {
       inode: 7654321,
       offset: 0,
       syncedTitle: null,
-      pane: null,
     },
   },
 };

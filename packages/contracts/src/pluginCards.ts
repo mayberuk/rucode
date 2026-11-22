@@ -154,6 +154,18 @@ export const DispatchDecisionCard = Schema.Struct({
 });
 export type DispatchDecisionCard = typeof DispatchDecisionCard.Type;
 
+/**
+ * No default the agent will go with on its own: needs-person, protected, or raised without one.
+ * The card and the sidebar's waiting state both read this, so they cannot disagree.
+ */
+export const decisionWaitsOnPerson = (
+  data: Pick<DispatchDecisionCardData, "needsPerson" | "protection" | "defaultKey" | "applyAfter">,
+): boolean =>
+  data.needsPerson ||
+  data.protection !== null ||
+  data.defaultKey === null ||
+  data.applyAfter === null;
+
 export const DispatchPlanCardData = Schema.Struct({
   task: Schema.String,
   specPath: Schema.String,

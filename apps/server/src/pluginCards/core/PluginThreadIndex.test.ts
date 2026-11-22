@@ -54,6 +54,8 @@ interface Fixture {
   };
   /** Under the test's temp root. */
   readonly claudeHomePath?: string;
+  /** The server's own `TMUX`, as when it runs in a tmux pane. */
+  readonly serverTmux?: string;
 }
 
 const withIndex = <A, E>(
@@ -132,7 +134,10 @@ const withIndex = <A, E>(
     });
     const index = yield* PluginThreadIndex.make({ procRoot: `${root}/proc` }).pipe(
       Effect.provide(Layer.mergeAll(projection, projects, settings, OrchestrationEventStore.layer)),
-      Effect.provideService(HostProcess.Environment, {}),
+      Effect.provideService(
+        HostProcess.Environment,
+        fixture.serverTmux === undefined ? {} : { TMUX: fixture.serverTmux },
+      ),
       Effect.provideService(HostProcess.HomeDirectory, `${root}/home`),
     );
     return yield* body(index, root);
@@ -148,10 +153,17 @@ const writeEnviron = (root: string, pid: number, environ: string) =>
   });
 
 it.effect("maps a pid to the existing thread its environment names", () =>
-  withIndex({}, (index, root) =>
+  withIndex({ serverTmux: "/tmp/tmux-1000/default,9982,0" }, (index, root) =>
     Effect.gen(function* () {
       yield* writeEnviron(root, 4242, `PATH=/bin\0T3CODE_THREAD_ID=${LIVE_THREAD}\0HOME=/h\0`);
       assert.strictEqual(yield* index.threadForPid(4242), LIVE_THREAD);
+      // An agent's process inherits the tmux the server itself runs in.
+      yield* writeEnviron(
+        root,
+        4343,
+        `TMUX=/tmp/tmux-1000/default,9982,3\0T3CODE_THREAD_ID=${LIVE_THREAD}\0`,
+      );
+      assert.strictEqual(yield* index.threadForPid(4343), LIVE_THREAD);
     }),
   ),
 );
@@ -166,6 +178,12 @@ it.effect.each([
     case: "a variable that only ends in the thread name",
     pid: 12,
     environ: `X_T3CODE_THREAD_ID=${LIVE_THREAD}\0`,
+  },
+  {
+    // That tmux server copied the chat's variable into every pane it starts later.
+    case: "a pane of a tmux server started from a chat's terminal",
+    pid: 13,
+    environ: `TMUX=/tmp/tmux-1000/default,7001,0\0T3CODE_THREAD_ID=${LIVE_THREAD}\0`,
   },
   { case: "pid zero", pid: 0, environ: `T3CODE_THREAD_ID=${LIVE_THREAD}\0` },
   { case: "a negative pid", pid: -4242, environ: null },

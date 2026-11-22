@@ -108,20 +108,21 @@ it.effect("addresses the named socket, or tmux's default server when there is no
     const calls: Array<ReadonlyArray<string>> = [];
     const tmux = runner((input) => {
       calls.push([input.command, ...input.args]);
-      return input.args.includes("#{pane_pid}") ? output("4100\n") : output("main\t-zsh\n");
+      return output("4100\t/dev/pts/5\n");
     });
     const provide = Effect.provideService(ProcessRunner.ProcessRunner, tmux);
+    const terminal = { pid: 4100, tty: "/dev/pts/5" };
 
     expect(
-      yield* TmuxPane.panePid({ socket: "/tmp/tmux-1000/default", pane: "%28" }).pipe(provide),
-    ).toBe(4100);
-    expect(yield* TmuxPane.paneProcess({ socket: null, pane: "%28" }).pipe(provide)).toEqual({
-      sessionName: "main",
-      command: "zsh",
-    });
+      yield* TmuxPane.paneTerminal({ socket: "/tmp/tmux-1000/default", pane: "%28" }).pipe(provide),
+    ).toEqual(terminal);
+    expect(yield* TmuxPane.paneTerminal({ socket: null, pane: "%28" }).pipe(provide)).toEqual(
+      terminal,
+    );
+    const format = "#{pane_pid}\t#{pane_tty}";
     expect(calls).toEqual([
-      ["tmux", "-S", "/tmp/tmux-1000/default", "display-message", "-p", "-t", "%28", "#{pane_pid}"],
-      ["tmux", "display-message", "-p", "-t", "%28", "#{session_name}\t#{pane_current_command}"],
+      ["tmux", "-S", "/tmp/tmux-1000/default", "display-message", "-p", "-t", "%28", format],
+      ["tmux", "display-message", "-p", "-t", "%28", format],
     ]);
   }),
 );
@@ -133,8 +134,8 @@ it.effect("reads a missing pane or a failed send as nothing, not as success", ()
       runner(() => output("", 1)),
     );
     const target = { socket: "/tmp/s", pane: "%28" };
-    expect(yield* TmuxPane.panePid(target).pipe(gone)).toBeNull();
-    expect(yield* TmuxPane.paneProcess(target).pipe(gone)).toBeNull();
+    expect(yield* TmuxPane.paneTerminal(target).pipe(gone)).toBeNull();
+    expect(yield* TmuxPane.foregroundTty(4242).pipe(gone)).toBeNull();
     expect(yield* TmuxPane.sendKeys(target, ["C-c"]).pipe(gone)).toBe(false);
   }),
 );

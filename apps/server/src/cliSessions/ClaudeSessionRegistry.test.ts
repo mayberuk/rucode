@@ -53,6 +53,8 @@ const withRegistry = <A, E>(
       pid: number,
       environ?: string,
     ) => Effect.Effect<void, PlatformError.PlatformError>;
+    /** Ends the process without touching its registry file, as a kill or SIGHUP can. */
+    readonly endProcess: (pid: number) => Effect.Effect<void, PlatformError.PlatformError>;
   }) => Effect.Effect<A, E | PlatformError.PlatformError>,
 ) =>
   Effect.gen(function* () {
@@ -110,6 +112,7 @@ const withRegistry = <A, E>(
           );
           yield* fs.writeFileString(`${procRoot}/${pid}/environ`, environ);
         }),
+      endProcess: (pid) => fs.remove(`${procRoot}/${pid}`, { recursive: true }),
     });
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
@@ -178,6 +181,34 @@ it.effect("resolves awaitGone when the entry is deleted, and times out otherwise
 
       yield* TestClock.adjust("5 seconds");
       expect(yield* Fiber.join(stays)).toBe(false);
+    }),
+  ),
+);
+
+it.effect("drops a holder that died without removing its file on the next liveness check", () =>
+  withRegistry(({ registry, writeEntry, startProcess, endProcess }) =>
+    Effect.gen(function* () {
+      yield* startProcess(4242);
+      yield* writeEntry("4242.json", registryJson(4242, SESSION));
+      yield* attachmentFor(registry, SESSION);
+
+      yield* endProcess(4242);
+      yield* TestClock.adjust("15 seconds");
+      expect(yield* registry.awaitGone(SESSION, "1 hour")).toBe(true);
+    }),
+  ),
+);
+
+it.effect("drops a dead holder as soon as a fresh read of its session finds it gone", () =>
+  withRegistry(({ registry, writeEntry, startProcess, endProcess }) =>
+    Effect.gen(function* () {
+      yield* startProcess(4242);
+      yield* writeEntry("4242.json", registryJson(4242, SESSION));
+      yield* attachmentFor(registry, SESSION);
+
+      yield* endProcess(4242);
+      expect(yield* registry.entry(SESSION)).toBeNull();
+      expect(yield* registry.awaitGone(SESSION, "1 hour")).toBe(true);
     }),
   ),
 );

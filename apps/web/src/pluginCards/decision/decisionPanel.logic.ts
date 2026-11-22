@@ -1,4 +1,5 @@
 import {
+  decisionWaitsOnPerson,
   PluginCardError,
   type DispatchDecisionCard,
   type DispatchDecisionCardData,
@@ -98,21 +99,6 @@ export function decisionContextLabel(data: DispatchDecisionCardData): string {
   return data.initiative === null ? `wave ${data.wave}` : `${data.initiative} · wave ${data.wave}`;
 }
 
-type DecisionCourseFields = Pick<
-  DispatchDecisionCardData,
-  "needsPerson" | "protection" | "defaultKey" | "applyAfter"
->;
-
-/** No default the agent will go with on its own: needs-person, protected, or raised without one. */
-export function decisionWaitsOnPerson(data: DecisionCourseFields): boolean {
-  return (
-    data.needsPerson ||
-    data.protection !== null ||
-    data.defaultKey === null ||
-    data.applyAfter === null
-  );
-}
-
 function optionLabel(data: DispatchDecisionCardData, key: string): string {
   return data.options.find((option) => option.key === key)?.label ?? key;
 }
@@ -159,8 +145,10 @@ function isoMs(iso: string | null): number {
 
 const compareNumbers = (a: number, b: number) => (a < b ? -1 : a > b ? 1 : 0);
 
-export type DrawerDecisionFields = DecisionCourseFields &
-  Pick<DispatchDecisionCardData, "raisedAt">;
+export type DrawerDecisionFields = Pick<
+  DispatchDecisionCardData,
+  "needsPerson" | "protection" | "defaultKey" | "applyAfter" | "raisedAt"
+>;
 
 /** Drawer order: waiting on the person first, then the soonest default, then the oldest. */
 export function compareDrawerDecisions(a: DrawerDecisionFields, b: DrawerDecisionFields): number {

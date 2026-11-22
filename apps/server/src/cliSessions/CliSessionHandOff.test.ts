@@ -23,7 +23,6 @@ import * as Queue from "effect/Queue";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
-import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
@@ -31,7 +30,6 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ClaudeSessionRegistry from "./ClaudeSessionRegistry.ts";
 import * as CliSessionHandOff from "./CliSessionHandOff.ts";
-import { writeSyncState } from "./syncState.ts";
 
 const SESSION = "0b7c2a1e-5f3d-4c1a-9e8b-1d2f3a4b5c6d";
 const SOCKET = "/tmp/tmux-1000/default";
@@ -61,8 +59,9 @@ interface Fixture {
   readonly socket?: string | null;
   readonly platform?: "linux" | "darwin";
   readonly panePid?: number;
-  readonly paneCommand?: string;
-  readonly rememberedPane?: { readonly socket: string; readonly pane: string } | null;
+  /** `ps -o stat=,tty=` for the Claude pid, one per call; the last repeats, and "" is no process. */
+  readonly claudeStats?: ReadonlyArray<string>;
+
   readonly activeRunId?: RunId | null;
   readonly backgroundWork?: boolean;
   readonly claudeHomePath?: string;
@@ -96,11 +95,6 @@ const withHandOff = <A, E>(
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-hand-off-" });
     const procRoot = `${root}/proc`;
-    const serverConfig = yield* ServerConfig.ServerConfig.pipe(
-      Effect.provide(ServerConfig.layerTest(root, root)),
-    );
-    const stateDir = serverConfig.stateDir;
-    yield* fs.makeDirectory(stateDir, { recursive: true });
     const parents: Record<number, number> = {
       [CLAUDE_PID]: 4200,
       4200: PANE_SHELL_PID,
@@ -111,22 +105,6 @@ const withHandOff = <A, E>(
       yield* fs.makeDirectory(`${procRoot}/${pid}`, { recursive: true });
       yield* fs.writeFileString(`${procRoot}/${pid}/stat`, `${pid} (zsh) S ${ppid} 1 1 0\n`);
     }
-    if (fixture.rememberedPane !== undefined && fixture.rememberedPane !== null) {
-      yield* writeSyncState(stateDir, {
-        version: 1,
-        backfilledAt: null,
-        sessions: {
-          [SESSION]: {
-            threadId,
-            filePath: `/home/someone/.claude/projects/-w/${SESSION}.jsonl`,
-            inode: 1,
-            offset: 0,
-            syncedTitle: null,
-            pane: { ...fixture.rememberedPane, name: "main" },
-          },
-        },
-      });
-    }
 
     const tmux = yield* Queue.unbounded<ReadonlyArray<string>>();
     const tmuxCalls: Array<ReadonlyArray<string>> = [];
@@ -134,9 +112,14 @@ const withHandOff = <A, E>(
     const releases: Array<{ readonly reason: string }> = [];
     const awaitGoneCalls: Array<readonly [string, unknown]> = [];
 
+    const claudeStats = [...(fixture.claudeStats ?? ["Sl+ pts/5"])];
     const processRunner = ProcessRunner.ProcessRunner.of({
       run: (input) =>
         Effect.sync(() => {
+          if (input.command === "ps" && input.args.includes("stat=,tty=")) {
+            const stat = claudeStats.length > 1 ? claudeStats.shift()! : claudeStats[0]!;
+            return stat === "" ? output("", 1) : output(`${stat}\n`);
+          }
           if (input.command === "ps") {
             return output(
               Object.entries(parents)
@@ -148,9 +131,8 @@ const withHandOff = <A, E>(
           steps.push(`tmux ${input.args.join(" ")}`);
           Queue.offerUnsafe(tmux, input.args);
           const format = input.args.at(-1) ?? "";
-          if (format === "#{pane_pid}") return output(`${fixture.panePid ?? PANE_SHELL_PID}\n`);
-          if (format.includes("#{pane_current_command}")) {
-            return output(`main\t${fixture.paneCommand ?? "zsh"}\n`);
+          if (format === "#{pane_pid}\t#{pane_tty}") {
+            return output(`${fixture.panePid ?? PANE_SHELL_PID}\t/dev/pts/5\n`);
           }
           return output("");
         }),
@@ -218,10 +200,9 @@ const withHandOff = <A, E>(
               },
       }),
     });
-    const config = Layer.succeed(ServerConfig.ServerConfig, serverConfig);
 
     const handOff = yield* CliSessionHandOff.make({ procRoot }).pipe(
-      Effect.provide(Layer.mergeAll(registry, orchestrator, projects, sessions, settings, config)),
+      Effect.provide(Layer.mergeAll(registry, orchestrator, projects, sessions, settings)),
       Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
       Effect.provideService(HostProcess.Platform, fixture.platform ?? "linux"),
       Effect.provideService(HostProcess.Environment, {}),
@@ -269,7 +250,7 @@ it.effect("takes over an idle tmux session with two Ctrl-C 200 ms apart, to that
         "-p",
         "-t",
         "%28",
-        "#{pane_pid}",
+        "#{pane_pid}\t#{pane_tty}",
       ]);
       expect(yield* Queue.take(tmux)).toEqual(sendCtrlC);
       yield* TestClock.adjust("199 millis");
@@ -316,6 +297,36 @@ it.effect("sends nothing when the pane's process tree does not hold the registry
   ),
 );
 
+it.effect("sends nothing unless Claude is the job in front of the pane's own terminal", () =>
+  Effect.gen(function* () {
+    // Suspended with Ctrl-Z, sent to the background, stopped in front, nested in another
+    // program's terminal, or gone.
+    for (const stat of ["Tl pts/5", "Sl pts/5", "T+ pts/5", "Sl+ pts/9", ""]) {
+      yield* withHandOff({ claudeStats: [stat] }, ({ handOff, tmux, tmuxCalls }) =>
+        Effect.gen(function* () {
+          expect(yield* refusedBeforeAnyKey(handOff.takeOver({ threadId }), tmux)).toBe(
+            "pane-changed",
+          );
+          expect(tmuxCalls.filter((args) => args.includes("send-keys"))).toEqual([]);
+        }),
+      );
+    }
+  }),
+);
+
+it.effect("holds back the second Ctrl-C once Claude is no longer in front", () =>
+  withHandOff({ claudeStats: ["Sl+ pts/5", ""] }, ({ handOff, tmux, tmuxCalls }) =>
+    Effect.gen(function* () {
+      const fiber = yield* handOff.takeOver({ threadId }).pipe(Effect.forkChild);
+      yield* afterFirstKey(tmux);
+      expect(Exit.isSuccess(yield* Fiber.await(fiber))).toBe(true);
+      expect(tmuxCalls.filter((args) => args.includes("send-keys"))).toEqual([
+        ["-S", SOCKET, "send-keys", "-t", "%28", "C-c"],
+      ]);
+    }),
+  ),
+);
+
 it.effect("reports still-open when the session outlives the wait", () =>
   withHandOff({ gone: false }, ({ handOff, tmux, tmuxCalls }) =>
     Effect.gen(function* () {
@@ -335,7 +346,7 @@ it.effect("on macOS, uses tmux's default server only after ps proves the pane ho
         yield* afterFirstKey(tmux);
         expect(Exit.isSuccess(yield* Fiber.await(fiber))).toBe(true);
         expect(tmuxCalls).toEqual([
-          ["display-message", "-p", "-t", "%28", "#{pane_pid}"],
+          ["display-message", "-p", "-t", "%28", "#{pane_pid}\t#{pane_tty}"],
           ["send-keys", "-t", "%28", "C-c"],
           ["send-keys", "-t", "%28", "C-c"],
         ]);
@@ -354,51 +365,18 @@ it.effect("on macOS, uses tmux's default server only after ps proves the pane ho
   }),
 );
 
-it.effect("continues in a remembered shell pane after releasing rucode's own process", () =>
-  withHandOff(
-    { entry: null, rememberedPane: { socket: SOCKET, pane: "%28" } },
-    ({ handOff, steps, releases }) =>
-      Effect.gen(function* () {
-        const result = yield* handOff.continueInTerminal({ threadId });
-        const command = `cd '/w' && claude --resume ${SESSION}`;
-        expect(result).toEqual({ delivery: "sent", command, paneLabel: "main:%28" });
-        expect(releases).toHaveLength(1);
-        expect(steps).toEqual([
-          `release ${providerSessionId}`,
-          `tmux -S ${SOCKET} display-message -p -t %28 #{session_name}\t#{pane_current_command}`,
-          `tmux -S ${SOCKET} send-keys -t %28 -l ${command}`,
-          `tmux -S ${SOCKET} send-keys -t %28 Enter`,
-        ]);
-      }),
+it.effect("releases rucode's own process and offers the command to copy, typing nowhere", () =>
+  withHandOff({ entry: null }, ({ handOff, steps, releases }) =>
+    Effect.gen(function* () {
+      expect(yield* handOff.continueInTerminal({ threadId })).toEqual({
+        delivery: "copy",
+        command: `cd '/w' && claude --resume ${SESSION}`,
+        paneLabel: null,
+      });
+      expect(releases).toHaveLength(1);
+      expect(steps).toEqual([`release ${providerSessionId}`]);
+    }),
   ),
-);
-
-it.effect("offers the command to copy when no shell pane is waiting for it", () =>
-  Effect.gen(function* () {
-    const command = `cd '/w' && claude --resume ${SESSION}`;
-    yield* withHandOff(
-      { entry: null, rememberedPane: { socket: SOCKET, pane: "%28" }, paneCommand: "claude" },
-      ({ handOff, tmuxCalls }) =>
-        Effect.gen(function* () {
-          expect(yield* handOff.continueInTerminal({ threadId })).toEqual({
-            delivery: "copy",
-            command,
-            paneLabel: null,
-          });
-          expect(tmuxCalls.filter((args) => args.includes("send-keys"))).toEqual([]);
-        }),
-    );
-    yield* withHandOff({ entry: null, rememberedPane: null }, ({ handOff, tmuxCalls }) =>
-      Effect.gen(function* () {
-        expect(yield* handOff.continueInTerminal({ threadId })).toEqual({
-          delivery: "copy",
-          command,
-          paneLabel: null,
-        });
-        expect(tmuxCalls).toEqual([]);
-      }),
-    );
-  }),
 );
 
 it.effect("names a non-default Claude home on the claude invocation, not on cd", () =>
@@ -418,14 +396,12 @@ it.effect("refuses to continue while a turn or background work is running, relea
       [{ backgroundWork: true }, "background-pending"],
     ];
     for (const [fixture, reason] of cases) {
-      yield* withHandOff(
-        { ...fixture, entry: null, rememberedPane: { socket: SOCKET, pane: "%28" } },
-        ({ handOff, tmuxCalls, releases }) =>
-          Effect.gen(function* () {
-            expect(yield* refusal(handOff.continueInTerminal({ threadId }))).toBe(reason);
-            expect(releases).toEqual([]);
-            expect(tmuxCalls).toEqual([]);
-          }),
+      yield* withHandOff({ ...fixture, entry: null }, ({ handOff, tmuxCalls, releases }) =>
+        Effect.gen(function* () {
+          expect(yield* refusal(handOff.continueInTerminal({ threadId }))).toBe(reason);
+          expect(releases).toEqual([]);
+          expect(tmuxCalls).toEqual([]);
+        }),
       );
     }
   }),

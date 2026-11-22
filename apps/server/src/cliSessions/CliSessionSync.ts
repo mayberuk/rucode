@@ -405,6 +405,21 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** Bytes `[start, end)`, or fewer when the file shrank meanwhile. */
+  const readRange = Effect.fnUntraced(function* (filePath: string, start: number, end: number) {
+    const file = yield* fs.open(filePath, { flag: "r" });
+    const bytes = new Uint8Array(end - start);
+    let filled = 0;
+    while (filled < bytes.length) {
+      const read = yield* file.read(bytes.subarray(filled), {
+        position: BigInt(start + filled),
+      });
+      if (read === 0) break;
+      filled += read;
+    }
+    return bytes.subarray(0, filled);
+  }, Effect.scoped);
+
   /** Reads what the transcript gained since the cursor and appends it to the thread. */
   const tail = Effect.fn("CliSessionSync.tail")(function* (sessionId: string) {
     const synced = state.sessions[sessionId];
@@ -421,10 +436,7 @@ const make = Effect.gen(function* () {
       if (!resume) updateSession(sessionId, { ...synced, inode, offset: size });
       return;
     }
-    const bytes = yield* fs.readFile(synced.filePath).pipe(
-      Effect.map((all) => all.subarray(start, size)),
-      Effect.option,
-    );
+    const bytes = yield* readRange(synced.filePath, start, size).pipe(Effect.option);
     if (Option.isNone(bytes)) return;
     const read = readTranscript(bytes.value, start);
     let entries = read.entries;
@@ -675,7 +687,6 @@ const make = Effect.gen(function* () {
       inode,
       offset: read.offset,
       syncedTitle: appThread.title,
-      pane: null,
     });
     yield* saveState;
   });
@@ -801,7 +812,6 @@ const make = Effect.gen(function* () {
           inode: -1,
           offset: 0,
           syncedTitle: null,
-          pane: null,
         });
       }
     }
@@ -813,22 +823,10 @@ const make = Effect.gen(function* () {
       yield* worker.enqueue({ _tag: "Tail", sessionId });
     }
     for (const attachment of attachments.values()) {
-      const synced = state.sessions[attachment.sessionId];
-      if (synced === undefined) continue;
+      if (state.sessions[attachment.sessionId] === undefined) continue;
       if (enabled && !watches.has(attachment.sessionId)) {
         yield* startTailing(attachment.sessionId);
         yield* worker.enqueue({ _tag: "Tail", sessionId: attachment.sessionId });
-      }
-      if (attachment.pane !== null) {
-        const socket = yield* registry.socketOf(attachment.pid);
-        // `name` is the tmux session, which the hand-off targets with the socket.
-        const pane =
-          socket === null
-            ? null
-            : { socket, pane: attachment.pane.pane, name: attachment.pane.session };
-        if (pane !== null && !Equal.equals(pane, synced.pane)) {
-          updateSession(attachment.sessionId, { ...state.sessions[attachment.sessionId]!, pane });
-        }
       }
     }
     if (enabled && state.backfilledAt === null) yield* worker.enqueue({ _tag: "Backfill" });

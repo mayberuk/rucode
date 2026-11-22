@@ -16,13 +16,6 @@ const SyncedSession = Schema.Struct({
   inode: Schema.Number,
   offset: Schema.Number,
   syncedTitle: Schema.NullOr(Schema.String),
-  pane: Schema.NullOr(
-    Schema.Struct({
-      socket: Schema.String,
-      pane: Schema.String,
-      name: Schema.NullOr(Schema.String),
-    }),
-  ),
 });
 export type SyncedSession = typeof SyncedSession.Type;
 

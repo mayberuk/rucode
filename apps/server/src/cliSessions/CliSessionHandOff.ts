@@ -18,7 +18,6 @@ import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
@@ -26,7 +25,6 @@ import type * as ProcessRunner from "../processRunner.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ClaudeSessionRegistry from "./ClaudeSessionRegistry.ts";
-import { readSyncState } from "./syncState.ts";
 import * as TmuxPane from "./tmuxPane.ts";
 
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
@@ -58,7 +56,7 @@ export class CliSessionHandOff extends Context.Service<
   {
     /** Ends the terminal's idle Claude process for the thread's session so rucode can write. */
     readonly takeOver: (input: CliSessionTakeOverInput) => Effect.Effect<void, CliSessionError>;
-    /** Releases rucode's own process, then resumes the session in a shell pane or returns the command. */
+    /** Releases rucode's own process, then returns the command that resumes the session. */
     readonly continueInTerminal: (
       input: CliSessionContinueInput,
     ) => Effect.Effect<CliSessionContinueResult, CliSessionError>;
@@ -80,7 +78,6 @@ export const make = Effect.fn("CliSessionHandOff.make")(function* (options?: {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const settings = yield* ServerSettings.ServerSettingsService;
-  const config = yield* ServerConfig.ServerConfig;
   const hostEnvironment = yield* HostProcess.Environment;
   // Also carries the host platform and home directory references the tmux and path helpers read.
   const services = yield* Effect.context<
@@ -124,13 +121,25 @@ export const make = Effect.fn("CliSessionHandOff.make")(function* (options?: {
     // Off Linux there is no socket to read; tmux's default server is tried, and the pid check
     // below is what proves it is the right pane.
     const target = { socket: yield* registry.socketOf(entry.pid), pane: entry.pane.pane };
-    const shellPid = yield* TmuxPane.panePid(target);
-    if (shellPid === null || !(yield* TmuxPane.descendsFrom(entry.pid, shellPid, { procRoot }))) {
+    const terminal = yield* TmuxPane.paneTerminal(target);
+    // The pane holding Claude is not enough: a Ctrl-Z'd Claude or one nested in another program's
+    // terminal would hand these keys to whatever job is in front.
+    const claudeInFront = Effect.map(
+      TmuxPane.foregroundTty(entry.pid),
+      (tty) => terminal !== null && tty === terminal.tty,
+    );
+    if (
+      terminal === null ||
+      !(yield* TmuxPane.descendsFrom(entry.pid, terminal.pid, { procRoot })) ||
+      !(yield* claudeInFront)
+    ) {
       return yield* refuse("pane-changed");
     }
     if (!(yield* TmuxPane.sendKeys(target, ["C-c"]))) return yield* refuse("tmux-failed");
     yield* Effect.sleep(EXIT_KEY_GAP);
-    if (!(yield* TmuxPane.sendKeys(target, ["C-c"]))) return yield* refuse("tmux-failed");
+    if ((yield* claudeInFront) && !(yield* TmuxPane.sendKeys(target, ["C-c"]))) {
+      return yield* refuse("tmux-failed");
+    }
     if (!(yield* registry.awaitGone(sessionId, EXIT_TIMEOUT))) return yield* refuse("still-open");
   }, Effect.provideContext(services));
 
@@ -203,18 +212,6 @@ export const make = Effect.fn("CliSessionHandOff.make")(function* (options?: {
     }
   });
 
-  const shellPaneFor = Effect.fnUntraced(function* (threadId: ThreadId, sessionId: string) {
-    const remembered = (yield* readSyncState(config.stateDir)).sessions[sessionId];
-    const pane = remembered?.threadId === threadId ? remembered.pane : null;
-    if (pane === null || pane.socket === "") return null;
-    const target = { socket: pane.socket, pane: pane.pane };
-    // Pane ids restart with a new tmux server; the session name guards against a stranger's pane.
-    const running = yield* TmuxPane.paneProcess(target);
-    if (running === null || !TmuxPane.isShell(running.command)) return null;
-    if (pane.name !== null && running.sessionName !== pane.name) return null;
-    return { target, label: pane.name === null ? pane.pane : `${pane.name}:${pane.pane}` };
-  });
-
   const continueInTerminal = Effect.fn("CliSessionHandOff.continueInTerminal")(function* (
     input: CliSessionContinueInput,
   ) {
@@ -223,13 +220,9 @@ export const make = Effect.fn("CliSessionHandOff.make")(function* (options?: {
     if (hasBackgroundWork(session.own)) return yield* refuse("background-pending");
     const command = yield* resumeCommand(session);
     yield* releaseOwnProcesses(input.threadId, session.own);
-    const copy: CliSessionContinueResult = { delivery: "copy", command, paneLabel: null };
-    const pane = yield* shellPaneFor(input.threadId, session.sessionId);
-    if (pane === null) return copy;
-    const sent =
-      (yield* TmuxPane.sendKeys(pane.target, [command], { literal: true })) &&
-      (yield* TmuxPane.sendKeys(pane.target, ["Enter"]));
-    return sent ? { delivery: "sent" as const, command, paneLabel: pane.label } : copy;
+    // Nothing outside a shell can tell whether its prompt holds a half-typed line, and typing
+    // after one would run both; the user runs the command where they choose.
+    return { delivery: "copy", command, paneLabel: null } satisfies CliSessionContinueResult;
   }, Effect.provideContext(services));
 
   return CliSessionHandOff.of({ takeOver, continueInTerminal });

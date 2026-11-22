@@ -51,8 +51,8 @@ export class PluginThreadIndex extends Context.Service<
   }
 >()("t3/pluginCards/core/PluginThreadIndex") {}
 
-const parseEnvironThreadId = (raw: string): string | null => {
-  const prefix = `${AGENT_THREAD_ENV}=`;
+const environValue = (raw: string, name: string): string | null => {
+  const prefix = `${name}=`;
   const value = raw
     .split("\0")
     .find((entry) => entry.startsWith(prefix))
@@ -60,6 +60,10 @@ const parseEnvironThreadId = (raw: string): string | null => {
     .trim();
   return value ? value : null;
 };
+
+/** `TMUX` is `<socket>,<server pid>,<session>`; the first two name the server. */
+const tmuxServerOf = (tmux: string | null | undefined) =>
+  tmux ? tmux.split(",").slice(0, 2).join(",") : null;
 
 export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
   readonly procRoot?: string;
@@ -221,8 +225,14 @@ export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
       .readFileString(path.join(procRoot, String(pid), "environ"))
       .pipe(Effect.option);
     if (Option.isNone(environ)) return null;
-    const raw = parseEnvironThreadId(environ.value);
-    return raw === null ? null : yield* liveThreadId(raw);
+    const raw = environValue(environ.value, AGENT_THREAD_ENV);
+    // A tmux server started in a chat's terminal copies that chat's id into every pane it opens
+    // later. Chat terminals drop `TMUX`, so only the server's own tmux may carry the id.
+    const tmux = tmuxServerOf(environValue(environ.value, "TMUX"));
+    if (raw === null || (tmux !== null && tmux !== tmuxServerOf(hostEnvironment.TMUX))) {
+      return null;
+    }
+    return yield* liveThreadId(raw);
   });
 
   const claudeConfigDir = Effect.fnUntraced(function* (instanceId: ProviderInstanceId) {

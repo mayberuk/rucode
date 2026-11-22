@@ -143,6 +143,8 @@ interface Fixture {
   >;
   readonly write: (contents: string) => Effect.Effect<void>;
   readonly touch: Effect.Effect<void>;
+  /** How many times the whole transcript has been loaded. */
+  readonly wholeReads: () => number;
 }
 
 /**
@@ -166,8 +168,13 @@ const withFixture = <A, E, R>(
     yield* fs.makeDirectory(`${claudeHome}/sessions`, { recursive: true });
 
     const fileEvents = yield* PubSub.unbounded<FileSystem.WatchEvent>();
+    let wholeReads = 0;
     const watching = FileSystem.FileSystem.of({
       ...fs,
+      readFile: (path) => {
+        if (path === transcript) wholeReads++;
+        return fs.readFile(path);
+      },
       watch: (path, watchOptions) =>
         path.endsWith(".jsonl")
           ? Stream.fromPubSub(fileEvents).pipe(Stream.filter((event) => event.path === path))
@@ -250,6 +257,7 @@ const withFixture = <A, E, R>(
       start,
       write,
       touch,
+      wholeReads: () => wholeReads,
     });
   }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerOrchestration, NodeServices.layer)));
 
@@ -305,6 +313,7 @@ it.effect("adopts a terminal session and appends each new record once", () =>
       const thread = yield* (yield* ProjectionStore.ProjectionStoreV2).findThread(THREAD);
       assert.equal(thread?.projectId, PROJECT);
       assert.equal(thread?.title, "Fix the login bug");
+      const importReads = fixture.wholeReads();
 
       yield* fixture.write(fourRecords);
       yield* fixture.touch;
@@ -318,6 +327,8 @@ it.effect("adopts a terminal session and appends each new record once", () =>
         "Now add a test",
         "Added.",
       ]);
+      // Tailing reads only what the transcript gained; long sessions reach tens of megabytes.
+      assert.equal(fixture.wholeReads(), importReads);
     }),
   ),
 );

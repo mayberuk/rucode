@@ -21,11 +21,13 @@ const THREAD_A = ThreadId.make("thread-a");
 const THREAD_B = ThreadId.make("thread-b");
 const THREAD_C = ThreadId.make("thread-c");
 const THREAD_D = ThreadId.make("thread-d");
+const THREAD_E = ThreadId.make("thread-e");
 const SESSIONS: Record<string, ThreadId> = {
   "session-a": THREAD_A,
   "session-b": THREAD_B,
   "session-c": THREAD_C,
   "session-d": THREAD_D,
+  "session-e": THREAD_E,
 };
 const RAISED_AT = "2026-11-21T10:00:00.123456789Z";
 
@@ -585,6 +587,15 @@ it.effect("marks a chat waiting only for a decision without a default", () =>
       }),
     });
     yield* write(checkoutB, decisionRecord("ordinary", { grantSession: "session-d" }));
+    // The card reads a protection it does not know as an ordinary decision, so the sidebar must too.
+    yield* write(
+      checkoutB,
+      decisionRecord("unknown-protection", { grantSession: "session-d", protection: "later" }),
+    );
+    yield* write(
+      checkoutB,
+      decisionRecord("no-default", { grantSession: "session-e", default: "" }),
+    );
     yield* write(
       checkoutB,
       decisionRecord("needs", { grantSession: "session-b", needsPerson: true, default: "" }),
@@ -598,7 +609,12 @@ it.effect("marks a chat waiting only for a decision without a default", () =>
       decisionRecord("raised-here", { grantSession: "", needsPerson: true, default: "" }),
     );
 
-    assert.deepStrictEqual((yield* source.live).waitingThreadIds, [THREAD_A, THREAD_B, THREAD_C]);
+    assert.deepStrictEqual((yield* source.live).waitingThreadIds, [
+      THREAD_A,
+      THREAD_B,
+      THREAD_C,
+      THREAD_E,
+    ]);
   }),
 );
 

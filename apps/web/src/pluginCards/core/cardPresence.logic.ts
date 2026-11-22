@@ -1,4 +1,9 @@
-import type { DispatchRunProgressCardData, PluginCard, PluginCheckState } from "@t3tools/contracts";
+import {
+  decisionWaitsOnPerson,
+  type DispatchRunProgressCardData,
+  type PluginCard,
+  type PluginCheckState,
+} from "@t3tools/contracts";
 
 import {
   hasPlanFooter,
@@ -14,7 +19,7 @@ import {
 import { pipelineLabel, pushSummary } from "../cards/iter8GittyCards.logic";
 import { progressMeta, verdictPresentation } from "../cards/livecheckCards.logic";
 import { countLabel } from "../cards/shared/cardFormat.logic";
-import { decisionLine, decisionWaitsOnPerson } from "../decision/decisionPanel.logic";
+import { decisionLine } from "../decision/decisionPanel.logic";
 
 export type CardPresence = "needs-you" | "failed" | "background";
 

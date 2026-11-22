@@ -12,7 +12,6 @@ export interface TmuxPaneTarget {
   readonly pane: string;
 }
 
-const SHELLS = new Set(["zsh", "bash", "fish", "sh", "dash"]);
 // Deeper than any real shell-to-CLI chain; also ends a walk through a corrupt parent cycle.
 const MAX_ANCESTRY_DEPTH = 64;
 
@@ -31,36 +30,38 @@ const tmux = Effect.fnUntraced(function* (target: TmuxPaneTarget, args: Readonly
 const display = (target: TmuxPaneTarget, format: string) =>
   tmux(target, ["display-message", "-p", "-t", target.pane, format]);
 
-export const panePid = Effect.fn("tmuxPane.panePid")(function* (target: TmuxPaneTarget) {
-  const stdout = yield* display(target, "#{pane_pid}");
-  const pid = Number(stdout?.trim());
-  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+/** The pid of the process the pane started and the pane's terminal device. */
+export const paneTerminal = Effect.fn("tmuxPane.paneTerminal")(function* (target: TmuxPaneTarget) {
+  const stdout = yield* display(target, "#{pane_pid}\t#{pane_tty}");
+  const [pidText, tty] = stdout?.trim().split("\t") ?? [];
+  const pid = Number(pidText);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || tty === undefined || tty === "") return null;
+  return { pid, tty };
 });
 
-/** The pane's tmux session and foreground command; a login shell's leading `-` is dropped. */
-export const paneProcess = Effect.fn("tmuxPane.paneProcess")(function* (target: TmuxPaneTarget) {
-  const stdout = yield* display(target, "#{session_name}\t#{pane_current_command}");
-  const [sessionName, command] = stdout?.trimEnd().split("\t") ?? [];
-  if (sessionName === undefined || command === undefined || command === "") return null;
-  return { sessionName, command: command.replace(/^-/, "") };
+/**
+ * The terminal `pid` runs in the foreground of, or null when it is stopped, in the background,
+ * gone or unreadable. Keys typed into that terminal reach this process and no other job.
+ */
+export const foregroundTty = Effect.fn("tmuxPane.foregroundTty")(function* (pid: number) {
+  const processRunner = yield* ProcessRunner.ProcessRunner;
+  const result = yield* processRunner
+    .run({ command: "ps", args: ["-o", "stat=,tty=", "-p", String(pid)], timeout: "2 seconds" })
+    .pipe(Effect.option);
+  if (Option.isNone(result) || result.value.code !== 0) return null;
+  // Both procps and BSD ps mark a process in its terminal's foreground group with `+`.
+  const [stat, tty] = result.value.stdout.trim().split(/\s+/);
+  if (stat === undefined || tty === undefined || /^[Tt]/.test(stat) || !stat.includes("+")) {
+    return null;
+  }
+  return tty === "?" || tty === "??" ? null : `/dev/${tty}`;
 });
 
-export const isShell = (command: string) => SHELLS.has(command);
-
-/** `literal` types the keys as text (`-l`) instead of reading them as key names. */
 export const sendKeys = Effect.fn("tmuxPane.sendKeys")(function* (
   target: TmuxPaneTarget,
   keys: ReadonlyArray<string>,
-  options?: { readonly literal?: boolean },
 ) {
-  const stdout = yield* tmux(target, [
-    "send-keys",
-    "-t",
-    target.pane,
-    ...(options?.literal ? ["-l"] : []),
-    ...keys,
-  ]);
-  return stdout !== null;
+  return (yield* tmux(target, ["send-keys", "-t", target.pane, ...keys])) !== null;
 });
 
 const linuxParentOf = Effect.fnUntraced(function* (procRoot: string, pid: number) {

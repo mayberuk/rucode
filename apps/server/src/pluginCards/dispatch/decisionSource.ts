@@ -1,9 +1,10 @@
-import type {
-  DispatchDecisionCard,
-  DispatchDecisionCardData,
-  PluginDecisionAnswerProgress,
-  PluginLiveState,
-  ThreadId,
+import {
+  decisionWaitsOnPerson,
+  type DispatchDecisionCard,
+  type DispatchDecisionCardData,
+  type PluginDecisionAnswerProgress,
+  type PluginLiveState,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -158,7 +159,7 @@ const raisedIds = (output: string | null): ReadonlyArray<string> => {
 };
 
 const waitsForPerson = (record: DispatchDecisionRecord) =>
-  record.needsPerson === true || (record.protection !== undefined && record.protection !== "");
+  decisionWaitsOnPerson(toDecisionCardData(record, null, "terminal-only"));
 
 export interface DispatchDecisionSourceOptions {
   readonly initiativesRoot?: string;
