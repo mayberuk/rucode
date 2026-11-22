@@ -4,6 +4,7 @@ import {
   PluginCardError,
   type PluginDecisionAnswerInput,
   type PluginDecisionAnswerResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
@@ -43,6 +44,8 @@ const refuse = (reason: PluginCardError["reason"], detail?: string) =>
 
 export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
   decisions: DispatchDecisionSource,
+  /** True when the card as placed in that chat is a decision it may answer. */
+  ownsDecision: (threadId: ThreadId, cardId: string) => Effect.Effect<boolean>,
 ) {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const index = yield* PluginThreadIndex;
@@ -128,13 +131,14 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
     const { optionKey } = input;
     const found = yield* decisions.findDecision(cardId);
     if (found === null) return yield* refuse("unknown-card");
-    const { record: decision, threadId } = found;
-    if (threadId !== input.threadId) return yield* refuse("not-this-chat");
+    const { record: decision } = found;
+    const { threadId } = input;
+    const transcript = yield* index.claudeTranscript(threadId);
+    if (transcript === null) return yield* refuse("terminal-only");
+    if (!(yield* ownsDecision(threadId, cardId))) return yield* refuse("not-this-chat");
     if (decision.state !== "open") return yield* refuse("decision-closed");
     const option = decision.options.find((candidate) => candidate.key === optionKey);
     if (option === undefined) return yield* refuse("unknown-option");
-    const transcript = yield* index.claudeTranscript(input.threadId);
-    if (transcript === null) return yield* refuse("terminal-only");
     const dp = yield* resolveCommandPath("dp").pipe(
       Effect.provideService(HostProcess.Environment, env),
       Effect.provideService(HostProcess.Platform, platform),

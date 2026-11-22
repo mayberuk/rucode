@@ -26,7 +26,7 @@ import {
   listLiveInitiatives,
 } from "../dispatch/liveRegistry.ts";
 import { type RunFeedCursor, readRunFeed, runFeedPath } from "../dispatch/runFeed.ts";
-import { mapRunToThread } from "../dispatch/threadMapping.ts";
+import { initiativeThread, mapRunToThread } from "../dispatch/threadMapping.ts";
 import {
   type FoldedRuns,
   foldRunRows,
@@ -149,24 +149,10 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
     let count = 0;
     for (const checkout of checkouts) {
       for (const record of yield* listDecisionRecords(checkout)) {
-        if (record.state !== "open") continue;
-        if (record.initiative === undefined || record.initiative === "") count += 1;
-        else if (record.initiative === entry.slug) count += 1;
+        if (record.state === "open" && record.initiative === entry.slug) count += 1;
       }
     }
     return count;
-  });
-
-  const orchestratorThread = Effect.fn("DispatchLive.orchestratorThread")(function* (
-    entry: DispatchLiveInitiative,
-  ) {
-    if (entry.orchestratorSession) {
-      const thread = yield* index.threadForClaudeSession(entry.orchestratorSession);
-      if (thread !== null) return thread;
-    }
-    return entry.orchestratorPid === undefined
-      ? null
-      : yield* index.threadForPid(entry.orchestratorPid);
   });
 
   const snapshot = permit.withPermits(1)(
@@ -222,7 +208,7 @@ export const makeDispatchLiveSource = Effect.fn("DispatchLive.makeSource")(funct
           summarizeInitiative(entry, cached.state, {
             now,
             openDecisions: yield* openDecisionCount(entry),
-            orchestratorThreadId: yield* orchestratorThread(entry),
+            orchestratorThreadId: yield* initiativeThread(entry, index),
             children,
           }),
         );

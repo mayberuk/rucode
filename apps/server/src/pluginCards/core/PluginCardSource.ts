@@ -37,6 +37,8 @@ export interface RecognizableCommand {
 export interface PluginCardRef {
   readonly kind: PluginCardKind;
   readonly key: string;
+  /** The command created or waited on what the card shows, rather than only looking at it. */
+  readonly owns?: boolean;
 }
 
 /** Omit per card kind, so a resolved card's `data` stays tied to its `kind`. */

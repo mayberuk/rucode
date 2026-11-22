@@ -165,6 +165,27 @@ it.effect("places a card named by several commands once, after the earliest", ()
   }),
 );
 
+it.effect("keeps the earliest anchor and owns a card any of its commands owns", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness({
+      existing: [command(2, "push main"), command(5, "own main"), command(7, "push main")],
+      source: {
+        recognize: (item) =>
+          [...item.command.matchAll(/(push|own) (\S+)/g)].map((match) => ({
+            kind: "gitty.push" as const,
+            key: match[2]!,
+            owns: match[1] === "own",
+          })),
+        resolve: (ref) => Effect.succeed(pushCard(ref.owns === true ? "owned" : "shown")),
+      },
+    });
+    yield* harness.subscribe;
+    const [card] = (yield* Queue.take(harness.snapshots)).cards;
+    assert.deepStrictEqual(card?.placement, atItem(2));
+    assert.strictEqual(card?.kind === "gitty.push" ? card.data.branch : null, "owned");
+  }),
+);
+
 it.effect("sends no snapshot when a change leaves the thread's cards as they were", () =>
   Effect.gen(function* () {
     const harness = yield* makeHarness({ existing: [command(1, "push main")] });

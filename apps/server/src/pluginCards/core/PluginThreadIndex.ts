@@ -44,7 +44,6 @@ export class PluginThreadIndex extends Context.Service<
     readonly decisionLookup: Effect.Effect<{
       readonly checkouts: ReadonlyArray<string>;
       readonly threadForClaudeSession: (sessionId: string) => Effect.Effect<ThreadId | null>;
-      readonly threadsForDir: (dir: string) => Effect.Effect<ReadonlyArray<ThreadId>>;
     }>;
     readonly decisionMappingChanges: Stream.Stream<void>;
     /** Project roots and worktree paths of non-archived threads. */
@@ -149,31 +148,20 @@ export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
     });
   });
 
-  const readDirectoryLookup = readDirectories.pipe(
+  const checkouts = readDirectories.pipe(
     Effect.map((entries) => {
-      const checkouts = new Set<string>();
-      const byDir = new Map<string, Array<ThreadId>>();
-      for (const { threadId, projectRoot, worktreePath } of entries) {
-        if (projectRoot !== null) checkouts.add(path.resolve(projectRoot));
-        if (worktreePath !== null) checkouts.add(path.resolve(worktreePath));
-        const effective = worktreePath ?? projectRoot;
-        if (effective === null) continue;
-        const dir = path.resolve(effective);
-        const threads = byDir.get(dir);
-        if (threads === undefined) byDir.set(dir, [threadId]);
-        else threads.push(threadId);
+      const found = new Set<string>();
+      for (const { projectRoot, worktreePath } of entries) {
+        if (projectRoot !== null) found.add(path.resolve(projectRoot));
+        if (worktreePath !== null) found.add(path.resolve(worktreePath));
       }
-      return { checkouts: [...checkouts].toSorted(), byDir };
+      return [...found].toSorted();
     }),
-  );
-
-  const checkouts = readDirectoryLookup.pipe(
-    Effect.map((lookup) => lookup.checkouts),
     Effect.withSpan("PluginThreadIndex.checkouts"),
   );
 
   const decisionLookup = Effect.gen(function* () {
-    const { checkouts, byDir } = yield* readDirectoryLookup;
+    const known = yield* checkouts;
     const sessions = new Map<string, ThreadId | null>();
     for (const { session_id, thread_id } of yield* readClaudeSessions()) {
       sessions.set(
@@ -182,8 +170,7 @@ export const make = Effect.fn("PluginThreadIndex.make")(function* (options?: {
       );
     }
     return {
-      checkouts,
-      threadsForDir: (dir: string) => Effect.succeed(byDir.get(path.resolve(dir)) ?? []),
+      checkouts: known,
       threadForClaudeSession: (sessionId: string) =>
         Effect.succeed(sessions.get(sessionId) ?? null),
     };
