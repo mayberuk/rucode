@@ -139,7 +139,7 @@ const toDateTime = (value: string | null, fallback: DateTime.Utc) => {
 };
 
 /** The first human entry and the newest entries, so a long session imports at a bounded size. */
-export function keptEntries(entries: ReadonlyArray<TranscriptEntry>): {
+function keptEntries(entries: ReadonlyArray<TranscriptEntry>): {
   readonly entries: ReadonlyArray<TranscriptEntry>;
   readonly omitted: number;
 } {
