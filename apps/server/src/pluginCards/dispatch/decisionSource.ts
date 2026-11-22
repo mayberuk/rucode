@@ -19,6 +19,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { ExternalSessionHolds } from "../../orchestration-v2/ExternalSessionHolds.ts";
 import type {
   PluginCardRef,
   PluginCardSource,
@@ -171,6 +172,7 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const index = yield* PluginThreadIndex;
+    const holds = yield* ExternalSessionHolds;
     const scope = yield* Scope.Scope;
     const home = yield* HostProcess.HomeDirectory;
     const env = yield* HostProcess.Environment;
@@ -398,7 +400,7 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
     const [snapshot, invalidate] = yield* Effect.cachedInvalidateWithTTL(scan, Duration.infinity);
 
     const answerableIn = Effect.fnUntraced(function* (threadId: ThreadId, owner: ThreadId | null) {
-      if (owner !== threadId) return "terminal-only" as const;
+      if (owner !== threadId || holds.heldBy(threadId) !== null) return "terminal-only" as const;
       return (yield* index.claudeTranscript(threadId)) === null
         ? ("terminal-only" as const)
         : ("yes" as const);

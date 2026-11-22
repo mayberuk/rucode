@@ -20,6 +20,10 @@ import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import {
+  ExternalSessionHolds,
+  externalSessionHeldMessage,
+} from "../../orchestration-v2/ExternalSessionHolds.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import { decisionAnswerArgs, findQuotedTurn, parseDpError } from "../dispatch/decisionAnswer.ts";
@@ -49,6 +53,7 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
 ) {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const index = yield* PluginThreadIndex;
+  const holds = yield* ExternalSessionHolds;
   const runner = yield* ProcessRunner.ProcessRunner;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -133,6 +138,9 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
     if (found === null) return yield* refuse("unknown-card");
     const { record: decision } = found;
     const { threadId } = input;
+    // Read here, not from the card: a hold that began after the card was drawn must still stop the post.
+    const holder = holds.heldBy(threadId);
+    if (holder !== null) return yield* refuse("terminal-only", externalSessionHeldMessage(holder));
     const transcript = yield* index.claudeTranscript(threadId);
     if (transcript === null) return yield* refuse("terminal-only");
     if (!(yield* ownsDecision(threadId, cardId))) return yield* refuse("not-this-chat");

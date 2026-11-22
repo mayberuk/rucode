@@ -24,6 +24,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import { ExternalSessionHolds } from "../../orchestration-v2/ExternalSessionHolds.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import { makeDispatchDecisionSource } from "../dispatch/decisionSource.ts";
@@ -117,6 +118,8 @@ interface HarnessOptions {
   /** Commands each chat ran in the decision's checkout. */
   readonly commands?: Partial<Record<ThreadId, ReadonlyArray<string>>>;
   readonly transcript?: boolean;
+  /** Chats whose Claude session a terminal holds; the test adds and removes entries. */
+  readonly held?: Map<ThreadId, "terminal" | "other">;
   readonly dpInstalled?: boolean;
   readonly delivery?: ThreadManagementService.ThreadManagementSendResult["delivery"];
   /** Whether a send writes the person's line to the transcript, as Claude does. */
@@ -244,9 +247,15 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
     });
 
     const services = Layer.mergeAll(index, threadManagement, runner);
+    const holds = Layer.succeed(ExternalSessionHolds, {
+      heldBy: (threadId) => {
+        const owner = options.held?.get(threadId);
+        return owner === undefined ? null : { owner, name: null };
+      },
+    });
     const source = yield* makeDispatchDecisionSource({
       initiativesRoot: path.join(root, "initiatives"),
-    }).pipe(Effect.provide(services));
+    }).pipe(Effect.provide(Layer.merge(services, holds)));
     const progress = yield* Queue.unbounded<PluginDecisionAnswerProgress | null>();
     const cards = yield* PluginCards.make({
       cardSources: [],
@@ -259,7 +268,7 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
             .pipe(Effect.andThen(Queue.offer(progress, next))),
       }),
     }).pipe(
-      Effect.provide(Layer.mergeAll(services, threadCommands)),
+      Effect.provide(Layer.mergeAll(services, threadCommands, holds)),
       Effect.provideService(HostProcess.Environment, {
         PATH: options.dpInstalled === false ? path.join(root, "empty") : bin,
       }),
@@ -397,6 +406,11 @@ it.effect.each([
     options: { transcript: false },
     reason: "terminal-only",
   },
+  {
+    name: "a chat whose session a terminal holds",
+    options: { held: new Map([[THREAD, "terminal"]]) },
+    reason: "terminal-only",
+  },
   { name: "a missing dp", options: { dpInstalled: false }, reason: "dp-missing" },
 ] satisfies ReadonlyArray<{
   name: string;
@@ -410,6 +424,28 @@ it.effect.each([
     assert.deepStrictEqual(h.sends, []);
     assert.strictEqual(yield* Queue.size(h.dpRuns), 0);
     assert.strictEqual(yield* Queue.size(h.progress), 0);
+  }),
+);
+
+it.effect("tells the person to close the terminal, then answers once it lets go", () =>
+  Effect.gen(function* () {
+    const held = new Map<ThreadId, "terminal" | "other">();
+    const h = yield* harness({ held });
+    assert.deepStrictEqual((yield* h.card)?.data.answerable, "yes");
+
+    held.set(THREAD, "terminal");
+    const refused = yield* answer(h).pipe(Effect.flip);
+    assert.strictEqual(refused.reason, "terminal-only");
+    assert.include(refused.message, "open in a terminal");
+    assert.deepStrictEqual(h.sends, []);
+    assert.strictEqual(yield* Queue.size(h.dpRuns), 0);
+    assert.strictEqual((yield* h.card)?.data.answerable, "terminal-only");
+
+    held.delete(THREAD);
+    assert.strictEqual((yield* h.card)?.data.answerable, "yes");
+    assert.deepStrictEqual(yield* answer(h), { delivery: "started" });
+    yield* Queue.take(h.dpRuns);
+    assert.strictEqual(h.sends.length, 1);
   }),
 );
 

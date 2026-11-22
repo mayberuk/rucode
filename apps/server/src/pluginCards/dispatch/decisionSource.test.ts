@@ -11,6 +11,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { ExternalSessionHolds } from "../../orchestration-v2/ExternalSessionHolds.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import type { RecognizableCommand } from "../core/PluginCardSource.ts";
 import { PluginThreadIndex } from "../core/PluginThreadIndex.ts";
@@ -98,6 +99,8 @@ const watchingFileSystem = (ready: Queue.Queue<string>, events: Queue.Queue<stri
  */
 const setup = Effect.fnUntraced(function* (options?: {
   readonly transcriptFor?: ThreadId;
+  /** Chats whose Claude session a terminal holds; the test adds and removes entries. */
+  readonly held?: Map<ThreadId, "terminal" | "other">;
   readonly firstRaise?: boolean;
   /** Passes the root as DISPATCH_INITIATIVES_ROOT instead of as an option. */
   readonly rootFromEnv?: boolean;
@@ -173,6 +176,12 @@ const setup = Effect.fnUntraced(function* (options?: {
       commandsOf: (threadId) => Effect.succeed(commands[threadId] ?? []),
     }).pipe(
       Effect.provide(Layer.mergeAll(index, Layer.mock(ProcessRunner.ProcessRunner)({}))),
+      Effect.provideService(ExternalSessionHolds, {
+        heldBy: (threadId) => {
+          const owner = options?.held?.get(threadId);
+          return owner === undefined ? null : { owner, name: null };
+        },
+      }),
       Effect.provideService(
         HostProcess.Environment,
         options?.rootFromEnv === true ? { DISPATCH_INITIATIVES_ROOT: initiativesRoot } : {},
@@ -375,6 +384,42 @@ it.effect("marks a mapped chat with no Claude transcript terminal-only", () =>
     assert.deepStrictEqual(
       cards.map((card) => card.data.answerable),
       ["terminal-only"],
+    );
+  }),
+);
+
+it.effect("shows a synced chat's decision terminal-only while a terminal holds its session", () =>
+  Effect.gen(function* () {
+    const held = new Map<ThreadId, "terminal" | "other">();
+    const { source, checkoutA, write } = yield* setup({ transcriptFor: THREAD_A, held });
+    yield* write(checkoutA, raisedByA("mine", { needsPerson: true }));
+    const answerable = Effect.map(source.cardsForThread(THREAD_A), (cards) =>
+      decisionCards(cards).map((card) => card.data.answerable),
+    );
+    const resolved = Effect.map(
+      source.resolve({ kind: "dispatch.decision", key: `${checkoutA}#mine`, owns: true }, THREAD_A),
+      (card) => (card?.kind === "dispatch.decision" ? card.data.answerable : null),
+    );
+
+    assert.deepStrictEqual(yield* answerable, ["yes"]);
+    held.set(THREAD_A, "terminal");
+    assert.deepStrictEqual(yield* answerable, ["terminal-only"]);
+    assert.strictEqual(yield* resolved, "terminal-only");
+    assert.deepStrictEqual((yield* source.live).waitingThreadIds, [THREAD_A]);
+    held.delete(THREAD_A);
+    assert.deepStrictEqual(yield* answerable, ["yes"]);
+    assert.strictEqual(yield* resolved, "yes");
+  }),
+);
+
+it.effect("keeps a held chat's hold from touching another chat's decision", () =>
+  Effect.gen(function* () {
+    const held = new Map<ThreadId, "terminal" | "other">([[THREAD_B, "terminal"]]);
+    const { source, checkoutA, write } = yield* setup({ transcriptFor: THREAD_A, held });
+    yield* write(checkoutA, raisedByA("mine"));
+    assert.deepStrictEqual(
+      decisionCards(yield* source.cardsForThread(THREAD_A)).map((card) => card.data.answerable),
+      ["yes"],
     );
   }),
 );
