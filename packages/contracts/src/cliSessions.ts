@@ -35,6 +35,7 @@ export const CliSessionErrorReason = Schema.Literals([
   "pane-changed",
   "still-open",
   "run-active",
+  "background-pending",
   "no-session",
   "tmux-failed",
 ]);
@@ -47,6 +48,8 @@ const CLI_SESSION_ERROR_MESSAGES = {
   "pane-changed": "The terminal pane no longer runs this session.",
   "still-open": "The terminal session did not exit in time.",
   "run-active": "A turn is still running in this chat.",
+  "background-pending":
+    "Background work is still running in this chat. Try again once it finishes.",
   "no-session": "This chat has no Claude session to continue.",
   "tmux-failed": "Couldn't send keys to the terminal.",
 } as const satisfies Record<CliSessionErrorReason, string>;

@@ -40,6 +40,7 @@ import {
   OrchestratorDispatchError,
   OrchestratorProjectionError,
   OrchestratorProviderSelectionBusyError,
+  OrchestratorSessionHeldExternallyError,
 } from "../../orchestration-v2/Orchestrator.ts";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
@@ -316,6 +317,13 @@ it("bounds public command rejections and redacts internal dispatch causes", () =
     threadId,
   });
   expect(dispatchFailure(busy)).toMatchObject({ code: "invalid_request", message: busy.message });
+  const held = new OrchestratorSessionHeldExternallyError({
+    commandId: command.commandId,
+    threadId,
+    owner: "terminal",
+    sessionName: "repo-work",
+  });
+  expect(dispatchFailure(held)).toMatchObject({ code: "invalid_request", message: held.message });
   for (const cause of [
     undefined,
     "",
