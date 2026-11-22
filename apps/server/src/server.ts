@@ -107,6 +107,11 @@ import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as PluginCards from "./pluginCards/core/PluginCards.ts";
+import * as ClaudeSessionRegistry from "./cliSessions/ClaudeSessionRegistry.ts";
+import * as CliSessionHandOff from "./cliSessions/CliSessionHandOff.ts";
+import * as CliSessionSync from "./cliSessions/CliSessionSync.ts";
+import * as ProviderSessionRuntime from "./persistence/ProviderSessionRuntime.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -542,7 +547,9 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
+// Decision sources read the session holds once at construction, so they are provided beneath.
 const layerPluginCards = PluginCards.layer.pipe(
+  Layer.provide(CliSessionSync.layerHolds),
   Layer.provide(ProcessRunner.layer),
   Layer.provide(ProjectionStoreV2.layer),
 );
@@ -613,7 +620,9 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
+// The orchestrator, turn start and the effect worker's fibers read the holds at construction.
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provide(CliSessionSync.layerHolds),
   Layer.provide(UsageLimitSources.layerResetFallback),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(ProviderUsageAnalytics.layer),
@@ -691,8 +700,28 @@ const layerServerRestart = Layer.effect(
   }),
 );
 
+const layerClaudeSessionRegistry = ClaudeSessionRegistry.layer.pipe(
+  Layer.provide(ProcessRunner.layer),
+);
+
+const layerCliSessions = Layer.mergeAll(
+  CliSessionSync.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        CliSessionSync.layerHolds,
+        RuntimeLayer.layerEventSink,
+        ProviderSessionRuntime.layer,
+        IdAllocator.layer,
+        ProjectionStoreV2.layer,
+      ),
+    ),
+  ),
+  CliSessionHandOff.layer.pipe(Layer.provide(ProcessRunner.layer)),
+).pipe(Layer.provide(layerClaudeSessionRegistry));
+
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
+  layerCliSessions,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,

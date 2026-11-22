@@ -133,6 +133,7 @@ export const ProviderSessionReleaseReason = Schema.Literals([
   "runtime_error",
   "manual_shutdown",
   "server_shutdown",
+  "external_writer",
 ]);
 export type ProviderSessionReleaseReason = typeof ProviderSessionReleaseReason.Type;
 

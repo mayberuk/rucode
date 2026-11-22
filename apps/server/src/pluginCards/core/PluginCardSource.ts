@@ -75,7 +75,7 @@ export interface PluginCardSource {
 export interface PluginLiveSource {
   readonly id: string;
   readonly snapshot: Effect.Effect<
-    Pick<PluginLiveState, "initiatives" | "children">,
+    Pick<PluginLiveState, "initiatives" | "children" | "cliSessions">,
     never,
     PluginCardSourceServices
   >;

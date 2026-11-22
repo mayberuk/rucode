@@ -372,6 +372,7 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
           ],
           { concurrency: "unbounded" },
         );
+        const cliSessions = fragments.flatMap((fragment) => fragment.cliSessions ?? []);
         const content: Omit<PluginLiveState, "asOf"> = {
           initiatives: fragments
             .flatMap((fragment) => fragment.initiatives)
@@ -381,6 +382,9 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
             .toSorted(byId((child) => child.id)),
           decisions: decisionFragment.decisions.toSorted(byId((decision) => decision.cardId)),
           waitingThreadIds: [...new Set(decisionFragment.waitingThreadIds)].toSorted(),
+          ...(cliSessions.length === 0
+            ? {}
+            : { cliSessions: cliSessions.toSorted(byId((session) => session.threadId)) }),
         };
         const current = yield* SubscriptionRef.get(live);
         if (current !== null) {

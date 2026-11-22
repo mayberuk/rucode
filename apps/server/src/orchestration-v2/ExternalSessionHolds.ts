@@ -1,5 +1,6 @@
 import type { ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import type * as Stream from "effect/Stream";
 
 export interface ExternalSessionHolder {
   readonly owner: "terminal" | "other";
@@ -9,6 +10,8 @@ export interface ExternalSessionHolder {
 export interface ExternalSessionHoldsValue {
   /** Synchronous read of the current snapshot: dispatch consults it inside the command lock. */
   readonly heldBy: (threadId: ThreadId) => ExternalSessionHolder | null;
+  /** Emits after the set of held threads or their holders changes; absent where nothing changes. */
+  readonly changes?: Stream.Stream<void>;
 }
 
 /**
