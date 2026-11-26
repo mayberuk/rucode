@@ -1,6 +1,14 @@
-import { ThreadId, type DispatchDecisionCard } from "@t3tools/contracts";
-import { expect, it } from "vite-plus/test";
-import { decisionAnswerView, type DecisionAnswerAttempt } from "./decisionPanel.logic";
+import {
+  ThreadId,
+  type DispatchDecisionCard,
+  type DispatchDecisionCardData,
+} from "@t3tools/contracts";
+import { describe, expect, it } from "vite-plus/test";
+import {
+  decisionAnswerView,
+  decisionCourse,
+  type DecisionAnswerAttempt,
+} from "./decisionPanel.logic";
 
 const at = "2026-11-21T09:00:00Z";
 const card: DispatchDecisionCard = {
@@ -129,5 +137,75 @@ it("clears local progress when the snapshot shows the decision answered", () => 
   expect(decisionAnswerView(answered, sent)).toEqual({ status: "idle" });
   expect(decisionAnswerView(answered, { status: "sending", optionKey: "keep" })).toEqual({
     status: "idle",
+  });
+});
+
+describe("decisionCourse", () => {
+  const applyAfter = "2026-11-21T09:05:00Z";
+  const ordinary: DispatchDecisionCardData = {
+    ...card.data,
+    options: [
+      { key: "go", label: "Continue", recommended: false },
+      { key: "stop", label: "Park it", recommended: false },
+    ],
+    defaultKey: "go",
+    applyAfter,
+    needsPerson: false,
+  };
+  const protectedStop: DispatchDecisionCardData = {
+    ...ordinary,
+    defaultKey: "stop",
+    protection: "outward",
+  };
+  const needsPerson = (recommended: boolean): DispatchDecisionCardData => ({
+    ...ordinary,
+    defaultKey: null,
+    applyAfter: null,
+    needsPerson: true,
+    options: [
+      { key: "go", label: "Continue", recommended: false },
+      { key: "stop", label: "Park it", recommended },
+    ],
+  });
+
+  it.each([
+    [
+      "an ordinary decision before its default applies",
+      ordinary,
+      "2026-11-21T09:00",
+      { type: "default", optionLabel: "Continue", at: applyAfter, protectedStop: false },
+    ],
+    [
+      "an ordinary decision in the minute its default applies",
+      ordinary,
+      "2026-11-21T09:05",
+      { type: "default", optionLabel: "Continue", at: applyAfter, protectedStop: false },
+    ],
+    [
+      "an ordinary decision a minute after its default was due",
+      ordinary,
+      "2026-11-21T09:06",
+      { type: "overdue", optionLabel: "Continue" },
+    ],
+    [
+      "a protected decision",
+      protectedStop,
+      "2026-11-21T09:00",
+      { type: "default", optionLabel: "Park it", at: applyAfter, protectedStop: true },
+    ],
+    [
+      "a needs-person decision with a recommendation",
+      needsPerson(true),
+      "2026-11-21T09:00",
+      { type: "recommended", optionLabel: "Park it" },
+    ],
+    [
+      "a needs-person decision without a recommendation",
+      needsPerson(false),
+      "2026-11-21T09:00",
+      { type: "choose" },
+    ],
+  ] as const)("reads %s", (_label, data, nowMinute, course) => {
+    expect(decisionCourse(data, nowMinute)).toEqual(course);
   });
 });

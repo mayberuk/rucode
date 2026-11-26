@@ -20,6 +20,8 @@ import { pluginCardRenderer } from "~/pluginCards/registry";
 import * as pluginCardsRpc from "~/rpc/pluginCards";
 import { act, fakeTimers, render, type Screen } from "../../../test/render";
 import { ComposerPluginDecisionPanel } from "./ComposerPluginDecisionPanel";
+import { PluginCardTimelineRow } from "./PluginCardTimelineRow";
+import { TimelineRowCtx } from "./timelineRowContext";
 import { usePendingPluginDecisions } from "./usePendingThreadRequests";
 
 vi.mock(import("~/rpc/pluginCards"), { spy: true });
@@ -48,7 +50,7 @@ function decisionCard(
       decisionKind: "scope",
       question: `Close the initiative without ${decisionId}?`,
       options: [
-        { key: "drop", label: "Drop the wave and close", recommended: true },
+        { key: "drop", label: "Drop the wave and close", recommended: false },
         { key: "keep", label: "Keep it open", recommended: false },
       ],
       defaultKey: null,
@@ -134,6 +136,20 @@ function TimelineCard({ card }: { card: PluginCard }) {
 const answerButton = (screen: Screen) =>
   screen.getByRole("button", { name: "Answer", exact: true });
 
+const recommendingDrop: Partial<DispatchDecisionCardData> = {
+  options: [
+    { key: "drop", label: "Drop the wave and close", recommended: true },
+    { key: "keep", label: "Keep it open", recommended: false },
+  ],
+};
+
+// Far enough ahead that the minute clock never reads the default as overdue.
+const ordinary: Partial<DispatchDecisionCardData> = {
+  needsPerson: false,
+  defaultKey: "drop",
+  applyAfter: "2099-01-01T09:05:00Z",
+};
+
 it("shows no panel while the snapshot loads or when the chat has no open decision", async () => {
   using env = setup();
   await using screen = await render(
@@ -169,11 +185,16 @@ it("answers the picked option in two steps and shows recording until the decisio
       <DecisionDrawer />
     </RegistryContext.Provider>,
   );
-  const card = decisionCard("d-1");
+  const card = decisionCard("d-1", recommendingDrop);
   await env.publish([card]);
 
   await expect.element(screen.getByText("Close the initiative without d-1?")).toBeVisible();
   await expect.element(screen.getByText("nov18 · wave 3")).toBeVisible();
+  await expect.element(screen.getByText(/^Recommended: Drop the wave and close$/)).toBeVisible();
+  await expect
+    .element(screen.getByRole("button", { name: /Keep it open/ }))
+    .not.toBeInTheDocument();
+  await screen.getByRole("button", { name: "Other options" }).click();
   const recommended = screen.getByRole("button", { name: /Drop the wave and close/ });
   await expect.element(recommended).toMatchTextContent(/Recommended/);
   await expect
@@ -219,6 +240,53 @@ it("answers the picked option in two steps and shows recording until the decisio
   ]);
   expect(screen.container.textContent).toBe("");
   expect(answer.spy).toHaveBeenCalledTimes(1);
+});
+
+it("goes with a needs-person decision's recommendation in one step", async () => {
+  using env = setup();
+  using answer = stubAnswer();
+  await using screen = await render(
+    <RegistryContext.Provider value={env.registry}>
+      <DecisionDrawer />
+    </RegistryContext.Provider>,
+  );
+  const card = decisionCard("d-1", recommendingDrop);
+  await env.publish([card]);
+
+  await screen.getByRole("button", { name: "Go with it" }).click();
+  expect(answer.spy).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId, cardId: card.id, optionKey: "drop" },
+  });
+  await expect.element(screen.getByRole("button", { name: "Recording answer…" })).toBeDisabled();
+});
+
+it("shows an ordinary decision as the course it will take until its header opens its options", async () => {
+  using env = setup();
+  using answer = stubAnswer();
+  await using screen = await render(
+    <RegistryContext.Provider value={env.registry}>
+      <DecisionDrawer />
+    </RegistryContext.Provider>,
+  );
+  const card = decisionCard("d-1", ordinary);
+  await env.publish([card]);
+
+  await expect.element(screen.getByText(/^Going with Drop the wave and close at /)).toBeVisible();
+  await expect
+    .element(screen.getByText("Close the initiative without d-1?"))
+    .not.toBeInTheDocument();
+
+  await screen.getByTitle("Show the decision and its options").click();
+  await expect
+    .element(screen.getByRole("button", { name: /^Drop the wave and close/ }))
+    .toMatchTextContent(/Default ·/);
+  await screen.getByRole("button", { name: /Keep it open/ }).click();
+  await answerButton(screen).click();
+  expect(answer.spy).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId, cardId: card.id, optionKey: "keep" },
+  });
 });
 
 it("picks an option from a digit key without sending an answer", async () => {
@@ -346,7 +414,11 @@ it("shows the terminal command for the picked option when the chat cannot quote 
 
   await screen.getByRole("button", { name: /Keep it open/ }).click();
   await expect
-    .element(screen.getByText(/^\$\s*dp decision answer d-7 keep --dir '\/home\/me\/my repo'$/))
+    .element(
+      screen.getByText(
+        /^\$\s*dp decision answer d-7 keep --dir '\/home\/me\/my repo' --actor person$/,
+      ),
+    )
     .toBeVisible();
   await expect.element(screen.getByRole("button", { name: "Copy command" })).toBeVisible();
   await expect.element(answerButton(screen)).not.toBeInTheDocument();
@@ -443,16 +515,46 @@ it.each([
   );
 });
 
-it("lists an open decision's options on its timeline card and points to the composer", async () => {
+it("draws an open decision as one timeline line, its options left to the composer", async () => {
   using env = setup();
+  const onToggleWorkGroup = vi.fn();
+  const card = decisionCard("d-1");
+  const row = {
+    kind: "plugin-card",
+    id: `plugin-card:${card.id}`,
+    createdAt: card.updatedAt,
+    card,
+    presence: "needs-you",
+    collapsed: true,
+  } as const;
+  const ctx = {
+    activeThreadEnvironmentId: threadRef.environmentId,
+    timestampFormat: "24-hour",
+    onToggleWorkGroup,
+  } as never;
   await using screen = await render(
     <RegistryContext.Provider value={env.registry}>
-      <TimelineCard card={decisionCard("d-1")} />
+      <TimelineRowCtx value={ctx}>
+        <PluginCardTimelineRow row={row} />
+      </TimelineRowCtx>
+    </RegistryContext.Provider>,
+  );
+  const line = screen.getByRole("button", { name: /Decision · nov18 · wave 3/ });
+  await expect.element(line).toHaveAttribute("aria-expanded", "false");
+  await expect.element(line).toMatchTextContent(/Waiting/);
+  expect(screen.container.textContent).not.toMatch(/Keep it open|Close the initiative/);
+  await line.click();
+  expect(onToggleWorkGroup).toHaveBeenCalledExactlyOnceWith(row.id, row.id);
+
+  await screen.rerender(
+    <RegistryContext.Provider value={env.registry}>
+      <TimelineRowCtx value={ctx}>
+        <PluginCardTimelineRow row={{ ...row, collapsed: false }} />
+      </TimelineRowCtx>
     </RegistryContext.Provider>,
   );
   const timelineCard = screen.getByRole("region", { name: "Decision" });
   await expect.element(timelineCard).toMatchTextContent(/Close the initiative without d-1\?/);
-  await expect.element(timelineCard).toMatchTextContent(/Keep it open/);
   await expect.element(timelineCard).toMatchTextContent(/Answer it in the composer\./);
-  await expect.element(screen.getByRole("button")).not.toBeInTheDocument();
+  await expect.element(timelineCard).not.toMatchTextContent(/Keep it open/);
 });

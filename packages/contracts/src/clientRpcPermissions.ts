@@ -92,6 +92,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // Answering a decision posts a message as the user and records the answer with dp.
   [WS_METHODS.pluginCardsAnswerDecision]: AuthOrchestrationOperateScope,
   [WS_METHODS.pluginCardsRunAction]: AuthOrchestrationOperateScope,
+  // Both end a Claude process for the chat, one in a terminal and one rucode's own.
+  [WS_METHODS.cliSessionsTakeOver]: AuthOrchestrationOperateScope,
+  [WS_METHODS.cliSessionsContinueInTerminal]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

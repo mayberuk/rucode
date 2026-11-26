@@ -28,6 +28,7 @@ import {
   type DispatchDecisionSource,
   makeDispatchDecisionSource,
 } from "../dispatch/decisionSource.ts";
+import { ExternalSessionHolds } from "../../orchestration-v2/ExternalSessionHolds.ts";
 import { pluginLiveSources } from "../live/index.ts";
 import { pluginCardSources } from "../sources/index.ts";
 import type {
@@ -131,7 +132,9 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
   const decisionSource =
     options?.decisionSource === null
       ? null
-      : yield* options?.decisionSource ?? makeDispatchDecisionSource();
+      : yield* (
+          options?.decisionSource ?? makeDispatchDecisionSource({ commandsOf: threadCommands.list })
+        );
   const cardSources: ReadonlyArray<PluginCardSource> = [
     ...(decisionSource === null ? [] : [decisionSource]),
     ...(yield* Effect.all(options?.cardSources ?? pluginCardSources)),
@@ -164,13 +167,21 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
   }
 
   if (decisionSource !== null) {
+    // A hold changes every decision card's answerable value, in whichever chat it sits.
+    yield* ((yield* ExternalSessionHolds).changes ?? Stream.empty).pipe(
+      Stream.runForEach(() => PubSub.publish(sourceChanges, null)),
+      Effect.forkScoped({ startImmediately: true }),
+    );
     yield* decisionSource.progressChanges.pipe(
       Stream.runForEach((threadId) => PubSub.publish(sourceChanges, threadId)),
       Effect.forkScoped({ startImmediately: true }),
     );
   }
 
-  /** Anchors each recognised card at its earliest command. True when an anchor was added or moved. */
+  /**
+   * Anchors each recognised card at its earliest command, owned when any command owns it. True when
+   * an anchor was added, moved or became owned.
+   */
   const recognize = Effect.fnUntraced(function* (
     recognized: Map<string, Anchor>,
     command: ThreadCommands.ThreadCommandItem,
@@ -191,13 +202,18 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
       for (const ref of refs) {
         const id = cardIdOf(ref);
         const existing = recognized.get(id);
-        if (existing !== undefined && existing.ordinal <= command.ordinal) continue;
-        recognized.set(id, {
-          source,
-          ref,
-          turnItemId: command.turnItemId,
-          ordinal: command.ordinal,
-        });
+        const owns = ref.owns === true || existing?.ref.owns === true;
+        if (existing !== undefined && existing.ordinal <= command.ordinal) {
+          if (owns === (existing.ref.owns === true)) continue;
+          recognized.set(id, { ...existing, ref: { ...existing.ref, owns } });
+        } else {
+          recognized.set(id, {
+            source,
+            ref: owns ? { ...ref, owns } : ref,
+            turnItemId: command.turnItemId,
+            ordinal: command.ordinal,
+          });
+        }
         changed = true;
       }
     }
@@ -362,6 +378,7 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
           ],
           { concurrency: "unbounded" },
         );
+        const cliSessions = fragments.flatMap((fragment) => fragment.cliSessions ?? []);
         const content: Omit<PluginLiveState, "asOf"> = {
           initiatives: fragments
             .flatMap((fragment) => fragment.initiatives)
@@ -371,6 +388,9 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
             .toSorted(byId((child) => child.id)),
           decisions: decisionFragment.decisions.toSorted(byId((decision) => decision.cardId)),
           waitingThreadIds: [...new Set(decisionFragment.waitingThreadIds)].toSorted(),
+          ...(cliSessions.length === 0
+            ? {}
+            : { cliSessions: cliSessions.toSorted(byId((session) => session.threadId)) }),
         };
         const current = yield* SubscriptionRef.get(live);
         if (current !== null) {
@@ -400,8 +420,16 @@ export const make = Effect.fn("PluginCards.make")(function* (options?: {
     live,
   ).pipe(Stream.filter((state): state is PluginLiveState => state !== null));
 
+  const ownsDecision = Effect.fn("PluginCards.ownsDecision")(function* (
+    threadId: ThreadId,
+    cardId: string,
+  ) {
+    const card = (yield* currentCards(threadId)).find((entry) => entry.card.id === cardId)?.card;
+    return card?.kind === "dispatch.decision" && card.data.answerable === "yes";
+  });
+
   const answerFlow =
-    decisionSource === null ? null : yield* DecisionAnswerFlow.make(decisionSource);
+    decisionSource === null ? null : yield* DecisionAnswerFlow.make(decisionSource, ownsDecision);
 
   return PluginCards.of({
     subscribeThread,

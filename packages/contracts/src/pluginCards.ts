@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
+import { PluginLiveCliSession } from "./cliSessions.ts";
 
 /** Format `${kind}:${key}`; the source picks the key. */
 export const PluginCardId = TrimmedNonEmptyString;
@@ -152,6 +153,18 @@ export const DispatchDecisionCard = Schema.Struct({
   data: DispatchDecisionCardData,
 });
 export type DispatchDecisionCard = typeof DispatchDecisionCard.Type;
+
+/**
+ * No default the agent will go with on its own: needs-person, protected, or raised without one.
+ * The card and the sidebar's waiting state both read this, so they cannot disagree.
+ */
+export const decisionWaitsOnPerson = (
+  data: Pick<DispatchDecisionCardData, "needsPerson" | "protection" | "defaultKey" | "applyAfter">,
+): boolean =>
+  data.needsPerson ||
+  data.protection !== null ||
+  data.defaultKey === null ||
+  data.applyAfter === null;
 
 export const DispatchPlanCardData = Schema.Struct({
   task: Schema.String,
@@ -435,6 +448,7 @@ export const PluginLiveState = Schema.Struct({
   children: Schema.Array(PluginLiveChild),
   decisions: Schema.Array(PluginLiveDecision),
   waitingThreadIds: Schema.Array(ThreadId),
+  cliSessions: Schema.optionalKey(Schema.Array(PluginLiveCliSession)),
 });
 export type PluginLiveState = typeof PluginLiveState.Type;
 

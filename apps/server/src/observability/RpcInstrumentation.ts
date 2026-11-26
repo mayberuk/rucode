@@ -111,6 +111,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.pluginCardsAnswerDecision]: "pluginCards",
   [WS_METHODS.pluginCardsRunAction]: "pluginCards",
   [WS_METHODS.pluginCardsReadAsset]: "pluginCards",
+  [WS_METHODS.cliSessionsTakeOver]: "cliSessions",
+  [WS_METHODS.cliSessionsContinueInTerminal]: "cliSessions",
   [WS_METHODS.guestShareCreate]: "guest-share",
   [WS_METHODS.cloudGetRelayClientStatus]: "cloud",
   [WS_METHODS.cloudInstallRelayClient]: "cloud",

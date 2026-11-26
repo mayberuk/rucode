@@ -17,6 +17,11 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import {
+  CliSessionsLive,
+  type CliSessionsLiveValue,
+  cliSessionsLiveSource,
+} from "../../cliSessions/cliSessionsLiveSource.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import type { DispatchDecisionLive, DispatchDecisionSource } from "../dispatch/decisionSource.ts";
@@ -62,6 +67,7 @@ const makeHarness = Effect.fnUntraced(function* (options?: {
   readonly mapped?: ReadonlyArray<PluginCard>;
   readonly source?: Partial<PluginCardSource>;
   readonly decisionSource?: DispatchDecisionSource;
+  readonly cliSessions?: CliSessionsLiveValue;
 }) {
   const cards = new Map<string, ResolvedPluginCard | null>();
   const resolves = yield* Queue.unbounded<string>();
@@ -89,10 +95,13 @@ const makeHarness = Effect.fnUntraced(function* (options?: {
   });
   const service = yield* PluginCards.make({
     cardSources: [Effect.succeed(source)],
-    liveSources: [],
+    liveSources: options?.cliSessions === undefined ? [] : [cliSessionsLiveSource],
     decisionSource:
       options?.decisionSource === undefined ? null : Effect.succeed(options.decisionSource),
   }).pipe(
+    options?.cliSessions === undefined
+      ? (effect) => effect
+      : Effect.provideService(CliSessionsLive, options.cliSessions),
     Effect.provide(
       Layer.mergeAll(
         threadCommands,
@@ -162,6 +171,27 @@ it.effect("places a card named by several commands once, after the earliest", ()
     assert.deepStrictEqual(placements(yield* Queue.take(harness.snapshots)), [
       { id: "gitty.push:main", placement: atItem(1) },
     ]);
+  }),
+);
+
+it.effect("keeps the earliest anchor and owns a card any of its commands owns", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness({
+      existing: [command(2, "push main"), command(5, "own main"), command(7, "push main")],
+      source: {
+        recognize: (item) =>
+          [...item.command.matchAll(/(push|own) (\S+)/g)].map((match) => ({
+            kind: "gitty.push" as const,
+            key: match[2]!,
+            owns: match[1] === "own",
+          })),
+        resolve: (ref) => Effect.succeed(pushCard(ref.owns === true ? "owned" : "shown")),
+      },
+    });
+    yield* harness.subscribe;
+    const [card] = (yield* Queue.take(harness.snapshots)).cards;
+    assert.deepStrictEqual(card?.placement, atItem(2));
+    assert.strictEqual(card?.kind === "gitty.push" ? card.data.branch : null, "owned");
   }),
 );
 
@@ -402,6 +432,48 @@ it.effect("fills the live state's open decisions and waiting chats from the deci
       ["d-3"],
     );
     assert.deepStrictEqual(next.waitingThreadIds, []);
+  }),
+);
+
+it.effect("puts synced terminal sessions in the live state, sorted by chat", () =>
+  Effect.gen(function* () {
+    const session = (threadId: string) => ({
+      threadId: ThreadId.make(threadId),
+      sessionId: `session-${threadId}`,
+      owner: "terminal" as const,
+      status: "idle" as const,
+      name: null,
+      inTmux: true,
+      backgroundWorkKept: false,
+    });
+    const current: { sessions: ReadonlyArray<ReturnType<typeof session>> } = {
+      sessions: [session("thread-b"), session("thread-a")],
+    };
+    const signals = yield* Queue.unbounded<void>();
+    const consumed = yield* Queue.unbounded<void>();
+    const { service } = yield* makeHarness({
+      cliSessions: {
+        current: Effect.sync(() => current.sessions),
+        changes: Stream.fromQueue(signals).pipe(Stream.tap(() => Queue.offer(consumed, undefined))),
+      },
+    });
+    const states = yield* Queue.unbounded<PluginLiveState>();
+    yield* Stream.runForEach(service.subscribeLive, (state) => Queue.offer(states, state)).pipe(
+      Effect.forkScoped,
+    );
+
+    const first = yield* Queue.take(states);
+    assert.deepStrictEqual(
+      first.cliSessions?.map((entry) => entry.threadId),
+      ["thread-a", "thread-b"],
+    );
+
+    current.sessions = [];
+    yield* Queue.offer(signals, undefined);
+    yield* Queue.take(consumed);
+    yield* TestClock.adjust(DEBOUNCE);
+    const next = yield* Queue.take(states);
+    assert.strictEqual(next.cliSessions, undefined);
   }),
 );
 

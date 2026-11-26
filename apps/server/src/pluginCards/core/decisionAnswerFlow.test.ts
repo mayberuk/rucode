@@ -8,6 +8,7 @@ import {
   type PluginDecisionAnswerProgress,
   ProjectId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -15,18 +16,22 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import { ExternalSessionHolds } from "../../orchestration-v2/ExternalSessionHolds.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import { makeDispatchDecisionSource } from "../dispatch/decisionSource.ts";
-import * as DecisionAnswerFlow from "./decisionAnswerFlow.ts";
+import * as PluginCards from "./PluginCards.ts";
 import { PluginThreadIndex } from "./PluginThreadIndex.ts";
+import * as ThreadCommands from "./threadCommands.ts";
 
 const THREAD = ThreadId.make("thread-1");
 const OTHER_THREAD = ThreadId.make("thread-2");
@@ -55,6 +60,7 @@ const decisionRecord = (overrides: Record<string, unknown> = {}) => ({
   chosenBy: "",
   resolvedAt: "",
   needsPerson: true,
+  grantSession: "grant-session",
   ...overrides,
 });
 
@@ -106,9 +112,15 @@ const watchingFileSystem = (ready: Queue.Queue<string>) =>
 interface HarnessOptions {
   readonly knownCheckout?: boolean;
   readonly record?: Record<string, unknown>;
-  /** The chat the decision's directory maps to; null leaves it unmapped. */
+  /** The chat the decision's grant session maps to; null leaves it unmapped. */
   readonly mapTo?: ThreadId | null;
+  /** Chats working in the decision's checkout, which on its own proves nothing. */
+  readonly dirThreads?: ReadonlyArray<ThreadId>;
+  /** Commands each chat ran in the decision's checkout. */
+  readonly commands?: Partial<Record<ThreadId, ReadonlyArray<string>>>;
   readonly transcript?: boolean;
+  /** Chats whose Claude session a terminal holds; the test adds and removes entries. */
+  readonly held?: Map<ThreadId, "terminal" | "other">;
   readonly dpInstalled?: boolean;
   readonly delivery?: ThreadManagementService.ThreadManagementSendResult["delivery"];
   /** Whether a send writes the person's line to the transcript, as Claude does. */
@@ -141,25 +153,50 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
     yield* fs.makeDirectory(bin);
     yield* fs.writeFileString(path.join(bin, "dp"), "", { mode: 0o755 });
 
+    const otherTranscriptPath = path.join(root, "projects", "repo", "s-2.jsonl");
+    yield* fs.writeFileString(otherTranscriptPath, "");
+
     const mapTo = options.mapTo === undefined ? THREAD : options.mapTo;
+    const lookup = {
+      threadForClaudeSession: (session: string) =>
+        Effect.succeed(session === "grant-session" ? mapTo : null),
+      threadsForDir: (dir: string) =>
+        Effect.succeed(dir === checkout ? (options.dirThreads ?? []) : []),
+    };
     const index = Layer.succeed(PluginThreadIndex, {
-      threadForClaudeSession: () => Effect.succeed(null),
-      threadsForDir: (dir) => Effect.succeed(dir === checkout && mapTo !== null ? [mapTo] : []),
+      ...lookup,
       threadForPid: () => Effect.succeed(null),
       claudeTranscript: (threadId) =>
         Effect.succeed(
-          options.transcript !== false && threadId === THREAD
-            ? { sessionId: "s-1", transcriptPath }
-            : null,
+          options.transcript === false
+            ? null
+            : threadId === THREAD
+              ? { sessionId: "s-1", transcriptPath }
+              : threadId === OTHER_THREAD
+                ? { sessionId: "s-2", transcriptPath: otherTranscriptPath }
+                : null,
         ),
       checkouts: Effect.succeed(options.knownCheckout === false ? [] : [checkout]),
-      decisionLookup: Effect.succeed({
-        checkouts: [checkout],
-        threadForClaudeSession: () => Effect.succeed(null),
-        threadsForDir: (dir: string) =>
-          Effect.succeed(dir === checkout && mapTo !== null ? [mapTo] : []),
-      }),
+      decisionLookup: Effect.succeed({ ...lookup, checkouts: [checkout] }),
       decisionMappingChanges: Stream.empty,
+    });
+    const commandItems = (threadId: ThreadId) =>
+      (options.commands?.[threadId] ?? []).map(
+        (command, ordinal): ThreadCommands.ThreadCommandItem => ({
+          threadId,
+          turnItemId: TurnItemId.make(`item-${ordinal}`),
+          ordinal,
+          command,
+          output: null,
+          exitCode: 0,
+          cwd: checkout,
+          completedAt: null,
+        }),
+      );
+    const threadCommands = Layer.succeed(ThreadCommands.ThreadCommands, {
+      list: (threadId) => Effect.succeed(commandItems(threadId)),
+      follow: (threadId) =>
+        Effect.succeed({ existing: commandItems(threadId), completed: Stream.never }),
     });
 
     const sends: Array<ThreadManagementService.ThreadManagementSendInput> = [];
@@ -211,28 +248,64 @@ const harness = Effect.fnUntraced(function* (options: HarnessOptions = {}) {
     });
 
     const services = Layer.mergeAll(index, threadManagement, runner);
+    const holdChanges = yield* PubSub.unbounded<void>();
+    const holds = Layer.succeed(ExternalSessionHolds, {
+      changes: Stream.fromPubSub(holdChanges),
+      heldBy: (threadId) => {
+        const owner = options.held?.get(threadId);
+        return owner === undefined ? null : { owner, name: null };
+      },
+    });
     const source = yield* makeDispatchDecisionSource({
       initiativesRoot: path.join(root, "initiatives"),
-    }).pipe(Effect.provide(services));
+    }).pipe(Effect.provide(Layer.merge(services, holds)));
     const progress = yield* Queue.unbounded<PluginDecisionAnswerProgress | null>();
-    const flow = yield* DecisionAnswerFlow.make({
-      ...source,
-      setProgress: (threadId, cardId, next) =>
-        source
-          .setProgress(threadId, cardId, next)
-          .pipe(Effect.andThen(Queue.offer(progress, next))),
+    const cards = yield* PluginCards.make({
+      cardSources: [],
+      liveSources: [],
+      decisionSource: Effect.succeed({
+        ...source,
+        setProgress: (threadId, cardId, next) =>
+          source
+            .setProgress(threadId, cardId, next)
+            .pipe(Effect.andThen(Queue.offer(progress, next))),
+      }),
     }).pipe(
-      Effect.provide(services),
+      Effect.provide(Layer.mergeAll(services, threadCommands, holds)),
       Effect.provideService(HostProcess.Environment, {
         PATH: options.dpInstalled === false ? path.join(root, "empty") : bin,
       }),
     );
+    const flow = { answer: cards.answerDecision };
     const card = Effect.map(
       source.cardsForThread(THREAD),
       (cards) => (cards as ReadonlyArray<DispatchDecisionCard>)[0],
     );
+    const cardsIn = (threadId: ThreadId) =>
+      cards.subscribeThread(threadId).pipe(
+        Stream.runHead,
+        Effect.map((snapshot) =>
+          Option.match(snapshot, {
+            onNone: () => [],
+            onSome: ({ cards }) => cards as ReadonlyArray<DispatchDecisionCard>,
+          }),
+        ),
+      );
     return {
       flow,
+      cardsIn,
+      holdChanged: PubSub.publish(holdChanges, undefined),
+      cardsChanging: (threadId: ThreadId) =>
+        Effect.gen(function* () {
+          const snapshots = yield* Queue.unbounded<ReadonlyArray<DispatchDecisionCard>>();
+          yield* cards.subscribeThread(threadId).pipe(
+            Stream.runForEach(({ cards }) =>
+              Queue.offer(snapshots, cards as ReadonlyArray<DispatchDecisionCard>),
+            ),
+            Effect.forkScoped,
+          );
+          return snapshots;
+        }),
       cardId: `dispatch.decision:${checkout}#d-1`,
       checkout,
       transcriptPath,
@@ -348,6 +421,11 @@ it.effect.each([
     options: { transcript: false },
     reason: "terminal-only",
   },
+  {
+    name: "a chat whose session a terminal holds",
+    options: { held: new Map([[THREAD, "terminal"]]) },
+    reason: "terminal-only",
+  },
   { name: "a missing dp", options: { dpInstalled: false }, reason: "dp-missing" },
 ] satisfies ReadonlyArray<{
   name: string;
@@ -361,6 +439,55 @@ it.effect.each([
     assert.deepStrictEqual(h.sends, []);
     assert.strictEqual(yield* Queue.size(h.dpRuns), 0);
     assert.strictEqual(yield* Queue.size(h.progress), 0);
+  }),
+);
+
+it.effect("tells the person to close the terminal, then answers once it lets go", () =>
+  Effect.gen(function* () {
+    const held = new Map<ThreadId, "terminal" | "other">();
+    const h = yield* harness({ held });
+    assert.deepStrictEqual((yield* h.card)?.data.answerable, "yes");
+
+    held.set(THREAD, "terminal");
+    const refused = yield* answer(h).pipe(Effect.flip);
+    assert.strictEqual(refused.reason, "terminal-only");
+    assert.include(refused.message, "open in a terminal");
+    assert.deepStrictEqual(h.sends, []);
+    assert.strictEqual(yield* Queue.size(h.dpRuns), 0);
+    assert.strictEqual((yield* h.card)?.data.answerable, "terminal-only");
+
+    held.delete(THREAD);
+    assert.strictEqual((yield* h.card)?.data.answerable, "yes");
+    assert.deepStrictEqual(yield* answer(h), { delivery: "started" });
+    yield* Queue.take(h.dpRuns);
+    assert.strictEqual(h.sends.length, 1);
+  }),
+);
+
+it.effect("pushes the card again, with its new answerable value, when a hold starts or ends", () =>
+  Effect.gen(function* () {
+    const held = new Map<ThreadId, "terminal" | "other">();
+    const h = yield* harness({ held });
+    const snapshots = yield* h.cardsChanging(THREAD);
+    const pushed = Effect.map(Queue.takeAll(snapshots), (batches) =>
+      batches.map((cards) => cards.map((card) => card.data.answerable)),
+    );
+    assert.deepStrictEqual(
+      yield* Queue.take(snapshots).pipe(
+        Effect.map((cards) => cards.map((card) => card.data.answerable)),
+      ),
+      ["yes"],
+    );
+
+    held.set(THREAD, "terminal");
+    yield* h.holdChanged;
+    yield* TestClock.adjust("1 second");
+    assert.deepStrictEqual(yield* pushed, [["terminal-only"]]);
+
+    held.delete(THREAD);
+    yield* h.holdChanged;
+    yield* TestClock.adjust("1 second");
+    assert.deepStrictEqual(yield* pushed, [["yes"]]);
   }),
 );
 
@@ -384,6 +511,43 @@ it.effect("refuses a card that names no decision on disk", () =>
 it.effect("asks for the answer from the chat that asked, not the chat it maps to", () =>
   Effect.gen(function* () {
     const h = yield* harness();
+    assert.strictEqual(yield* failureOf(answer(h, "retry", OTHER_THREAD)), "not-this-chat");
+    assert.deepStrictEqual(h.sends, []);
+  }),
+);
+
+it.effect("refuses a decision the chat neither raised nor maps to", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({ mapTo: null, dirThreads: [THREAD] });
+    assert.strictEqual(yield* failureOf(answer(h)), "not-this-chat");
+    assert.deepStrictEqual(h.sends, []);
+  }),
+);
+
+it.effect("answers a decision this chat raised when no session maps it", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({
+      mapTo: null,
+      dirThreads: [THREAD],
+      commands: { [THREAD]: ["dp decision wait d-1"] },
+    });
+    assert.deepStrictEqual(yield* answer(h), { delivery: "started" });
+    const run = yield* Queue.take(h.dpRuns);
+    assert.deepStrictEqual(run.args, expectedDpArgs(h, "retry", "u-posted-1"));
+  }),
+);
+
+it.effect("does not let `dp decision show` in another chat answer it", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({
+      mapTo: null,
+      dirThreads: [OTHER_THREAD],
+      commands: { [OTHER_THREAD]: ["dp decision show d-1"] },
+    });
+    assert.deepStrictEqual(
+      (yield* h.cardsIn(OTHER_THREAD)).map((card) => [card.id, card.data.answerable]),
+      [[h.cardId, "terminal-only"]],
+    );
     assert.strictEqual(yield* failureOf(answer(h, "retry", OTHER_THREAD)), "not-this-chat");
     assert.deepStrictEqual(h.sends, []);
   }),

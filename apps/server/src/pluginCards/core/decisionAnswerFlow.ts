@@ -4,6 +4,7 @@ import {
   PluginCardError,
   type PluginDecisionAnswerInput,
   type PluginDecisionAnswerResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
@@ -19,6 +20,10 @@ import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import {
+  ExternalSessionHolds,
+  externalSessionHeldMessage,
+} from "../../orchestration-v2/ExternalSessionHolds.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import { decisionAnswerArgs, findQuotedTurn, parseDpError } from "../dispatch/decisionAnswer.ts";
@@ -43,9 +48,12 @@ const refuse = (reason: PluginCardError["reason"], detail?: string) =>
 
 export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
   decisions: DispatchDecisionSource,
+  /** True when the card as placed in that chat is a decision it may answer. */
+  ownsDecision: (threadId: ThreadId, cardId: string) => Effect.Effect<boolean>,
 ) {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const index = yield* PluginThreadIndex;
+  const holds = yield* ExternalSessionHolds;
   const runner = yield* ProcessRunner.ProcessRunner;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -128,13 +136,17 @@ export const make = Effect.fn("PluginCards.makeDecisionAnswerFlow")(function* (
     const { optionKey } = input;
     const found = yield* decisions.findDecision(cardId);
     if (found === null) return yield* refuse("unknown-card");
-    const { record: decision, threadId } = found;
-    if (threadId !== input.threadId) return yield* refuse("not-this-chat");
+    const { record: decision } = found;
+    const { threadId } = input;
+    // Read here, not from the card: a hold that began after the card was drawn must still stop the post.
+    const holder = holds.heldBy(threadId);
+    if (holder !== null) return yield* refuse("terminal-only", externalSessionHeldMessage(holder));
+    const transcript = yield* index.claudeTranscript(threadId);
+    if (transcript === null) return yield* refuse("terminal-only");
+    if (!(yield* ownsDecision(threadId, cardId))) return yield* refuse("not-this-chat");
     if (decision.state !== "open") return yield* refuse("decision-closed");
     const option = decision.options.find((candidate) => candidate.key === optionKey);
     if (option === undefined) return yield* refuse("unknown-option");
-    const transcript = yield* index.claudeTranscript(input.threadId);
-    if (transcript === null) return yield* refuse("terminal-only");
     const dp = yield* resolveCommandPath("dp").pipe(
       Effect.provideService(HostProcess.Environment, env),
       Effect.provideService(HostProcess.Platform, platform),

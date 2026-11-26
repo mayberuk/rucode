@@ -422,6 +422,12 @@ import {
   PluginThreadCards,
 } from "./pluginCards.ts";
 import {
+  CliSessionContinueInput,
+  CliSessionContinueResult,
+  CliSessionError,
+  CliSessionTakeOverInput,
+} from "./cliSessions.ts";
+import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
   ProjectCloneListEvent,
@@ -599,6 +605,8 @@ export const WS_METHODS = {
   pluginCardsAnswerDecision: "pluginCards.answerDecision",
   pluginCardsRunAction: "pluginCards.runAction",
   pluginCardsReadAsset: "pluginCards.readAsset",
+  cliSessionsTakeOver: "cliSessions.takeOver",
+  cliSessionsContinueInTerminal: "cliSessions.continueInTerminal",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
@@ -2257,6 +2265,19 @@ const WsPluginCardsReadAssetRpc = Rpc.make(WS_METHODS.pluginCardsReadAsset, {
   error: PluginCardsRpcError,
 });
 
+const CliSessionsRpcError = Schema.Union([CliSessionError, EnvironmentAuthorizationError]);
+
+const WsCliSessionsTakeOverRpc = Rpc.make(WS_METHODS.cliSessionsTakeOver, {
+  payload: CliSessionTakeOverInput,
+  error: CliSessionsRpcError,
+});
+
+const WsCliSessionsContinueInTerminalRpc = Rpc.make(WS_METHODS.cliSessionsContinueInTerminal, {
+  payload: CliSessionContinueInput,
+  success: CliSessionContinueResult,
+  error: CliSessionsRpcError,
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2381,6 +2402,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsPluginCardsAnswerDecisionRpc,
   WsPluginCardsRunActionRpc,
   WsPluginCardsReadAssetRpc,
+  WsCliSessionsTakeOverRpc,
+  WsCliSessionsContinueInTerminalRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsServerReportClientActivityRpc,

@@ -21,6 +21,9 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
+  type ProviderInstanceId,
+  type ProviderThreadId,
+  type RuntimeMode,
 } from "@t3tools/contracts";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -194,6 +197,84 @@ function messageEvents(input: {
   ];
 }
 
+/** The thread and provider thread rows for a session imported from its transcript. */
+export function importedThreadRows(input: {
+  readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly title: string;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly model: string;
+  readonly runtimeMode: RuntimeMode;
+  readonly worktree: { readonly path: string; readonly branch: string | null } | null;
+  readonly providerThreadId: ProviderThreadId;
+  readonly nativeThreadId: string;
+  readonly createdAt: DateTime.Utc;
+  readonly updatedAt: DateTime.Utc;
+  readonly settled: boolean;
+}): {
+  readonly appThread: OrchestrationV2AppThread;
+  readonly providerThread: OrchestrationV2ProviderThread;
+} {
+  const { threadId, driver, providerInstanceId, createdAt, updatedAt } = input;
+  return {
+    appThread: {
+      createdBy: "system",
+      creationSource: "server",
+      id: threadId,
+      projectId: input.projectId,
+      title: input.title.trim() === "" ? "Untitled thread" : input.title,
+      providerInstanceId,
+      modelSelection: { instanceId: providerInstanceId, model: input.model },
+      runtimeMode: input.runtimeMode,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: input.worktree?.branch ?? null,
+      worktreePath: input.worktree?.path ?? null,
+      linkedPullRequest: null,
+      branchPullRequest: null,
+      activeProviderThreadId: input.providerThreadId,
+      historyOrigin: "v1_import",
+      lineage: {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: threadId,
+      },
+      forkedFrom: null,
+      createdAt,
+      updatedAt,
+      archivedAt: null,
+      settledOverride: input.settled ? "settled" : null,
+      settledAt: input.settled ? updatedAt : null,
+      unsettledAt: null,
+      snoozedUntil: null,
+      snoozedAt: null,
+      pinnedAt: null,
+      pinOrderKey: null,
+      activeOrderKey: null,
+      lastVisitedAt: null,
+      deletedAt: null,
+    },
+    providerThread: {
+      id: input.providerThreadId,
+      driver,
+      providerInstanceId,
+      providerSessionId: null,
+      appThreadId: threadId,
+      ownerNodeId: null,
+      nativeThreadRef: { driver, nativeId: input.nativeThreadId, strength: "strong" },
+      nativeConversationHeadRef: null,
+      status: "idle",
+      firstRunOrdinal: null,
+      lastRunOrdinal: null,
+      handoffIds: [],
+      forkedFrom: null,
+      pendingBackgroundTasks: [],
+      createdAt,
+      updatedAt,
+    },
+  };
+}
+
 const make = Effect.gen(function* () {
   const scanner = yield* AgentSessionScanner.AgentSessionScanner;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -361,64 +442,21 @@ const make = Effect.gen(function* () {
           });
           const createdAt = dateTime(thread.createdAt);
           const updatedAt = dateTime(thread.updatedAt);
-          const appThread: OrchestrationV2AppThread = {
-            createdBy: "system",
-            creationSource: "server",
-            id: threadId,
+          const { appThread, providerThread } = importedThreadRows({
+            threadId,
             projectId: input.projectId,
-            title: thread.title.trim() === "" ? "Untitled thread" : thread.title,
+            title: thread.title,
             providerInstanceId: thread.providerInstanceId,
-            modelSelection: { instanceId: thread.providerInstanceId, model },
-            runtimeMode,
-            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            branch: outcome.worktree?.branch ?? null,
-            worktreePath: outcome.worktree?.path ?? null,
-            linkedPullRequest: null,
-            branchPullRequest: null,
-            activeProviderThreadId: providerThreadId,
-            historyOrigin: "v1_import",
-            lineage: {
-              parentThreadId: null,
-              relationshipToParent: null,
-              rootThreadId: threadId,
-            },
-            forkedFrom: null,
-            createdAt,
-            updatedAt,
-            archivedAt: null,
-            settledOverride: "settled",
-            settledAt: updatedAt,
-            unsettledAt: null,
-            snoozedUntil: null,
-            snoozedAt: null,
-            pinnedAt: null,
-            pinOrderKey: null,
-            activeOrderKey: null,
-            lastVisitedAt: null,
-            deletedAt: null,
-          };
-          const providerThread: OrchestrationV2ProviderThread = {
-            id: providerThreadId,
             driver,
-            providerInstanceId: thread.providerInstanceId,
-            providerSessionId: null,
-            appThreadId: threadId,
-            ownerNodeId: null,
-            nativeThreadRef: {
-              driver,
-              nativeId: nativeThreadId,
-              strength: "strong",
-            },
-            nativeConversationHeadRef: null,
-            status: "idle",
-            firstRunOrdinal: null,
-            lastRunOrdinal: null,
-            handoffIds: [],
-            forkedFrom: null,
-            pendingBackgroundTasks: [],
+            model,
+            runtimeMode,
+            worktree: outcome.worktree,
+            providerThreadId,
+            nativeThreadId,
             createdAt,
             updatedAt,
-          };
+            settled: true,
+          });
 
           const committed = yield* eventSink.write({
             unlessNativeThreadOwned: providerThread,

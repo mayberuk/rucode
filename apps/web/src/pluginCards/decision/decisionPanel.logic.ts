@@ -1,4 +1,5 @@
 import {
+  decisionWaitsOnPerson,
   PluginCardError,
   type DispatchDecisionCard,
   type DispatchDecisionCardData,
@@ -91,11 +92,99 @@ const shellQuote = (value: string) =>
   SHELL_SAFE.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 
 export function decisionAnswerCommand(data: DispatchDecisionCardData, optionKey: string): string {
-  return `dp decision answer ${shellQuote(data.decisionId)} ${shellQuote(optionKey)} --dir ${shellQuote(data.dir)}`;
+  return `dp decision answer ${shellQuote(data.decisionId)} ${shellQuote(optionKey)} --dir ${shellQuote(data.dir)} --actor person`;
 }
 
 export function decisionContextLabel(data: DispatchDecisionCardData): string {
   return data.initiative === null ? `wave ${data.wave}` : `${data.initiative} · wave ${data.wave}`;
+}
+
+function optionLabel(data: DispatchDecisionCardData, key: string): string {
+  return data.options.find((option) => option.key === key)?.label ?? key;
+}
+
+export type DecisionCourse =
+  | {
+      readonly type: "default";
+      readonly optionLabel: string;
+      readonly at: string;
+      readonly protectedStop: boolean;
+    }
+  | { readonly type: "overdue"; readonly optionLabel: string }
+  | { readonly type: "recommended"; readonly optionLabel: string }
+  | { readonly type: "choose" };
+
+// `dp decision wait` applies the default at applyAfter; a minute's grace covers its polling.
+const OVERDUE_GRACE_MS = 60_000;
+
+/** `nowMinute` is a UTC `YYYY-MM-DDTHH:mm`, as `useNowMinute` returns. */
+export function decisionCourse(data: DispatchDecisionCardData, nowMinute: string): DecisionCourse {
+  if (data.needsPerson || data.defaultKey === null || data.applyAfter === null) {
+    const recommended = data.options.find((option) => option.recommended);
+    return recommended === undefined
+      ? { type: "choose" }
+      : { type: "recommended", optionLabel: recommended.label };
+  }
+  const label = optionLabel(data, data.defaultKey);
+  const dueMs = Date.parse(data.applyAfter);
+  if (Date.parse(`${nowMinute}Z`) >= dueMs + OVERDUE_GRACE_MS) {
+    return { type: "overdue", optionLabel: label };
+  }
+  return {
+    type: "default",
+    optionLabel: label,
+    at: data.applyAfter,
+    protectedStop: data.protection !== null,
+  };
+}
+
+function isoMs(iso: string | null): number {
+  const ms = iso === null ? Number.NaN : Date.parse(iso);
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
+const compareNumbers = (a: number, b: number) => (a < b ? -1 : a > b ? 1 : 0);
+
+export type DrawerDecisionFields = Pick<
+  DispatchDecisionCardData,
+  "needsPerson" | "protection" | "defaultKey" | "applyAfter" | "raisedAt"
+>;
+
+/** Drawer order: waiting on the person first, then the soonest default, then the oldest. */
+export function compareDrawerDecisions(a: DrawerDecisionFields, b: DrawerDecisionFields): number {
+  return (
+    compareNumbers(Number(!decisionWaitsOnPerson(a)), Number(!decisionWaitsOnPerson(b))) ||
+    compareNumbers(isoMs(a.applyAfter), isoMs(b.applyAfter)) ||
+    // Parsed, not compared as text: dp writes nanosecond fractions, so text order misplaces whole seconds.
+    compareNumbers(isoMs(a.raisedAt), isoMs(b.raisedAt))
+  );
+}
+
+/** The decision's one timeline line; `formatTime` renders a clock time such as "11:52". */
+export function decisionLine(
+  data: DispatchDecisionCardData,
+  formatTime: (iso: string) => string,
+): string {
+  const prefix = `Decision · ${decisionContextLabel(data)}`;
+  const at = data.applyAfter === null ? "" : ` at ${formatTime(data.applyAfter)}`;
+  switch (data.state) {
+    case "open":
+      if (data.protection !== null && !data.needsPerson) {
+        return `${prefix} · Holding off${at} unless you approve`;
+      }
+      if (data.defaultKey === null || decisionWaitsOnPerson(data)) return prefix;
+      return `${prefix} · ${optionLabel(data, data.defaultKey)}${at}`;
+    case "answered":
+    case "defaulted": {
+      const outcome = decisionOutcome(data);
+      const who = outcome?.who ?? null;
+      const chosen =
+        data.choice === null ? (outcome?.headline ?? "Answered") : optionLabel(data, data.choice);
+      return who === null ? `${prefix} · ${chosen}` : `${prefix} · ${chosen} · ${who}`;
+    }
+    case "superseded":
+      return `${prefix} · Superseded`;
+  }
 }
 
 const CHOOSER_LABELS: Record<string, string> = {

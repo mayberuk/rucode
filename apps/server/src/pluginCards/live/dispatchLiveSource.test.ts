@@ -22,6 +22,7 @@ const HOUR = 3_600_000;
 
 const THREAD_ORCHESTRATOR = ThreadId.make("thread-orchestrator");
 const THREAD_RUN = ThreadId.make("thread-run");
+const THREAD_DIR = ThreadId.make("thread-dir");
 const ALIVE_PID = 4242;
 const OTHER_PID = 5151;
 
@@ -115,6 +116,8 @@ interface Fixture {
   readonly shows: Map<string, string>;
   readonly dpCalls: Array<string>;
   readonly pidThreads: Map<number, ThreadId>;
+  /** Chats working in a directory, which on its own proves nothing. */
+  readonly dirThreads: Map<string, ReadonlyArray<ThreadId>>;
 }
 
 /** Real files under a temp root; a fake `dp` on PATH, a fake runner and a fake thread index. */
@@ -136,6 +139,7 @@ const withSource = <A, E, R>(
       shows: new Map(),
       dpCalls: [],
       pidThreads: new Map(),
+      dirThreads: new Map(),
     };
     for (const dir of [
       bin,
@@ -158,7 +162,7 @@ const withSource = <A, E, R>(
     const index = PluginThreadIndex.of({
       threadForClaudeSession: (session) =>
         Effect.succeed(session === "orchestrator-session" ? THREAD_ORCHESTRATOR : null),
-      threadsForDir: () => Effect.succeed([]),
+      threadsForDir: (dir) => Effect.succeed(fixture.dirThreads.get(dir) ?? []),
       threadForPid: (pid) => Effect.succeed(fixture.pidThreads.get(pid) ?? null),
       claudeTranscript: () => Effect.succeed(null),
       decisionLookup: Effect.succeed({
@@ -326,7 +330,7 @@ it.layer(NodeServices.layer)("dispatch live source", (it) => {
         );
 
         const [initiative] = (yield* source.snapshot).initiatives;
-        assert.strictEqual(initiative?.openDecisions, 4);
+        assert.strictEqual(initiative?.openDecisions, 2);
       }),
     ),
   );
@@ -370,6 +374,25 @@ it.layer(NodeServices.layer)("dispatch live source", (it) => {
         );
       }),
     ),
+  );
+
+  it.effect(
+    "gives a run whose process names no chat to no chat, even the only chat in its directory",
+    () =>
+      withSource((fixture, source) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(fixture.runFeed, openedRow("r-1", ALIVE_PID));
+          yield* markAlive(fixture, ALIVE_PID);
+          fixture.dirThreads.set("/work/run", [THREAD_DIR]);
+
+          const children = (yield* source.snapshot).children;
+          assert.deepStrictEqual(
+            children.map(({ id, state, threadId }) => ({ id, state, threadId })),
+            [{ id: "r-1:4242", state: "running", threadId: null }],
+          );
+        }),
+      ),
   );
 
   it.effect("treats an unsettled run as running when there is no process directory", () =>

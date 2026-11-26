@@ -1,10 +1,10 @@
-import type {
-  DispatchDecisionCard,
-  DispatchDecisionCardData,
-  PluginDecisionAnswerProgress,
-  PluginLiveDecision,
-  PluginLiveState,
-  ThreadId,
+import {
+  decisionWaitsOnPerson,
+  type DispatchDecisionCard,
+  type DispatchDecisionCardData,
+  type PluginDecisionAnswerProgress,
+  type PluginLiveState,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -20,6 +20,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { ExternalSessionHolds } from "../../orchestration-v2/ExternalSessionHolds.ts";
 import type {
   PluginCardRef,
   PluginCardSource,
@@ -33,11 +34,18 @@ import {
   toDecisionCardData,
 } from "./decisionRecord.ts";
 import { dispatchInitiativesRoot, listLiveInitiatives } from "./liveRegistry.ts";
-import { mapDecisionToThread } from "./threadMapping.ts";
+import { readRunFeed, type RunFeedCursor, runFeedPath } from "./runFeed.ts";
+import {
+  type DispatchThreadLookup,
+  mapDecisionToThread,
+  type RunOpenedRow,
+} from "./threadMapping.ts";
 
 const CARD_KIND = "dispatch.decision";
 const CHANGE_DEBOUNCE = Duration.millis(250);
 const READ_CONCURRENCY = 8;
+/** Run rows kept per checkout, part and wave, so a long-running server's memory stays flat. */
+const RUNS_PER_PART_WAVE = 5;
 
 export type DispatchDecisionLive = Pick<PluginLiveState, "decisions" | "waitingThreadIds">;
 
@@ -82,7 +90,10 @@ export const canonicalDecisionCardId = (cardId: string, path: Path.Path) => {
 };
 
 const DP_DECISION = /(?:^|[\s;&|(/])dp\s+decision\s+(raise|wait|answer|show)(?=$|[\s;&|)])/g;
+const DP_RUN = /(?:^|[\s;&|(/])dp\s+(?:design|wave)(?=$|[\s;&|)])/g;
 const RAISED_LINE = /^decision (\S+): (?:default |needs a person)/gm;
+// dp design and dp wave report a decision they raised as "…; decision <id>" or "spend-cap decision <id>".
+const RUN_RAISED = /(?:; |^spend-cap )decision (\w(?:[\w.-]*\w)?)/gm;
 const decodeRaisedJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ id: Schema.String })),
 );
@@ -147,14 +158,29 @@ const raisedIds = (output: string | null): ReadonlyArray<string> => {
   return [...output.matchAll(RAISED_LINE)].map((match) => match[1]!);
 };
 
+const waitsForPerson = (record: DispatchDecisionRecord) =>
+  decisionWaitsOnPerson(toDecisionCardData(record, null, "terminal-only"));
+
+export interface DispatchDecisionSourceOptions {
+  readonly initiativesRoot?: string;
+  readonly runFeedPath?: string;
+  /** A chat's finished commands, to find the chat that raised a decision no session maps. */
+  readonly commandsOf?: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<RecognizableCommand>>;
+}
+
 export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDecisionSource")(
-  function* (options?: { readonly initiativesRoot?: string }) {
+  function* (options?: DispatchDecisionSourceOptions) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const index = yield* PluginThreadIndex;
+    const holds = yield* ExternalSessionHolds;
     const scope = yield* Scope.Scope;
     const home = yield* HostProcess.HomeDirectory;
+    const env = yield* HostProcess.Environment;
     const initiativesRoot = options?.initiativesRoot ?? (yield* dispatchInitiativesRoot);
+    const runFeed = options?.runFeedPath ?? runFeedPath(env, home);
+    const commandsOf =
+      options?.commandsOf ?? (() => Effect.succeed<ReadonlyArray<RecognizableCommand>>([]));
     const services = yield* Effect.context<PluginCardSourceServices>();
 
     const signals = yield* PubSub.unbounded<void>();
@@ -169,23 +195,38 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
       return path.resolve(cwd, dir);
     };
 
+    const argsAfter = (command: RecognizableCommand, match: RegExpMatchArray) =>
+      parseDecisionArgs(shellWords(command.command.slice(match.index! + match[0].length)));
+
     const recognize = (command: RecognizableCommand): ReadonlyArray<PluginCardRef> => {
       const refs: Array<PluginCardRef> = [];
       const raiseDirs: Array<string> = [];
       for (const match of command.command.matchAll(DP_DECISION)) {
         const verb = match[1]!;
-        const args = parseDecisionArgs(
-          shellWords(command.command.slice(match.index + match[0].length)),
-        );
+        const args = argsAfter(command, match);
         const dir = resolveDir(command.cwd, args.dir);
         if (verb === "raise") raiseDirs.push(dir);
-        else if (args.id !== null) refs.push({ kind: CARD_KIND, key: `${dir}#${args.id}` });
+        else if (args.id !== null) {
+          refs.push({ kind: CARD_KIND, key: `${dir}#${args.id}`, owns: verb === "wait" });
+        }
       }
       if (raiseDirs.length > 0) {
         raisedIds(command.output).forEach((id, position) => {
           const dir = raiseDirs[Math.min(position, raiseDirs.length - 1)]!;
-          refs.push({ kind: CARD_KIND, key: `${dir}#${id}` });
+          refs.push({ kind: CARD_KIND, key: `${dir}#${id}`, owns: true });
         });
+      }
+      const runDirs = new Set(
+        Array.from(command.command.matchAll(DP_RUN), (match) =>
+          resolveDir(command.cwd, argsAfter(command, match).dir),
+        ),
+      );
+      if (runDirs.size > 0 && command.output !== null) {
+        for (const match of command.output.matchAll(RUN_RAISED)) {
+          for (const dir of runDirs) {
+            refs.push({ kind: CARD_KIND, key: `${dir}#${match[1]!}`, owns: true });
+          }
+        }
       }
       return refs;
     };
@@ -277,25 +318,61 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
       return records.find((record) => record.id === id) ?? null;
     });
 
+    let runCursor: RunFeedCursor | null = null;
+    const runs = new Map<string, Array<RunOpenedRow>>();
+    const runPermit = yield* Semaphore.make(1);
+    const runThreads = new Map<string, ThreadId>();
+    const raisers = new Map<string, ReadonlyArray<ThreadId>>();
+
+    const openedRuns = runPermit.withPermits(1)(
+      Effect.gen(function* () {
+        const feed = yield* readRunFeed(runFeed, runCursor);
+        runCursor = feed.cursor;
+        for (const row of feed.rows) {
+          if (row.event !== "run-opened") continue;
+          const key = `${row.wave}\0${row.part}\0${path.resolve(row.dir)}`;
+          const kept = [...(runs.get(key) ?? []), row]
+            .toSorted((left, right) => Date.parse(left.ts) - Date.parse(right.ts))
+            .slice(-RUNS_PER_PART_WAVE);
+          runs.set(key, kept);
+        }
+        return [...runs.values()].flat();
+      }),
+    );
+
     const mapRecord = Effect.fn("PluginCards.mapDecision")(function* (
       record: DispatchDecisionRecord,
     ) {
       const initiatives = yield* listLiveInitiatives(initiativesRoot);
-      return yield* mapDecisionToThread(record, initiatives, index);
+      return yield* mapDecisionToThread(record, initiatives, index, yield* openedRuns, runThreads);
     });
 
     const scan = Effect.gen(function* () {
       const lookup = yield* index.decisionLookup;
       yield* syncWatchers(lookup.checkouts);
       const initiatives = yield* listLiveInitiatives(initiativesRoot);
+      const opened = yield* openedRuns;
       const records = (yield* Effect.forEach(lookup.checkouts, listDecisionRecords, {
         concurrency: READ_CONCURRENCY,
       })).flat();
       const byId = new Map(
         records.map((record) => [decisionCardId(record.dir, record.id), record]),
       );
+      const threadLookup: DispatchThreadLookup = {
+        threadForClaudeSession: lookup.threadForClaudeSession,
+        threadForPid: index.threadForPid,
+      };
       const mapRecord = Effect.fnUntraced(function* (record: DispatchDecisionRecord) {
-        return { record, threadId: yield* mapDecisionToThread(record, initiatives, lookup) };
+        return {
+          record,
+          threadId: yield* mapDecisionToThread(
+            record,
+            initiatives,
+            threadLookup,
+            opened,
+            runThreads,
+          ),
+        };
       });
       const open = yield* Effect.forEach(
         records.filter((record) => record.state === "open"),
@@ -323,8 +400,8 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
 
     const [snapshot, invalidate] = yield* Effect.cachedInvalidateWithTTL(scan, Duration.infinity);
 
-    const answerableIn = Effect.fnUntraced(function* (threadId: ThreadId, mapped: ThreadId | null) {
-      if (mapped !== threadId) return "terminal-only" as const;
+    const answerableIn = Effect.fnUntraced(function* (threadId: ThreadId, owner: ThreadId | null) {
+      if (owner !== threadId || holds.heldBy(threadId) !== null) return "terminal-only" as const;
       return (yield* index.claudeTranscript(threadId)) === null
         ? ("terminal-only" as const)
         : ("yes" as const);
@@ -358,7 +435,8 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
         const record = scanned.byId.get(decisionCardId(key.dir, key.id));
         if (record === undefined) return null;
         const { threadId: mapped } = yield* scanned.mapRecord(record);
-        return cardData(record, yield* answerableIn(threadId, mapped));
+        const owner = mapped ?? (ref.owns === true ? threadId : null);
+        return cardData(record, yield* answerableIn(threadId, owner));
       }
       const record = yield* readDecision(key.dir, key.id);
       return record === null ? null : cardData(record, "terminal-only");
@@ -378,30 +456,36 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
       }));
     });
 
+    // Only chats working in the decision's directory are read; sharing it proves nothing.
+    const raisingThreads = Effect.fnUntraced(function* (record: DispatchDecisionRecord) {
+      const cardId = decisionCardId(record.dir, record.id);
+      const known = raisers.get(cardId);
+      if (known !== undefined) return known;
+      const key = `${record.dir}#${record.id}`;
+      const found: Array<ThreadId> = [];
+      for (const candidate of yield* index.threadsForDir(record.dir)) {
+        const commands = yield* commandsOf(candidate);
+        const owns = commands.some((command) =>
+          recognize(command).some((ref) => ref.owns === true && ref.key === key),
+        );
+        if (owns) found.push(candidate);
+      }
+      if (found.length > 0) raisers.set(cardId, found);
+      return found;
+    });
+
     const live = Effect.gen(function* () {
       const { open } = yield* snapshot;
-      const decisions = open
-        .map(({ record, threadId }): PluginLiveDecision => ({
-          cardId: decisionCardId(record.dir, record.id),
-          decisionId: record.id,
-          dir: record.dir,
-          kind: record.kind,
-          question: record.question,
-          initiative:
-            record.initiative === undefined || record.initiative === "" ? null : record.initiative,
-          part: record.part,
-          threadId,
-          needsPerson: record.needsPerson === true,
-          raisedAt: record.raisedAt,
-          applyAfter: toDecisionCardData(record, null, "yes").applyAfter,
-        }))
-        .toSorted((left, right) =>
-          left.cardId < right.cardId ? -1 : left.cardId > right.cardId ? 1 : 0,
-        );
-      const waitingThreadIds = [
-        ...new Set(open.flatMap(({ threadId }) => (threadId === null ? [] : [threadId]))),
-      ].toSorted();
-      return { decisions, waitingThreadIds } satisfies DispatchDecisionLive;
+      const waiting = new Set<ThreadId>();
+      for (const { record, threadId } of open) {
+        if (!waitsForPerson(record)) continue;
+        const owners = threadId === null ? yield* raisingThreads(record) : [threadId];
+        for (const owner of owners) waiting.add(owner);
+      }
+      return {
+        decisions: [],
+        waitingThreadIds: [...waiting].toSorted(),
+      } satisfies DispatchDecisionLive;
     }).pipe(Effect.withSpan("PluginCards.decisionLive"));
 
     const findDecision = Effect.fn("PluginCards.findDecision")(function* (cardId: string) {

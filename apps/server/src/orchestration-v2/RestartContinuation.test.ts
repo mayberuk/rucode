@@ -25,6 +25,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { restartContinuationRun, continueRestartedRun } from "./RestartContinuation.ts";
 import { continuationStartRetryDelayMs } from "./RestartBackgroundNote.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import { ExternalSessionHolds } from "./ExternalSessionHolds.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EventSink from "./EventSink.ts";
@@ -1377,6 +1378,18 @@ it.effect("does not wake a snoozed or settled thread, but continues once a snooz
     }
     const thread = { ...live.thread, snoozedUntil: DateTime.subtract(now, { minutes: 1 }) };
     assert.equal(restartContinuationRun({ ...live, thread }, now)?.id, runId);
+  }),
+);
+
+it.effect("does not continue a session another process has open", () =>
+  Effect.gen(function* () {
+    const texts = yield* continuationTexts(cutMidTurn()).pipe(
+      Effect.provideService(ExternalSessionHolds, {
+        heldBy: () => ({ owner: "terminal", name: null }),
+      }),
+    );
+    assert.deepEqual(texts, []);
+    assert.lengthOf(yield* continuationTexts(cutMidTurn()), 1);
   }),
 );
 

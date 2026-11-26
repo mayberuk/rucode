@@ -224,7 +224,17 @@ describe("withdrawDisplacedCustomAnswerFromPrompt", () => {
 });
 
 describe("composerDrawerContent", () => {
-  const decision = (id: string, raisedAt: string) => ({ id, data: { raisedAt } });
+  const decision = (
+    id: string,
+    raisedAt: string,
+    course: { applyAfter: string | null; defaultKey: string | null; needsPerson: boolean } = {
+      applyAfter: null,
+      defaultKey: null,
+      needsPerson: true,
+    },
+  ) => ({ id, data: { raisedAt, protection: null, ...course } });
+  const ordinary = (id: string, raisedAt: string, applyAfter: string) =>
+    decision(id, raisedAt, { applyAfter, defaultKey: "go", needsPerson: false });
   const older = decision("older", "2026-11-20T09:00:00Z");
   const newer = decision("newer", "2026-11-20T10:00:00Z");
   const newest = decision("newest", "2026-11-21T08:00:00+00:00");
@@ -288,6 +298,30 @@ describe("composerDrawerContent", () => {
         openDecisions: [first, second],
       }),
     ).toMatchObject({ decision: first });
+  });
+
+  it("puts a decision that waits on the person before one that will default", () => {
+    const willDefault = ordinary("ordinary", "2026-11-20T09:00:00Z", "2026-11-20T09:05:00Z");
+    const needsYou = decision("needs-you", "2026-11-20T10:00:00Z");
+    expect(
+      composerDrawerContent({
+        pendingUserInputs: [],
+        pendingApprovals: [],
+        openDecisions: [willDefault, needsYou],
+      }),
+    ).toEqual({ type: "decision", decision: needsYou, index: 0, total: 2 });
+  });
+
+  it("puts the decision whose default applies sooner first", () => {
+    const later = ordinary("later", "2026-11-20T09:00:00Z", "2026-11-20T09:30:00Z");
+    const sooner = ordinary("sooner", "2026-11-20T09:10:00Z", "2026-11-20T09:15:00Z");
+    expect(
+      composerDrawerContent({
+        pendingUserInputs: [],
+        pendingApprovals: [],
+        openDecisions: [later, sooner],
+      }),
+    ).toMatchObject({ decision: sooner });
   });
 
   it("shows nothing when no question, approval or decision is pending", () => {

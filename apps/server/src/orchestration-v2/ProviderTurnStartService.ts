@@ -45,6 +45,7 @@ import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts"
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
 import { contextBoundaryOrdinal } from "./contextBoundary.ts";
+import { ExternalSessionHolds, externalSessionHeldMessage } from "./ExternalSessionHolds.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -248,6 +249,7 @@ export const layer: Layer.Layer<
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const externalSessionHolds = yield* ExternalSessionHolds;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const makeRunControls = (input: {
@@ -561,6 +563,32 @@ export const layer: Layer.Layer<
           runId,
           cause: `Run ${runId} is missing its execution projection state.`,
         });
+      }
+      // Admission refuses held sessions; this catches runs that started without it (queued
+      // runs, restart continuations) or raced a terminal attaching. Settled, not retried.
+      const holder = externalSessionHolds.heldBy(input.threadId);
+      if (holder !== null) {
+        yield* settleRunBeforeStart({
+          run,
+          rootNode,
+          attempt,
+          turnItems: projection.turnItems,
+          signal: "external-session-held",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Turn not started",
+            failure: makeProviderFailure({
+              class: "validation_error",
+              message: externalSessionHeldMessage(holder),
+              retryable: false,
+            }),
+          },
+        });
+        return;
       }
       const manualResume =
         run.manualContinuationOfRunId !== undefined && attempt.reason !== "steering_restart";

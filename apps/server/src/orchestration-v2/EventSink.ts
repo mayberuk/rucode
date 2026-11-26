@@ -38,6 +38,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import { isExternalHistoryItemId } from "./ExternalHistory.ts";
 
 export class EventSinkWriteError extends Schema.TaggedError<EventSinkWriteError>()(
   "EventSinkWriteError",
@@ -396,15 +397,21 @@ const layerBase: Layer.Layer<
       );
       return Effect.forEach(
         events,
-        (event): Effect.Effect<OrchestrationV2DomainEvent, unknown> =>
-          event.type === "turn-item.updated"
-            ? turnItemPositions
-                .normalize(
-                  event.payload,
-                  event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
-                )
-                .pipe(Effect.map((payload) => ({ ...event, payload })))
-            : Effect.succeed(event),
+        (event): Effect.Effect<OrchestrationV2DomainEvent, unknown> => {
+          if (event.type !== "turn-item.updated") return Effect.succeed(event);
+          const rangeRunId =
+            event.payload.runId === null && isExternalHistoryItemId(event.payload.id)
+              ? event.runId
+              : undefined;
+          const positionRunId = event.payload.runId ?? rangeRunId;
+          return turnItemPositions
+            .normalize(
+              event.payload,
+              positionRunId === undefined ? undefined : runOrdinals.get(positionRunId),
+              rangeRunId,
+            )
+            .pipe(Effect.map((payload) => ({ ...event, payload })));
+        },
         { concurrency: 1 },
       );
     };

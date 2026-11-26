@@ -310,3 +310,15 @@ describe("plugin card RPC methods", () => {
     expect(clientRpcRequiredScopes(method, {})).toEqual([AuthOrchestrationOperateScope]);
   });
 });
+
+describe("terminal session hand-off RPC methods", () => {
+  const methods = [WS_METHODS.cliSessionsTakeOver, WS_METHODS.cliSessionsContinueInTerminal];
+
+  it.each(methods)("is served and requires exactly the operate scope: %s", (method) => {
+    expect(WsRpcGroup.requests.has(method)).toBe(true);
+    expect(CLIENT_GUARDED_RPC_SCOPES[method]).toBe(AuthOrchestrationOperateScope);
+    expect(clientRpcRequiredScopes(method, { threadId: "thread-1" })).toEqual([
+      AuthOrchestrationOperateScope,
+    ]);
+  });
+});

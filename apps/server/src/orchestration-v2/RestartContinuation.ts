@@ -20,6 +20,7 @@ import type {
 
 import * as ServerSettings from "../serverSettings.ts";
 import { isNativeMaintenanceCommand } from "./CommandPolicy.ts";
+import { ExternalSessionHolds } from "./ExternalSessionHolds.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import {
   awaitingProviderThreadId,
@@ -281,6 +282,13 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     )
       return;
     if (projection.thread.providerInstanceId !== source.providerInstanceId) return;
+    if ((yield* ExternalSessionHolds).heldBy(input.threadId) !== null) {
+      yield* Effect.logInfo("orchestration-v2.restart-continuation.session-held", {
+        threadId: input.threadId,
+        sourceRunId: input.sourceRunId,
+      });
+      return;
+    }
     // A turn that keeps crashing the server would otherwise restart it forever.
     let chainLength = 0;
     const loopWindowStart =
@@ -359,6 +367,11 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
             }),
           OrchestratorRuntimeModeAboveCeilingError: () =>
             Effect.logInfo("orchestration-v2.restart-continuation.above-ceiling", {
+              threadId: input.threadId,
+              sourceRunId: input.sourceRunId,
+            }),
+          OrchestratorSessionHeldExternallyError: () =>
+            Effect.logInfo("orchestration-v2.restart-continuation.session-held", {
               threadId: input.threadId,
               sourceRunId: input.sourceRunId,
             }),

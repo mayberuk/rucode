@@ -20,6 +20,10 @@ import {
 
 import { collectInlineContextIds } from "./lib/composerContextReferences";
 import {
+  compareDrawerDecisions,
+  type DrawerDecisionFields,
+} from "./pluginCards/decision/decisionPanel.logic";
+import {
   previewAnnotationContextRecord,
   reviewCommentContextRecord,
 } from "./lib/composerContextRecords";
@@ -84,16 +88,8 @@ export type ComposerDrawerContent<Q, D> =
     }
   | null;
 
-function raisedAtMs(decision: { readonly data: { readonly raisedAt: string } }): number {
-  const ms = Date.parse(decision.data.raisedAt);
-  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
-}
-
 /** A provider question outranks plugin decisions, and a pending approval hides them. */
-export function composerDrawerContent<
-  Q,
-  D extends { readonly data: { readonly raisedAt: string } },
->({
+export function composerDrawerContent<Q, D extends { readonly data: DrawerDecisionFields }>({
   pendingUserInputs,
   pendingApprovals,
   openDecisions,
@@ -105,15 +101,16 @@ export function composerDrawerContent<
   const userInput = pendingUserInputs[0];
   if (userInput !== undefined) return { type: "question", userInput };
   if (pendingApprovals.length > 0) return null;
-  // Parsed, not compared as text: dp writes nanosecond fractions, so text order misplaces whole seconds.
-  const oldest = openDecisions.reduce<D | undefined>(
+  const first = openDecisions.reduce<D | undefined>(
     (current, decision) =>
-      current === undefined || raisedAtMs(decision) < raisedAtMs(current) ? decision : current,
+      current === undefined || compareDrawerDecisions(decision.data, current.data) < 0
+        ? decision
+        : current,
     undefined,
   );
-  return oldest === undefined
+  return first === undefined
     ? null
-    : { type: "decision", decision: oldest, index: 0, total: openDecisions.length };
+    : { type: "decision", decision: first, index: 0, total: openDecisions.length };
 }
 
 export interface PendingUserInputProgress<Q extends UserInputQuestion = UserInputQuestion> {

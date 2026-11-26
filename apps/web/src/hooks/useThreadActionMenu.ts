@@ -34,7 +34,11 @@ import {
   readThreadShell,
   useProjects,
 } from "../state/entities";
-import { usePrimaryEnvironmentId } from "../state/environments";
+import { readEnvironmentProviders, usePrimaryEnvironmentId } from "../state/environments";
+import { useGT } from "gt-react";
+import { isClaudeThread } from "../components/cliSession.logic";
+import { readThreadCliSession } from "../pluginCards/live/liveAtoms";
+import { useContinueInTerminal } from "./useContinueInTerminal";
 import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import {
@@ -93,6 +97,8 @@ export function useThreadActionMenu(input: {
     reportFailure: false,
   });
   const handleNewThread = useNewThreadHandler();
+  const gt = useGT();
+  const continueInTerminal = useContinueInTerminal();
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
@@ -144,6 +150,15 @@ export function useThreadActionMenu(input: {
         snoozePresets,
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+        continueInTerminal: isClaudeThread(
+          thread,
+          readEnvironmentProviders(threadRef.environmentId) ?? [],
+        )
+          ? {
+              label: gt("Continue in terminal"),
+              disabled: readThreadCliSession(threadRef.environmentId, threadRef.threadId) !== null,
+            }
+          : null,
       });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
@@ -258,6 +273,9 @@ export function useThreadActionMenu(input: {
           return;
         case "share-guest":
           openGuestShareDialog(threadRef);
+          return;
+        case "continue-in-terminal":
+          await continueInTerminal(threadRef);
           return;
         case "turn-into-project": {
           const result = await turnThreadIntoProject(threadRef);

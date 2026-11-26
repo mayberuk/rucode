@@ -59,6 +59,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { withInlineContext } from "./ContextHandoffDelivery.ts";
 import * as EventSink from "./EventSink.ts";
+import { ExternalSessionHolds } from "./ExternalSessionHolds.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
@@ -1556,6 +1557,35 @@ effectIt.effect("retries a failed settlement past the start budget until it is p
     expect(harness.projection().runs.at(-1)?.status).toBe("failed");
     expect(harness.projection().turnItems).toHaveLength(1);
   }).pipe(Effect.provide(layerStartEffectWorker(harness)));
+});
+
+effectIt.effect("refuses a turn on a held session without retry", () => {
+  const harness = makeLocalCommandHarness({
+    text: "Continue",
+    previousTurn: { runStatus: "completed", turnStatus: "completed" },
+  });
+  return Effect.gen(function* () {
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    const { storedEffect } = yield* enqueueStart(harness.projection());
+    expect(yield* worker.drain()).toBe(1);
+    expect(yield* storedEffect).toMatchObject({ status: "succeeded", attemptCount: 1 });
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        failure: {
+          message: "This session is open in a terminal. Close it there to continue here.",
+        },
+      },
+    ]);
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+  }).pipe(
+    Effect.provide(layerStartEffectWorker(harness)),
+    Effect.provideService(ExternalSessionHolds, {
+      heldBy: () => ({ owner: "terminal", name: null }),
+    }),
+  );
 });
 
 effectIt.effect.each(["interrupt", "start"] as const)(

@@ -54,6 +54,7 @@ import {
   PinOffIcon,
   ShieldQuestionIcon,
   SquarePenIcon,
+  SquareTerminalIcon,
   TerminalIcon,
   Undo2Icon,
   UserRoundIcon,
@@ -90,6 +91,7 @@ import {
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
   resolveSidebarRowStatus,
+  resolveSidebarTerminalStatus,
   resolveThreadLastVisitedAt,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
@@ -127,7 +129,9 @@ import { MiddleTruncate } from "../ui/middle-truncate";
 import { ActivityShimmerOverlay } from "../chat/TimelineRowParts";
 import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
-import { useThreadHasOpenDecision } from "../../pluginCards/live/liveAtoms";
+import { useThreadCliSession, useThreadHasOpenDecision } from "../../pluginCards/live/liveAtoms";
+import type { PluginLiveCliSession } from "@t3tools/contracts";
+import { useGT } from "gt-react";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -253,6 +257,7 @@ function SidebarThreadTooltip({
   branchMismatch,
   terminalStatus,
   terminalProcessCount,
+  cliSession,
 }: {
   thread: SidebarThreadSummary;
   project: ProjectFaviconProject | null;
@@ -270,6 +275,7 @@ function SidebarThreadTooltip({
   } | null;
   terminalStatus: TerminalStatusIndicator | null;
   terminalProcessCount: number;
+  cliSession: PluginLiveCliSession | null;
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   const previousProviderNames = thread.providerInstanceHistory
@@ -358,6 +364,7 @@ function SidebarThreadTooltip({
             </div>
           </div>
         ) : null}
+        {cliSession ? <CliSessionTooltipLine session={cliSession} /> : null}
         {thread.runtime?.lastError ? (
           <div
             className={cn(
@@ -535,7 +542,34 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
   ),
 };
 
+function CliSessionTooltipLine({ session }: { session: PluginLiveCliSession }) {
+  const gt = useGT();
+  const place =
+    session.owner === "other"
+      ? gt("In another Claude process")
+      : session.inTmux
+        ? gt("In tmux")
+        : gt("In a terminal");
+  const status =
+    session.status === "busy"
+      ? gt("working")
+      : session.status === "idle"
+        ? gt("idle")
+        : session.status === "shell"
+          ? gt("running a command")
+          : null;
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <SquareTerminalIcon aria-hidden className="size-3 shrink-0 stroke-muted-foreground" />
+      <div className="min-w-0 truncate text-foreground/75">
+        {[place, session.name, status].filter((part) => part !== null).join(" · ")}
+      </div>
+    </div>
+  );
+}
+
 const TOP_STATUS_ICONS = {
+  terminal: SquareTerminalIcon,
   working: CircleDashedIcon,
   waiting: CircleDotDashedIcon,
   input: MessageCircleQuestionIcon,
@@ -745,6 +779,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const openDecision = useThreadHasOpenDecision(thread.environmentId, thread.id);
   const status = resolveSidebarRowStatus({ ...thread, lastVisitedAt }, { openDecision });
+  const cliSession = useThreadCliSession(thread.environmentId, thread.id);
+  const cliStatus = resolveSidebarTerminalStatus(status, cliSession);
+  const gt = useGT();
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -759,72 +796,79 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isSelected,
   });
   const topStatus =
-    status === "preparing" || status === "working"
+    cliStatus !== null
       ? {
-          label:
-            status === "preparing"
-              ? "Setting up"
-              : thread.goal?.status === "active"
-                ? "Goal"
-                : "Working",
-          icon: "working" as const,
-          className: "text-info-foreground",
+          label: gt("In terminal"),
+          icon: cliStatus === "terminal-busy" ? ("working" as const) : ("terminal" as const),
+          className:
+            cliStatus === "terminal-busy" ? "text-info-foreground" : "text-muted-foreground",
         }
-      : status === "waiting"
+      : status === "preparing" || status === "working"
         ? {
-            label: "Waiting",
-            icon: "waiting" as const,
-            className: "text-muted-foreground",
+            label:
+              status === "preparing"
+                ? "Setting up"
+                : thread.goal?.status === "active"
+                  ? "Goal"
+                  : "Working",
+            icon: "working" as const,
+            className: "text-info-foreground",
           }
-        : status === "approval"
+        : status === "waiting"
           ? {
-              label: "Approval",
-              icon: "approval" as const,
-              className: "text-warning-foreground",
+              label: "Waiting",
+              icon: "waiting" as const,
+              className: "text-muted-foreground",
             }
-          : status === "decision"
+          : status === "approval"
             ? {
-                label: "Decision",
-                icon: "decision" as const,
+                label: "Approval",
+                icon: "approval" as const,
                 className: "text-warning-foreground",
               }
-            : status === "input"
+            : status === "decision"
               ? {
-                  label: "Input",
-                  icon: "input" as const,
-                  className: "text-indigo-600 dark:text-indigo-300",
+                  label: "Decision",
+                  icon: "decision" as const,
+                  className: "text-warning-foreground",
                 }
-              : status === "request"
+              : status === "input"
                 ? {
-                    label: "Request",
-                    icon: "request" as const,
-                    className: "text-guest-foreground",
+                    label: "Input",
+                    icon: "input" as const,
+                    className: "text-indigo-600 dark:text-indigo-300",
                   }
-                : status === "limited"
+                : status === "request"
                   ? {
-                      label: "Limited",
-                      icon: "failed" as const,
-                      className: "text-warning-foreground",
+                      label: "Request",
+                      icon: "request" as const,
+                      className: "text-guest-foreground",
                     }
-                  : status === "failed"
+                  : status === "limited"
                     ? {
-                        label: "Failed",
+                        label: "Limited",
                         icon: "failed" as const,
-                        className: "text-error-foreground",
+                        className: "text-warning-foreground",
                       }
-                    : isWoke
+                    : status === "failed"
                       ? {
-                          label: "Woke",
-                          icon: "woke" as const,
-                          className: "text-warning-foreground",
+                          label: "Failed",
+                          icon: "failed" as const,
+                          className: "text-error-foreground",
                         }
-                      : isUnread
+                      : isWoke
                         ? {
-                            label: "Done",
-                            icon: "done" as const,
-                            className: "text-success-foreground",
+                            label: "Woke",
+                            icon: "woke" as const,
+                            className: "text-warning-foreground",
                           }
-                        : null;
+                        : isUnread
+                          ? {
+                              label: "Done",
+                              icon: "done" as const,
+                              className: "text-success-foreground",
+                            }
+                          : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -865,6 +909,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       branchMismatch={branchMismatch}
       terminalStatus={terminalStatus}
       terminalProcessCount={terminalProcessCount}
+      cliSession={cliSession}
     />
   );
 
@@ -1547,7 +1592,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
                           {topStatus.label}
-                          {status === "preparing" || status === "working" ? (
+                          {cliStatus !== null ? null : status === "preparing" ||
+                            status === "working" ? (
                             <span aria-hidden>
                               <WorkingDuration
                                 environmentId={thread.environmentId}
@@ -1742,6 +1788,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
     threadId: thread.id,
   });
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  const cliSession = useThreadCliSession(thread.environmentId, thread.id);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const onFileDropThreads = props.onFileDropThreads;
   const fileDropHandlers = makeWorkspaceFileDropHandlers({
@@ -1862,6 +1909,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
           branchMismatch={branchMismatch}
           terminalStatus={terminalStatus}
           terminalProcessCount={runningTerminalIds.length}
+          cliSession={cliSession}
         />
       </Tooltip>
     </li>

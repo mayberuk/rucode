@@ -108,6 +108,20 @@ without a browser, add `--no-browser`, open the printed URL elsewhere, and
 paste the final URL back when asked. `claude mcp list` shows `t3` as connected
 once you approve.
 
+## Claude Code terminal sessions
+
+Claude Code sessions you run in a terminal show up as threads in their project.
+While a session is open in a terminal, its row shows a terminal icon and the
+composer says where it is open; Send waits until it exits, so the two never
+write to the same conversation at once. Exit it there, or press **Take over**
+when it is idle in tmux, to continue here.
+
+To move a Claude thread the other way, choose **Continue in terminal** from the
+thread menu or the command palette. T3 Code releases the thread and copies the
+resume command; run it in the terminal you want to continue in.
+
+Turn this off in **Settings > General > Claude Code**.
+
 ## Codex
 
 ```sh

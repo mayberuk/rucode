@@ -4,22 +4,24 @@ import * as Effect from "effect/Effect";
 
 import type { DispatchDecisionRecord } from "./decisionRecord.ts";
 import type { DispatchLiveInitiative } from "./liveRegistry.ts";
-import { type DispatchThreadLookup, mapDecisionToThread, mapRunToThread } from "./threadMapping.ts";
+import { mapDecisionToThread, mapRunToThread, type RunOpenedRow } from "./threadMapping.ts";
 
 const GRANT_THREAD = ThreadId.make("thread-grant");
 const ORCHESTRATOR_THREAD = ThreadId.make("thread-orchestrator");
 const DIR_THREAD = ThreadId.make("thread-dir");
-const OTHER_DIR_THREAD = ThreadId.make("thread-dir-2");
 const PID_THREAD = ThreadId.make("thread-pid");
+const OTHER_THREAD = ThreadId.make("thread-other");
 
+/** `dirs` is what a directory guess would see; mapping must never consult it. */
 const lookup = (world: {
   readonly sessions?: Record<string, ThreadId>;
   readonly dirs?: Record<string, ReadonlyArray<ThreadId>>;
   readonly pids?: Record<number, ThreadId>;
-}): DispatchThreadLookup => ({
-  threadForClaudeSession: (sessionId) => Effect.succeed(world.sessions?.[sessionId] ?? null),
-  threadsForDir: (dir) => Effect.succeed(world.dirs?.[dir] ?? []),
-  threadForPid: (pid) => Effect.succeed(world.pids?.[pid] ?? null),
+}) => ({
+  threadForClaudeSession: (sessionId: string) =>
+    Effect.succeed(world.sessions?.[sessionId] ?? null),
+  threadsForDir: (dir: string) => Effect.succeed(world.dirs?.[dir] ?? []),
+  threadForPid: (pid: number) => Effect.succeed(world.pids?.[pid] ?? null),
 });
 
 const record = (overrides: Partial<DispatchDecisionRecord> = {}): DispatchDecisionRecord => ({
@@ -68,6 +70,20 @@ const everyThread = lookup({
   dirs: { "/dev/rucode-worktrees/card-core": [DIR_THREAD] },
 });
 
+const opened = (overrides: Partial<RunOpenedRow>): RunOpenedRow => ({
+  schema: "dp-run/1",
+  ts: "2026-11-21T09:30:00Z",
+  event: "run-opened",
+  run: "r-1",
+  dir: "/dev/rucode-worktrees/card-core",
+  part: "card-core",
+  wave: 2,
+  spec: ".claude/plans/card-core.md",
+  pid: 4242,
+  phases: 3,
+  ...overrides,
+});
+
 describe("mapDecisionToThread", () => {
   it.effect("maps to the thread whose Claude session holds the grant, before any other rule", () =>
     Effect.gen(function* () {
@@ -75,6 +91,7 @@ describe("mapDecisionToThread", () => {
         record({ grantSession: "grant-session", initiative: "rucode-home" }),
         [rucodeHome],
         everyThread,
+        [],
       );
       assert.strictEqual(mapped, GRANT_THREAD);
     }),
@@ -88,95 +105,71 @@ describe("mapDecisionToThread", () => {
           record({ grantSession: "gone-session", initiative: "rucode-home" }),
           [initiative({ slug: "other", orchestratorSession: "grant-session" }), rucodeHome],
           everyThread,
+          [],
         );
         assert.strictEqual(mapped, ORCHESTRATOR_THREAD);
       }),
   );
 
-  it.effect("finds the initiative by a worktree that holds the decision's directory", () =>
+  it.effect(
+    "maps a named initiative's decision through its orchestrator's process when its session has no chat",
+    () =>
+      Effect.gen(function* () {
+        const mapped = yield* mapDecisionToThread(
+          record({ initiative: "rucode-home" }),
+          [{ ...rucodeHome, orchestratorSession: "cli-session", orchestratorPid: 777 }],
+          lookup({ pids: { 777: PID_THREAD } }),
+          [],
+        );
+        assert.strictEqual(mapped, PID_THREAD);
+      }),
+  );
+
+  it.effect("does not guess an initiative from the decision's directory", () =>
     Effect.gen(function* () {
-      const mapped = yield* mapDecisionToThread(
-        record({ dir: "/dev/rucode-worktrees/card-core/apps/server" }),
-        [rucodeHome],
-        everyThread,
-      );
-      assert.strictEqual(mapped, ORCHESTRATOR_THREAD);
+      for (const dir of ["/dev/rucode-worktrees/card-core/apps/server", "/dev/rucode"]) {
+        assert.isNull(yield* mapDecisionToThread(record({ dir }), [rucodeHome], everyThread, []));
+      }
     }),
   );
 
-  it.effect("finds the initiative by its orchestrator directory", () =>
+  it.effect("leaves a decision unmapped even when one thread works in its directory", () =>
     Effect.gen(function* () {
       const mapped = yield* mapDecisionToThread(
-        record({ dir: "/dev/rucode" }),
-        [
-          initiative({
-            orchestratorSession: "orchestrator-session",
-            orchestratorCwd: "/dev/rucode",
-          }),
-        ],
+        record({ grantSession: "gone-session", initiative: "rucode-home" }),
+        [{ ...rucodeHome, orchestratorSession: "gone-orchestrator" }],
         everyThread,
-      );
-      assert.strictEqual(mapped, ORCHESTRATOR_THREAD);
-    }),
-  );
-
-  it.effect("does not match a directory that only shares a name prefix with a worktree", () =>
-    Effect.gen(function* () {
-      const mapped = yield* mapDecisionToThread(
-        record({ dir: "/dev/rucode-worktrees/card-core-2" }),
-        [rucodeHome],
-        everyThread,
+        [],
       );
       assert.isNull(mapped);
-    }),
-  );
-
-  it.effect("ignores a closed initiative and an ambiguous directory match", () =>
-    Effect.gen(function* () {
-      const closed = yield* mapDecisionToThread(
-        record({ dir: "/dev/rucode" }),
-        [{ ...rucodeHome, closed: true }],
-        everyThread,
-      );
-      assert.isNull(closed);
-      const ambiguous = yield* mapDecisionToThread(
-        record(),
-        [rucodeHome, { ...rucodeHome, slug: "rucode-two", orchestratorSession: "grant-session" }],
-        lookup({
-          sessions: { "grant-session": GRANT_THREAD, "orchestrator-session": ORCHESTRATOR_THREAD },
-        }),
-      );
-      assert.isNull(ambiguous);
     }),
   );
 
   it.effect(
-    "maps to the one thread working in the decision's directory when no session matches",
+    "maps an unbound decision to the chat whose process opened the run with the same dir, part and wave",
     () =>
       Effect.gen(function* () {
-        const mapped = yield* mapDecisionToThread(
-          record({ grantSession: "gone-session", initiative: "rucode-home" }),
-          [{ ...rucodeHome, orchestratorSession: "gone-orchestrator" }],
-          everyThread,
+        const runs = [
+          opened({ run: "r-older", pid: 1, ts: "2026-11-21T08:00:00Z" }),
+          opened({ run: "r-opener", pid: 4242 }),
+          opened({ run: "r-other-part", pid: 2, part: "web" }),
+          opened({ run: "r-other-wave", pid: 3, wave: 3 }),
+          opened({ run: "r-other-dir", pid: 4, dir: "/dev/rucode" }),
+          opened({ run: "r-later", pid: 5, ts: "2026-11-21T10:00:01Z" }),
+        ];
+        const pids = { 1: OTHER_THREAD, 2: OTHER_THREAD, 3: OTHER_THREAD, 4: OTHER_THREAD };
+        const world = lookup({ pids: { ...pids, 4242: PID_THREAD, 5: OTHER_THREAD } });
+        assert.strictEqual(yield* mapDecisionToThread(record(), [], world, runs), PID_THREAD);
+        assert.isNull(
+          yield* mapDecisionToThread(record(), [], lookup({ pids }), runs),
+          "the opener's process names no chat",
         );
-        assert.strictEqual(mapped, DIR_THREAD);
       }),
-  );
-
-  it.effect("leaves the decision unmapped when two threads share its directory", () =>
-    Effect.gen(function* () {
-      const mapped = yield* mapDecisionToThread(
-        record(),
-        [],
-        lookup({ dirs: { "/dev/rucode-worktrees/card-core": [DIR_THREAD, OTHER_DIR_THREAD] } }),
-      );
-      assert.isNull(mapped);
-    }),
   );
 
   it.effect("leaves the decision unmapped when nothing matches", () =>
     Effect.gen(function* () {
-      assert.isNull(yield* mapDecisionToThread(record(), [], lookup({})));
+      assert.isNull(yield* mapDecisionToThread(record(), [], lookup({}), []));
     }),
   );
 });
@@ -194,21 +187,11 @@ describe("mapRunToThread", () => {
     }),
   );
 
-  it.effect("falls back to the one thread in the run's directory", () =>
+  it.effect("leaves a run unmapped when only its directory matches a chat", () =>
     Effect.gen(function* () {
       const mapped = yield* mapRunToThread(
         run,
         lookup({ pids: { 1: PID_THREAD }, dirs: { [run.dir]: [DIR_THREAD] } }),
-      );
-      assert.strictEqual(mapped, DIR_THREAD);
-    }),
-  );
-
-  it.effect("leaves the run unmapped when two threads share its directory", () =>
-    Effect.gen(function* () {
-      const mapped = yield* mapRunToThread(
-        run,
-        lookup({ dirs: { [run.dir]: [DIR_THREAD, OTHER_DIR_THREAD] } }),
       );
       assert.isNull(mapped);
     }),
