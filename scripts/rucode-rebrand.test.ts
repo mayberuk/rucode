@@ -217,6 +217,11 @@ it.layer(NodeServices.layer)("runRebrand", (it) => {
       const excluded = [
         ".agents/skills/upstream-sync/ledger/2026-11.md",
         ".agents/skills/upstream-sync/SKILL.md",
+        ".agents/skills/test-t3-app/SKILL.md",
+        ".cursor/rules/cursor-cloud.mdc",
+        ".devcontainer/devcontainer.json",
+        ".github/workflows/release.yml",
+        "oxlint-plugin-t3code/rules/no-low-value-comments.test.ts",
         ".repos/effect/README.md",
         "patches/foo.patch",
         "pnpm-lock.yaml",
