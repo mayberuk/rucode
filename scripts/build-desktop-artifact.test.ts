@@ -19,7 +19,21 @@ import * as Sink from "effect/Sink";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import {
+  cliArchiveFileName,
+  DESKTOP_APP_ARCHIVE_ARCH,
+  DESKTOP_APP_ARTIFACT_NAME_TEMPLATE,
+  DESKTOP_APP_IDENTITIES,
+  desktopAppArchiveFileName,
+  DEV_DESKTOP_APP_ARTIFACT_NAME_TEMPLATE,
+  devBuildVersion,
+  parseChecksums,
+  releaseTag,
+} from "@t3tools/shared/cliRelease";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
+import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+import { cliArchiveFileName as buildScriptCliArchiveFileName } from "./build-cli-archive.ts";
 
 import {
   buildDesktopBundles,
@@ -42,6 +56,7 @@ import {
   resolveMacFileExclusions,
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
+  resolveDesktopBuildIconAssets,
   resolveMergedStageDependencies,
   resolveBuildOptions,
   stageWslRuntimeArchive,
@@ -552,6 +567,197 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
+  );
+
+  const devCommit = "0123456789abcdef0123456789abcdef01234567";
+
+  it.effect.each<{
+    name: string;
+    base: string;
+    env: Record<string, string>;
+    mockUpdates?: boolean;
+  }>([
+    { name: "with a GitHub repository", base: "1.2.3", env: { GITHUB_REPOSITORY: "acme/app" } },
+    {
+      name: "with an update repository override and a zero base version",
+      base: "0.0.0",
+      env: { T3CODE_DESKTOP_UPDATE_REPOSITORY: "acme/app" },
+    },
+    { name: "with no update configuration", base: "1.2.3", env: {} },
+    { name: "with mock updates", base: "1.2.3", env: {}, mockUpdates: true },
+    {
+      name: "with mock updates and an invalid repository",
+      base: "1.2.3",
+      env: { GITHUB_REPOSITORY: "acme" },
+      mockUpdates: true,
+    },
+  ])("uses the Dev identity without a feed $name", ({ base, env, mockUpdates }) =>
+    Effect.gen(function* () {
+      const version = `${base}-dev.${devCommit}`;
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        version,
+        false,
+        mockUpdates ?? false,
+        undefined,
+        undefined,
+      );
+
+      assert.strictEqual(config.appId, DESKTOP_APP_IDENTITIES.dev.appId);
+      assert.strictEqual(config.productName, DESKTOP_APP_IDENTITIES.dev.productName);
+      assert.strictEqual(config.artifactName, DEV_DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
+      assert.strictEqual(config.publish, null);
+      assert.nestedPropertyVal(
+        config,
+        "dmg.title",
+        `${DESKTOP_APP_IDENTITIES.dev.productName} ${version} Installer`,
+      );
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))),
+  );
+
+  it.effect.each([
+    { name: "an empty version", version: "" },
+    { name: "an empty commit", version: "1.2.3-dev." },
+    { name: "a 39-character commit", version: `1.2.3-dev.${devCommit.slice(1)}` },
+    { name: "a 41-character commit", version: `1.2.3-dev.${devCommit}0` },
+    { name: "a non-hexadecimal commit", version: `1.2.3-dev.g${devCommit.slice(1)}` },
+    { name: "an uppercase commit", version: `1.2.3-dev.${devCommit.toUpperCase()}` },
+    { name: "a negative base version", version: `-1.2.3-dev.${devCommit}` },
+    { name: "a base version missing a patch", version: `1.2-dev.${devCommit}` },
+    { name: "a base version with a leading zero", version: `01.2.3-dev.${devCommit}` },
+  ])("preserves release configuration for $name", ({ version }) =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "zip",
+        version,
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      assert.strictEqual(config.appId, "com.t3tools.t3code");
+      assert.strictEqual(config.productName, desktopPackageJson.productName);
+      assert.strictEqual(config.artifactName, DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
+      assert.deepStrictEqual(config.publish, [
+        { provider: "github", owner: "acme", repo: "app", releaseType: "release" },
+      ]);
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "acme/app" } })),
+      ),
+    ),
+  );
+
+  it("uses the production icons for a Dev version", () => {
+    assert.deepStrictEqual(resolveDesktopBuildIconAssets(`1.2.3-dev.${devCommit}`), {
+      macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
+    });
+  });
+
+  it.effect.each([
+    { version: "1.2.3", productName: desktopPackageJson.productName },
+    { version: "1.2.3-nightly.20260101.1", productName: "T3 Code (Nightly)" },
+  ])("uses the contract artifact template for $version", ({ version, productName }) =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "zip",
+        version,
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "arm64",
+      );
+
+      assert.strictEqual(config.artifactName, DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
+      assert.strictEqual(config.appId, "com.t3tools.t3code");
+      assert.strictEqual(config.productName, productName);
+    }),
+  );
+
+  it.effect.each([
+    { target: "zip", arch: "arm64", version: "1.2.3" },
+    { target: "dmg", arch: "x64", version: `1.2.3-dev.${devCommit}` },
+    { target: "dir", arch: "universal", version: "1.2.3" },
+  ] as const)(
+    "requests ad-hoc signing for an unsigned $arch macOS $target",
+    ({ target, arch, version }) =>
+      Effect.gen(function* () {
+        const config = yield* createBuildConfig(
+          "mac",
+          target,
+          version,
+          false,
+          false,
+          undefined,
+          undefined,
+          false,
+          arch,
+        );
+
+        assert.nestedPropertyVal(config, "mac.identity", "-");
+        assert.notProperty(config.mac, "sign");
+      }),
+  );
+
+  it.effect.each([
+    { name: "without passkey signing options", passkeys: undefined },
+    {
+      name: "with passkey signing options",
+      passkeys: {
+        entitlementsPath: "entitlements.plist",
+        provisioningProfilePath: "app.provisionprofile",
+      },
+    },
+  ])("uses the existing macOS signing hook $name", ({ passkeys }) =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        true,
+        false,
+        undefined,
+        passkeys,
+      );
+
+      assert.notProperty(config.mac, "identity");
+      assert.nestedPropertyVal(
+        config,
+        "mac.sign",
+        NodePath.join(import.meta.dirname, "sign-macos.ts"),
+      );
+      const mac = config.mac as { entitlements?: string; provisioningProfile?: string };
+      assert.strictEqual(mac.entitlements, passkeys?.entitlementsPath);
+      assert.strictEqual(mac.provisioningProfile, passkeys?.provisioningProfilePath);
+    }),
+  );
+
+  it.effect.each([
+    { platform: "linux", target: "AppImage" },
+    { platform: "win", target: "nsis" },
+  ] as const)("omits macOS signing options for unsigned $platform builds", ({ platform, target }) =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        platform,
+        target,
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      assert.notProperty(config, "mac");
+      assert.notProperty(config[platform], "identity");
+    }),
   );
 
   it.effect("names the Electron window class in the Linux desktop entry", () =>
@@ -1866,6 +2072,219 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.mockUpdates, false);
     }),
   );
+});
+
+const WorkflowStep = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+  run: Schema.optional(Schema.String),
+  "working-directory": Schema.optional(Schema.String),
+});
+const WorkflowJob = Schema.Struct({
+  needs: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
+  permissions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  steps: Schema.optional(Schema.Array(WorkflowStep)),
+});
+const Workflow = Schema.Struct({
+  on: Schema.Record(Schema.String, Schema.Unknown),
+  jobs: Schema.Record(Schema.String, WorkflowJob),
+});
+const decodeWorkflow = Schema.decodeEffect(fromYaml(Workflow));
+
+const loadWorkflow = Effect.fn("loadWorkflow")(function* (fileName: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* decodeWorkflow(
+    yield* fs.readFileString(
+      yield* path.fromFileUrl(new URL(`../.github/workflows/${fileName}`, import.meta.url)),
+    ),
+  );
+});
+
+const workflowStep = (
+  workflow: typeof Workflow.Type,
+  jobName: string,
+  find: (step: typeof WorkflowStep.Type) => boolean,
+) => {
+  const step = workflow.jobs[jobName]?.steps?.find(find);
+  assert.isDefined(step, `no matching step in job ${jobName}`);
+  return step!;
+};
+
+const runWorkflowScript = (
+  script: string,
+  options: { readonly cwd: string; readonly env: Record<string, string> },
+) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return Number(
+      yield* spawner.exitCode(
+        ChildProcess.make("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
+          cwd: options.cwd,
+          env: options.env,
+          extendEnv: true,
+          stdout: "ignore",
+          stderr: "ignore",
+        }),
+      ),
+    );
+  });
+
+const sha256Hex = (content: string) =>
+  NodeCrypto.createHash("sha256").update(content).digest("hex");
+
+it.layer(NodeServices.layer)("fork release workflow", (it) => {
+  it.effect("triggers only on v*.*.* tag pushes, with no schedule or manual publish path", () =>
+    Effect.gen(function* () {
+      const workflow = yield* loadWorkflow("rucode-release.yml");
+      assert.deepStrictEqual(workflow.on, { push: { tags: ["v*.*.*"] } });
+    }),
+  );
+
+  it.effect("grants contents write to the release job alone", () =>
+    Effect.gen(function* () {
+      const workflow = yield* loadWorkflow("rucode-release.yml");
+      const writers = Object.entries(workflow.jobs)
+        .filter(([, job]) => job.permissions?.contents === "write")
+        .map(([name]) => name);
+      assert.deepStrictEqual(writers, ["release"]);
+    }),
+  );
+
+  it.effect("creates the release as a draft on the tag that was pushed", () =>
+    Effect.gen(function* () {
+      const workflow = yield* loadWorkflow("rucode-release.yml");
+      const step = workflowStep(
+        workflow,
+        "release",
+        (s) => s.run?.includes("gh release create") ?? false,
+      );
+      assert.include(step.run, "--draft");
+      assert.include(step.run, "--verify-tag");
+    }),
+  );
+
+  it.effect(
+    "waits for the version check before building and for both builds before releasing",
+    () =>
+      Effect.gen(function* () {
+        const workflow = yield* loadWorkflow("rucode-release.yml");
+        const needs = (job: string) => [workflow.jobs[job]?.needs ?? []].flat();
+        assert.include(needs("server-linux-x64"), "version");
+        assert.include(needs("desktop-macos-arm64"), "version");
+        assert.includeMembers(needs("release"), ["server-linux-x64", "desktop-macos-arm64"]);
+      }),
+  );
+
+  it.effect("packages the macOS app unsigned and without GITHUB_REPOSITORY", () =>
+    Effect.gen(function* () {
+      const workflow = yield* loadWorkflow("rucode-release.yml");
+      const step = workflowStep(
+        workflow,
+        "desktop-macos-arm64",
+        (s) => s.run?.includes("dist:desktop:artifact") ?? false,
+      );
+      assert.match(step.run!.trim(), /^env -u GITHUB_REPOSITORY vp run dist:desktop:artifact /);
+      assert.notInclude(step.run, "--signed");
+    }),
+  );
+
+  it.effect("writes SHA256SUMS that name both assets, and refuses a release missing either", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const workflow = yield* loadWorkflow("rucode-release.yml");
+      const step = workflowStep(workflow, "release", (s) => s.name === "Write checksums");
+      const archiveName = cliArchiveFileName("1.2.3", "linux-x64");
+      const appName = desktopAppArchiveFileName("1.2.3", DESKTOP_APP_ARCHIVE_ARCH);
+      const archiveBytes = "server archive bytes";
+      const appBytes = "mac app bytes";
+
+      const runIn = Effect.fn("runChecksumStep")(function* (files: Record<string, string>) {
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checksums-" });
+        const cwd = path.join(root, step["working-directory"] ?? ".");
+        yield* fs.makeDirectory(cwd, { recursive: true });
+        for (const [name, content] of Object.entries(files)) {
+          yield* fs.writeFileString(path.join(cwd, name), content);
+        }
+        const exitCode = yield* runWorkflowScript(step.run!, { cwd, env: {} });
+        return { exitCode, sums: path.join(cwd, "SHA256SUMS") };
+      });
+
+      const both = yield* runIn({ [archiveName]: archiveBytes, [appName]: appBytes });
+      assert.strictEqual(both.exitCode, 0);
+      const checksums = parseChecksums(yield* fs.readFileString(both.sums));
+      assert.strictEqual(checksums.size, 2);
+      assert.strictEqual(checksums.get(archiveName), sha256Hex(archiveBytes));
+      assert.strictEqual(checksums.get(appName), sha256Hex(appBytes));
+
+      const noApp = yield* runIn({ [archiveName]: archiveBytes });
+      assert.notStrictEqual(noApp.exitCode, 0);
+      assert.isFalse(yield* fs.exists(noApp.sums));
+
+      const noArchive = yield* runIn({ [appName]: appBytes });
+      assert.notStrictEqual(noArchive.exitCode, 0);
+
+      const neither = yield* runIn({});
+      assert.notStrictEqual(neither.exitCode, 0);
+    }),
+  );
+
+  it.effect("derives the version from an exact SemVer tag and rejects anything else", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const workflow = yield* loadWorkflow("rucode-release.yml");
+      const step = workflowStep(workflow, "version", (s) => s.id === "derive");
+      const devTag = releaseTag(
+        devBuildVersion("1.2.3", "0123456789abcdef0123456789abcdef01234567"),
+      );
+
+      const deriveFrom = Effect.fn("deriveVersion")(function* (tag: string) {
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-version-" });
+        const output = path.join(root, "output");
+        yield* fs.writeFileString(output, "");
+        const exitCode = yield* runWorkflowScript(step.run!, {
+          cwd: root,
+          env: { TAG: tag, GITHUB_OUTPUT: output },
+        });
+        return { exitCode, output: yield* fs.readFileString(output) };
+      });
+
+      const accepted = yield* deriveFrom("v1.2.3");
+      assert.strictEqual(accepted.exitCode, 0);
+      assert.strictEqual(accepted.output, "version=1.2.3\n");
+
+      const prerelease = yield* deriveFrom("v1.2.3-rc.1");
+      assert.strictEqual(prerelease.exitCode, 0);
+      assert.strictEqual(prerelease.output, "version=1.2.3-rc.1\n");
+
+      for (const tag of [devTag, "v1.2", "1.2.3", "v01.2.3", "v1.2.3+build.5", "v1.2.3-"]) {
+        const rejected = yield* deriveFrom(tag);
+        assert.notStrictEqual(rejected.exitCode, 0, tag);
+        assert.strictEqual(rejected.output, "", tag);
+      }
+    }),
+  );
+
+  it.effect("stops the upstream release workflow from starting on a push or schedule", () =>
+    Effect.gen(function* () {
+      const workflow = yield* loadWorkflow("release.yml");
+      assert.deepStrictEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
+      assert.hasAllKeys(workflow.on.workflow_dispatch as object, ["inputs"]);
+      assert.hasAllKeys((workflow.on.workflow_dispatch as { inputs: object }).inputs, [
+        "channel",
+        "version",
+      ]);
+    }),
+  );
+
+  it("names the Linux x64 server archive the way the release contract does", () => {
+    assert.strictEqual(
+      buildScriptCliArchiveFileName("1.2.3", "linux", "x64"),
+      cliArchiveFileName("1.2.3", "linux-x64"),
+    );
+  });
 });
 
 it("keeps the prefix of a UNC path instead of going relative", () => {
