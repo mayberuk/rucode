@@ -1,13 +1,13 @@
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-
+// @effect-diagnostics nodeBuiltinImport:off - plain vitest cases hash and read the committed assets directly.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import sharp from "sharp";
-import { expect, it } from "vite-plus/test";
+import { assert, expect, it } from "vite-plus/test";
 
 import { renderRuCodeIcons, RU_CODE_ICON_OUTPUTS } from "./render-rucode-icons.ts";
 
@@ -60,8 +60,9 @@ const expectedOutputs = [
 
 const byPath = (left: { path: string }, right: { path: string }) =>
   left.path.localeCompare(right.path);
-const digest = (contents: Buffer | string) => createHash("sha256").update(contents).digest("hex");
-const repoFile = (path: string) => readFile(new URL(path, root));
+const digest = (contents: Buffer | string) =>
+  NodeCrypto.createHash("sha256").update(contents).digest("hex");
+const repoFile = (path: string) => NodeFSP.readFile(new URL(path, root));
 
 it("declares each existing output once with the required source and sizes", () => {
   expect(RU_CODE_ICON_OUTPUTS.toSorted(byPath)).toEqual(expectedOutputs.toSorted(byPath));
@@ -144,7 +145,9 @@ it.each(expectedOutputs)("ships $path at its declared size", async ({ path, fram
       )
     : [contents];
   for (const [index, { size, source }] of frames.entries()) {
-    const image = sharp(images[index]);
+    const frame = images[index];
+    assert(frame !== undefined, "expected a frame for each declared size");
+    const image = sharp(frame);
     expect(await image.metadata()).toMatchObject({
       width: size,
       height: size,
@@ -155,7 +158,7 @@ it.each(expectedOutputs)("ships $path at its declared size", async ({ path, fram
       const nativeRender = await sharp(await repoFile(source))
         .png()
         .toBuffer();
-      expect(digest(images[index])).toBe(digest(nativeRender));
+      expect(digest(frame)).toBe(digest(nativeRender));
     }
   }
 });
@@ -169,20 +172,22 @@ it.each(["prod/black", "dev/blueprint", "nightly/nightly"])(
       .toBuffer();
     const alpha = (x: number, y: number) => image[(y * 1024 + x) * 4 + 3];
     expect(alpha(0, 0)).toBe(0);
-    for (const [x, y] of [
+    const inside: ReadonlyArray<readonly [number, number]> = [
       [512, 100],
       [512, 923],
       [100, 512],
       [923, 512],
-    ]) {
+    ];
+    for (const [x, y] of inside) {
       expect(alpha(x, y)).toBe(255);
     }
-    for (const [x, y] of [
+    const outside: ReadonlyArray<readonly [number, number]> = [
       [512, 99],
       [512, 924],
       [99, 512],
       [924, 512],
-    ]) {
+    ];
+    for (const [x, y] of outside) {
       expect(alpha(x, y)).toBeLessThan(255);
     }
     expect(alpha(512, 944)).toBeGreaterThan(10);
@@ -192,7 +197,7 @@ it.each(["prod/black", "dev/blueprint", "nightly/nightly"])(
 const fixture = Effect.fn("renderRuCodeIcons.testFixture")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const directory = yield* fs.makeTempDirectoryScoped({ prefix: "render-rucode-icons-" });
-  yield* fs.makeDirectory(join(directory, "assets/prod"), { recursive: true });
+  yield* fs.makeDirectory(NodePath.join(directory, "assets/prod"), { recursive: true });
   return directory;
 });
 
@@ -202,7 +207,10 @@ effectIt.layer(NodeServices.layer)("renderer", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* fixture();
       for (const source of [squircle, square, pixel16, pixel32]) {
-        yield* fs.writeFile(join(directory, source), yield* Effect.promise(() => repoFile(source)));
+        yield* fs.writeFile(
+          NodePath.join(directory, source),
+          yield* Effect.promise(() => repoFile(source)),
+        );
       }
       yield* renderRuCodeIcons(directory);
       for (const concurrentRun of [false, true]) {
@@ -212,7 +220,7 @@ effectIt.layer(NodeServices.layer)("renderer", (it) => {
           });
         }
         for (const { path } of expectedOutputs) {
-          const generated = Buffer.from(yield* fs.readFile(join(directory, path)));
+          const generated = Buffer.from(yield* fs.readFile(NodePath.join(directory, path)));
           expect(digest(generated), path).toBe(digest(yield* Effect.promise(() => repoFile(path))));
         }
       }
@@ -223,7 +231,7 @@ effectIt.layer(NodeServices.layer)("renderer", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* fixture();
-      const destination = join(directory, "assets/prod/black-ios-1024.png");
+      const destination = NodePath.join(directory, "assets/prod/black-ios-1024.png");
       yield* fs.writeFileString(destination, "previous output");
       yield* renderRuCodeIcons(directory).pipe(Effect.flip);
       expect(yield* fs.readFileString(destination)).toBe("previous output");
@@ -235,10 +243,13 @@ effectIt.layer(NodeServices.layer)("renderer", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* fixture();
       for (const source of [squircle, square, pixel16]) {
-        yield* fs.writeFile(join(directory, source), yield* Effect.promise(() => repoFile(source)));
+        yield* fs.writeFile(
+          NodePath.join(directory, source),
+          yield* Effect.promise(() => repoFile(source)),
+        );
       }
-      yield* fs.writeFileString(join(directory, pixel32), "invalid SVG");
-      const destination = join(directory, "assets/prod/black-ios-1024.png");
+      yield* fs.writeFileString(NodePath.join(directory, pixel32), "invalid SVG");
+      const destination = NodePath.join(directory, "assets/prod/black-ios-1024.png");
       yield* fs.writeFileString(destination, "previous output");
       yield* renderRuCodeIcons(directory).pipe(Effect.flip);
       expect(yield* fs.readFileString(destination)).toBe("previous output");
