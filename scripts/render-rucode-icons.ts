@@ -47,7 +47,7 @@ const webFrames = new Map<string, IconOutput["frames"]>([
   ["favicon.ico", [favicon16, favicon32, { source: squircle, size: 48 }]],
   ["favicon-16x16.png", [favicon16]],
   ["favicon-32x32.png", [favicon32]],
-  ["apple-touch-icon.png", [{ source: squircle, size: 180 }]],
+  ["apple-touch-icon.png", [{ source: square, size: 180 }]],
   ["icon-192x192.png", [{ source: squircle, size: 192 }]],
   ["icon-512x512.png", [{ source: squircle, size: 512 }]],
 ]);
@@ -136,7 +136,7 @@ export const renderRuCodeIcons = Effect.fn("renderRuCodeIcons")(function* (
     const contents = yield* Effect.tryPromise({
       try: async () => {
         const image = sharp(svg);
-        if (source === squircle && size !== 1024) image.resize(size, size);
+        if ((source === squircle || source === square) && size !== 1024) image.resize(size, size);
         if (source === square) image.removeAlpha();
         const result = await (
           format === "webp" ? image.webp({ lossless: true }) : image.png()
