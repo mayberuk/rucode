@@ -192,10 +192,10 @@ describe("rebrandText", () => {
 
   it("preserves the recorded MCP tool prefix in its compatibility test", () => {
     const text = '  "T3 Code ",';
-    assert.deepStrictEqual(
-      rebrandText("packages/shared/src/t3McpToolPresentation.test.ts", text),
-      { text, hits: [] },
-    );
+    assert.deepStrictEqual(rebrandText("packages/shared/src/t3McpToolPresentation.test.ts", text), {
+      text,
+      hits: [],
+    });
     assert.strictEqual(rebrandText("apps/web/src/App.tsx", text).text, '  "RuCode ",');
   });
 

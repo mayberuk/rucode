@@ -895,75 +895,77 @@ process.exit(0);
       }),
   );
 
-  it.effect("waits without exiting and restarts once the other owner releases the RuCode home", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-reclaim-" });
-      const statePath = path.join(root, "runtime", "service-state.json");
-      const ownerPath = path.join(root, "userdata", "server-owner.sqlite");
-      yield* fs.makeDirectory(path.dirname(ownerPath), { recursive: true });
-      yield* writeFakeRuntime(
-        fs,
-        path,
-        path.join(root, "runtime", "versions", "1.0.0"),
-        [
-          `const db = new (require("node:sqlite").DatabaseSync)(${JSON.stringify(ownerPath)});`,
-          `try { db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;"); }`,
-          `catch { process.exit(${SERVER_EXIT_CODE_STATE_DIR_OWNED}); }`,
-          'process.send("owner");',
-          "setInterval(() => {}, 1_000);",
-        ].join("\n"),
-      );
-      yield* Effect.promise(() =>
-        writeServiceState(statePath, {
-          protocol: SERVICE_LAUNCHER_PROTOCOL,
-          activeVersion: "1.0.0",
-        }),
-      );
-      using otherOwner = new NodeSqlite.DatabaseSync(ownerPath);
-      otherOwner.exec("BEGIN EXCLUSIVE;");
-      const refused = Promise.withResolvers<void>();
-      const owned = Promise.withResolvers<void>();
-      yield* Effect.acquireRelease(
-        Effect.sync(() =>
-          vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
-            if (String(chunk).includes("owns this RuCode home")) refused.resolve();
-            return true;
+  it.effect(
+    "waits without exiting and restarts once the other owner releases the RuCode home",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-reclaim-" });
+        const statePath = path.join(root, "runtime", "service-state.json");
+        const ownerPath = path.join(root, "userdata", "server-owner.sqlite");
+        yield* fs.makeDirectory(path.dirname(ownerPath), { recursive: true });
+        yield* writeFakeRuntime(
+          fs,
+          path,
+          path.join(root, "runtime", "versions", "1.0.0"),
+          [
+            `const db = new (require("node:sqlite").DatabaseSync)(${JSON.stringify(ownerPath)});`,
+            `try { db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;"); }`,
+            `catch { process.exit(${SERVER_EXIT_CODE_STATE_DIR_OWNED}); }`,
+            'process.send("owner");',
+            "setInterval(() => {}, 1_000);",
+          ].join("\n"),
+        );
+        yield* Effect.promise(() =>
+          writeServiceState(statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
           }),
-        ),
-        (spy) => Effect.sync(() => spy.mockRestore()),
-      );
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          spawnHook.current = (child) => child.once("message", () => owned.resolve());
-        }),
-        () =>
+        );
+        using otherOwner = new NodeSqlite.DatabaseSync(ownerPath);
+        otherOwner.exec("BEGIN EXCLUSIVE;");
+        const refused = Promise.withResolvers<void>();
+        const owned = Promise.withResolvers<void>();
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+              if (String(chunk).includes("owns this RuCode home")) refused.resolve();
+              return true;
+            }),
+          ),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        yield* Effect.acquireRelease(
           Effect.sync(() => {
-            spawnHook.current = undefined;
+            spawnHook.current = (child) => child.once("message", () => owned.resolve());
           }),
-      );
-      const spawnsBefore = spawnedChildren.length;
-      const launcher = new Launcher(
-        root,
-        yield* Effect.promise(() => readServiceState(statePath)),
-        { stateDirOwnerPollMs: 10 },
-      );
-      let completed = false;
-      const running = launcher.run().finally(() => {
-        completed = true;
-      });
-      yield* Effect.promise(() => refused.promise);
-      assert.isFalse(completed);
-      // An idle launcher must not make an SSH launch wait for a server it is not starting.
-      assert.isFalse(yield* Effect.promise(() => serviceLauncherIsServing(root)));
-      otherOwner.close();
-      yield* Effect.promise(() => owned.promise);
-      assert.isTrue(yield* Effect.promise(() => serviceLauncherIsServing(root)));
-      yield* Effect.promise(() => launcher.stop("SIGTERM"));
-      yield* Effect.promise(() => running);
-      assert.strictEqual(spawnedChildren.length - spawnsBefore, 2);
-    }),
+          () =>
+            Effect.sync(() => {
+              spawnHook.current = undefined;
+            }),
+        );
+        const spawnsBefore = spawnedChildren.length;
+        const launcher = new Launcher(
+          root,
+          yield* Effect.promise(() => readServiceState(statePath)),
+          { stateDirOwnerPollMs: 10 },
+        );
+        let completed = false;
+        const running = launcher.run().finally(() => {
+          completed = true;
+        });
+        yield* Effect.promise(() => refused.promise);
+        assert.isFalse(completed);
+        // An idle launcher must not make an SSH launch wait for a server it is not starting.
+        assert.isFalse(yield* Effect.promise(() => serviceLauncherIsServing(root)));
+        otherOwner.close();
+        yield* Effect.promise(() => owned.promise);
+        assert.isTrue(yield* Effect.promise(() => serviceLauncherIsServing(root)));
+        yield* Effect.promise(() => launcher.stop("SIGTERM"));
+        yield* Effect.promise(() => running);
+        assert.strictEqual(spawnedChildren.length - spawnsBefore, 2);
+      }),
   );
 
   it.effect(

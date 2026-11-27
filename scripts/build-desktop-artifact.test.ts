@@ -606,11 +606,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.strictEqual(config.productName, "RuCode Dev");
       assert.strictEqual(config.artifactName, DEV_DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
       assert.strictEqual(config.publish, null);
-      assert.nestedPropertyVal(
-        config,
-        "dmg.title",
-        `RuCode Dev ${version} Installer`,
-      );
+      assert.nestedPropertyVal(config, "dmg.title", `RuCode Dev ${version} Installer`);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))),
   );
 

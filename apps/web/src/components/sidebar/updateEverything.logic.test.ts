@@ -255,10 +255,7 @@ describe("collectChannelSwitchTargets", () => {
         `its database has changes ${NIGHTLY} does not support yet; stay on Stable until Nightly has them`,
       ],
       ["old-desktop", "needs a newer desktop app"],
-      [
-        "no-nightly",
-        "Example Corp manages RuCode updates. Only stable releases can be installed.",
-      ],
+      ["no-nightly", "Example Corp manages RuCode updates. Only stable releases can be installed."],
     ]);
   });
 });
