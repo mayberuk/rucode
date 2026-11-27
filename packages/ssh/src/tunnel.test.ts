@@ -341,6 +341,43 @@ describe("ssh tunnel scripts", () => {
     },
   );
 
+  it("downloads a published version's archive and checksums from the fork's release", () => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ssh-runner-"));
+    try {
+      const bin = NodePath.join(root, "bin");
+      const requests = NodePath.join(root, "requests");
+      NodeFS.mkdirSync(bin);
+      NodeFS.mkdirSync(NodePath.join(root, "home"));
+      NodeFS.writeFileSync(
+        NodePath.join(bin, "uname"),
+        '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n',
+        { mode: 0o755 },
+      );
+      // Serves an empty SHA256SUMS, then refuses the archive so the run stops after asking for it.
+      NodeFS.writeFileSync(
+        NodePath.join(bin, "curl"),
+        `#!/bin/sh\nfor last; do :; done\nfor a; do case "$a" in http*) url="$a" ;; esac; done\nprintf '%s\\n' "$url" >> '${requests}'\ncase "$url" in */SHA256SUMS) : > "$last" ;; *) exit 22 ;; esac\n`,
+        { mode: 0o755 },
+      );
+      const runner = NodePath.join(root, "run-t3.sh");
+      NodeFS.writeFileSync(
+        runner,
+        SshTunnel.buildRemoteT3RunnerScript({ archiveVersion: "1.2.3" }),
+      );
+      const result = NodeChildProcess.spawnSync("sh", [runner, "--version"], {
+        encoding: "utf8",
+        env: { HOME: NodePath.join(root, "home"), PATH: `${bin}:${process.env.PATH ?? ""}` },
+      });
+      assert.notEqual(result.status, 0);
+      assert.deepEqual(NodeFS.readFileSync(requests, "utf8").trim().split("\n"), [
+        "https://github.com/mayberuk/rucode/releases/download/v1.2.3/SHA256SUMS",
+        "https://github.com/mayberuk/rucode/releases/download/v1.2.3/t3-1.2.3-linux-x64.tar.gz",
+      ]);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // sha256sum and shasum escape a newline in a file name they print, so the home path has one.
   const checksumTools =
     NodeChildProcess.spawnSync("sh", ["-c", 'command -v "$1"', "sh", "shasum"]).status === 0
@@ -1410,6 +1447,242 @@ server.listen(Number(flag("--port") ?? 0), "127.0.0.1", () => {
 // Reuse decisions live in generated shell, so drive the real launch script in
 // a temporary HOME. Each archive version gets a pre-installed fake runtime
 // whose server writes the default runtime file the way `t3 serve` does.
+describe("remote runner mode", () => {
+  const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+
+  it.each<{
+    readonly options: SshTunnel.RemoteT3RunnerOptions;
+    readonly mode: SshTunnel.RemoteRunnerMode;
+  }>([
+    {
+      options: { archiveVersion: "1.2.3" },
+      mode: {
+        kind: "archive",
+        version: "1.2.3",
+        releaseBaseUrl: "https://github.com/mayberuk/rucode/releases/download",
+      },
+    },
+    {
+      options: { archiveVersion: " 1.2.3 ", releaseBaseUrl: "https://mirror.example/t3/" },
+      mode: { kind: "archive", version: "1.2.3", releaseBaseUrl: "https://mirror.example/t3" },
+    },
+    {
+      options: { archiveVersion: `0.0.5-dev.${COMMIT}` },
+      mode: { kind: "source", commit: COMMIT, gitUrl: "https://github.com/mayberuk/rucode.git" },
+    },
+    {
+      options: { archiveVersion: `0.0.5-dev.${COMMIT.slice(1)}` },
+      mode: {
+        kind: "archive",
+        version: `0.0.5-dev.${COMMIT.slice(1)}`,
+        releaseBaseUrl: "https://github.com/mayberuk/rucode/releases/download",
+      },
+    },
+    {
+      options: {
+        nodeScriptPath: " /acme/app/apps/server/src/bin.ts ",
+        archiveVersion: `0.0.5-dev.${COMMIT}`,
+      },
+      mode: { kind: "node-script", nodeScriptPath: "/acme/app/apps/server/src/bin.ts" },
+    },
+  ])("plans $mode.kind for $options", ({ options, mode }) => {
+    assert.deepEqual(SshTunnel.resolveRemoteRunnerMode(options), mode);
+  });
+
+  it("refuses a runner with no version or script, and a version that is not exact", () => {
+    assert.throws(() => SshTunnel.resolveRemoteRunnerMode({}), SshTunnel.SshMissingRunnerError);
+    assert.throws(
+      () => SshTunnel.resolveRemoteRunnerMode({ archiveVersion: "../acme" }),
+      SshTunnel.SshInvalidArchiveVersionError,
+    );
+  });
+});
+
+describe("Dev build source runner", () => {
+  const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+  const ENGINE_RANGE = ">=24.10";
+  const CHECKOUT_PACKAGE_JSON = `${JSON.stringify(
+    {
+      name: "acme-app",
+      private: true,
+      engines: { node: ENGINE_RANGE },
+      packageManager: "pnpm@12.14.0",
+    },
+    null,
+    2,
+  )}\n`;
+  const ENTRY =
+    'console.log(["entry", process.argv[1], process.env.T3_TEST_NODE, ...process.argv.slice(2)].join(" "));\n';
+  const TOOLS = ["sh", "mkdir", "mktemp", "cat", "rm", "mv", "sed", "head", "tail", "cp", "sleep"];
+
+  const writeCheckout = (dir: string) => {
+    NodeFS.mkdirSync(NodePath.join(dir, "apps/server/src"), { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(dir, "package.json"), CHECKOUT_PACKAGE_JSON);
+    NodeFS.writeFileSync(NodePath.join(dir, "apps/server/src/bin.ts"), ENTRY);
+  };
+
+  // PATH holds no Node, so the runner has to discover one. Node is reachable only through
+  // mise shims, plus an nvm default when asked; each reports which one ran the entry.
+  const runSourceRunner = (
+    options: {
+      readonly miseNodeVersion?: string;
+      readonly nvmDefaultNodeVersion?: string;
+      readonly builtCommit?: string;
+      readonly fetchFails?: boolean;
+    } = {},
+  ) => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ssh-source-"));
+    try {
+      const bin = NodePath.join(root, "bin");
+      const home = NodePath.join(root, "home");
+      const checkout = NodePath.join(root, "checkout");
+      const events = NodePath.join(root, "events");
+      const miseShims = NodePath.join(home, ".local/share/mise/shims");
+      const sourceRoot = NodePath.join(home, ".t3/runtime/source");
+      NodeFS.mkdirSync(bin);
+      NodeFS.mkdirSync(home);
+      NodeFS.writeFileSync(events, "");
+      writeCheckout(checkout);
+      for (const tool of TOOLS) {
+        NodeFS.symlinkSync(
+          NodeChildProcess.execFileSync("sh", ["-c", `command -v ${tool}`], {
+            encoding: "utf8",
+          }).trim(),
+          NodePath.join(bin, tool),
+        );
+      }
+      const executable = (file: string, body: string) =>
+        NodeFS.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      const nodeShim = (dir: string, label: string, version: string | undefined) => {
+        NodeFS.mkdirSync(dir, { recursive: true });
+        let preload = "";
+        if (version !== undefined) {
+          const file = NodePath.join(root, `node-${version}.cjs`);
+          NodeFS.writeFileSync(
+            file,
+            `Object.defineProperty(process, "versions", { value: { ...process.versions, node: ${JSON.stringify(version)} } });\n`,
+          );
+          preload = ` --require '${file}'`;
+        }
+        executable(
+          NodePath.join(dir, "node"),
+          `T3_TEST_NODE=${label}; export T3_TEST_NODE\nexec '${process.execPath}'${preload} "$@"`,
+        );
+      };
+      nodeShim(miseShims, "mise", options.miseNodeVersion);
+      executable(
+        NodePath.join(miseShims, "npx"),
+        `printf 'npx %s%s\\n' "$*" "$([ -f package.json ] && printf ' (in checkout)')" >> '${events}'`,
+      );
+      if (options.nvmDefaultNodeVersion !== undefined) {
+        nodeShim(NodePath.join(home, ".nvm-default/bin"), "nvm", options.nvmDefaultNodeVersion);
+        NodeFS.mkdirSync(NodePath.join(home, ".nvm"));
+        NodeFS.writeFileSync(
+          NodePath.join(home, ".nvm/nvm.sh"),
+          'PATH="$HOME/.nvm-default/bin:$PATH"\n',
+        );
+      }
+      executable(
+        NodePath.join(bin, "git"),
+        `printf 'git %s\\n' "$*" >> '${events}'
+case "$1" in
+  init) mkdir .git ;;
+  fetch) ${options.fetchFails ? "printf 'fatal: remote error: upload-pack: not our ref\\n' >&2; exit 128" : ":"} ;;
+  checkout) cp -R '${checkout}/.' . ;;
+esac`,
+      );
+      if (options.builtCommit !== undefined) {
+        writeCheckout(NodePath.join(sourceRoot, COMMIT));
+        NodeFS.writeFileSync(
+          NodePath.join(sourceRoot, COMMIT, ".build-complete"),
+          `${options.builtCommit}\n`,
+        );
+      }
+      const runner = NodePath.join(root, "run-t3.sh");
+      NodeFS.writeFileSync(
+        runner,
+        SshTunnel.buildRemoteT3RunnerScript({ archiveVersion: `0.0.5-dev.${COMMIT}` }),
+      );
+      const result = NodeChildProcess.spawnSync(
+        NodePath.join(bin, "sh"),
+        [runner, "serve", "--port", "1"],
+        { encoding: "utf8", env: { HOME: home, PATH: bin } },
+      );
+      const buildCompleteFile = NodePath.join(sourceRoot, COMMIT, ".build-complete");
+      return {
+        status: result.status,
+        stdout: result.stdout.trim(),
+        stderr: result.stderr,
+        events: NodeFS.readFileSync(events, "utf8").split("\n").filter(Boolean),
+        buildComplete: NodeFS.existsSync(buildCompleteFile)
+          ? NodeFS.readFileSync(buildCompleteFile, "utf8").trim()
+          : undefined,
+        sourceEntries: NodeFS.existsSync(sourceRoot) ? NodeFS.readdirSync(sourceRoot) : [],
+        entry: NodePath.join(sourceRoot, COMMIT, "apps/server/src/bin.ts"),
+      };
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  const BUILD_EVENTS = [
+    "git init -q",
+    `git fetch --depth 1 https://github.com/mayberuk/rucode.git ${COMMIT}`,
+    "git checkout -q FETCH_HEAD",
+    "npx --yes pnpm@12.14.0 install --frozen-lockfile --filter t3... (in checkout)",
+  ];
+
+  it("fetches the exact commit from the fork, installs it, and runs its server entry", () => {
+    const run = runSourceRunner();
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(run.events, BUILD_EVENTS);
+    assert.equal(run.stdout, `entry ${run.entry} mise serve --port 1`);
+    assert.equal(run.buildComplete, COMMIT);
+    assert.deepEqual(run.sourceEntries, [COMMIT]);
+  });
+
+  it.each([
+    { built: "this commit", builtCommit: COMMIT, events: [] },
+    { built: "another commit", builtCommit: "f".repeat(40), events: BUILD_EVENTS },
+  ])("reuses a cached build only when it is complete for $built", ({ builtCommit, events }) => {
+    const run = runSourceRunner({ builtCommit });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(run.events, events);
+    assert.equal(run.stdout, `entry ${run.entry} mise serve --port 1`);
+    assert.equal(run.buildComplete, COMMIT);
+  });
+
+  it("stops naming the commit when the fork does not have it", () => {
+    const run = runSourceRunner({ fetchFails: true });
+    assert.notEqual(run.status, 0);
+    assert.include(run.stderr, COMMIT);
+    assert.match(run.stderr, /push/i);
+    assert.equal(run.stdout, "");
+    assert.isFalse(run.events.some((event) => event.startsWith("npx")));
+    assert.deepEqual(run.sourceEntries, []);
+  });
+
+  it("stops naming the engine range and git when the host's Node is too old", () => {
+    const run = runSourceRunner({ miseNodeVersion: "20.0.0" });
+    assert.notEqual(run.status, 0);
+    assert.include(run.stderr, ENGINE_RANGE);
+    assert.match(run.stderr, /\bgit\b/);
+    assert.equal(run.stdout, "");
+    assert.isFalse(run.events.some((event) => event.startsWith("npx")));
+  });
+
+  it.each([
+    { setup: "only mise has Node", nvmDefaultNodeVersion: undefined },
+    { setup: "nvm's default Node is too old", nvmDefaultNodeVersion: "20.0.0" },
+  ])("runs the entry with mise's Node when $setup", ({ nvmDefaultNodeVersion }) => {
+    const run = runSourceRunner(
+      nvmDefaultNodeVersion === undefined ? {} : { nvmDefaultNodeVersion },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, `entry ${run.entry} mise serve --port 1`);
+  });
+});
+
 describe("archive launch script", () => {
   const windowsHost = HostProcess.Platform.defaultValue() === "win32";
   const FAKE_T3 = `const fs = require("node:fs");
@@ -1519,7 +1792,10 @@ const canBind = (port) =>
   // Installs a fake runtime per version so the runner never downloads. The
   // seeded remembered port keeps the test off the default 3773, which a live
   // T3 on this machine may own.
-  const prepareLaunch = (versions: ReadonlyArray<string>) =>
+  const prepareLaunch = (
+    versions: ReadonlyArray<string>,
+    devBuilds: ReadonlyArray<{ readonly version: string; readonly commit: string }> = [],
+  ) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-archive-launch-" });
@@ -1538,6 +1814,19 @@ const canBind = (port) =>
         );
         yield* fs.chmod(`${runtimeDir}/t3`, 0o755);
         yield* fs.writeFileString(`${runtimeDir}/.install-complete`, `${version}\n`);
+      }
+      for (const { version, commit } of devBuilds) {
+        const sourceDir = `${home}/.t3/runtime/source/${commit}`;
+        yield* fs.makeDirectory(`${sourceDir}/apps/server/src`, { recursive: true });
+        yield* fs.writeFileString(
+          `${sourceDir}/package.json`,
+          JSON.stringify({ engines: { node: ">=22" }, packageManager: "pnpm@12.14.0" }, null, 2),
+        );
+        yield* fs.writeFileString(
+          `${sourceDir}/apps/server/src/bin.ts`,
+          `process.argv.splice(2, 0, ${JSON.stringify(version)});\nrequire(${JSON.stringify(fakeT3)});\n`,
+        );
+        yield* fs.writeFileString(`${sourceDir}/.build-complete`, `${commit}\n`);
       }
       const readManagedPid = fs
         .readFileString(`${stateDir}/pid`)
@@ -1599,6 +1888,27 @@ const canBind = (port) =>
       assert.isFalse(isAlive(olderPid));
       assert.equal(yield* readServerVersion, "0.1.6");
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.skipIf(windowsHost)(
+    "a Dev client replaces a newer release server and keeps its own build on reconnect",
+    () =>
+      Effect.gen(function* () {
+        const devVersion = `0.1.5-dev.${"a".repeat(40)}`;
+        const { connect, readServerVersion } = yield* prepareLaunch(
+          ["0.1.6"],
+          [{ version: devVersion, commit: "a".repeat(40) }],
+        );
+        const releasePid = yield* connect("0.1.6");
+
+        const devPid = yield* connect(devVersion);
+        assert.notEqual(devPid, releasePid);
+        assert.isFalse(isAlive(releasePid));
+        assert.equal(yield* readServerVersion, devVersion);
+
+        assert.equal(yield* connect(devVersion), devPid);
+        assert.equal(yield* readServerVersion, devVersion);
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
 

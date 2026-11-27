@@ -19,7 +19,14 @@ import * as Sink from "effect/Sink";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import {
+  DESKTOP_APP_ARTIFACT_NAME_TEMPLATE,
+  DESKTOP_APP_IDENTITIES,
+  DEV_DESKTOP_APP_ARTIFACT_NAME_TEMPLATE,
+} from "@t3tools/shared/cliRelease";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
+import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 
 import {
   buildDesktopBundles,
@@ -42,6 +49,7 @@ import {
   resolveMacFileExclusions,
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
+  resolveDesktopBuildIconAssets,
   resolveMergedStageDependencies,
   resolveBuildOptions,
   stageWslRuntimeArchive,
@@ -552,6 +560,197 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
+  );
+
+  const devCommit = "0123456789abcdef0123456789abcdef01234567";
+
+  it.effect.each<{
+    name: string;
+    base: string;
+    env: Record<string, string>;
+    mockUpdates?: boolean;
+  }>([
+    { name: "with a GitHub repository", base: "1.2.3", env: { GITHUB_REPOSITORY: "acme/app" } },
+    {
+      name: "with an update repository override and a zero base version",
+      base: "0.0.0",
+      env: { T3CODE_DESKTOP_UPDATE_REPOSITORY: "acme/app" },
+    },
+    { name: "with no update configuration", base: "1.2.3", env: {} },
+    { name: "with mock updates", base: "1.2.3", env: {}, mockUpdates: true },
+    {
+      name: "with mock updates and an invalid repository",
+      base: "1.2.3",
+      env: { GITHUB_REPOSITORY: "acme" },
+      mockUpdates: true,
+    },
+  ])("uses the Dev identity without a feed $name", ({ base, env, mockUpdates }) =>
+    Effect.gen(function* () {
+      const version = `${base}-dev.${devCommit}`;
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        version,
+        false,
+        mockUpdates ?? false,
+        undefined,
+        undefined,
+      );
+
+      assert.strictEqual(config.appId, DESKTOP_APP_IDENTITIES.dev.appId);
+      assert.strictEqual(config.productName, DESKTOP_APP_IDENTITIES.dev.productName);
+      assert.strictEqual(config.artifactName, DEV_DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
+      assert.strictEqual(config.publish, null);
+      assert.nestedPropertyVal(
+        config,
+        "dmg.title",
+        `${DESKTOP_APP_IDENTITIES.dev.productName} ${version} Installer`,
+      );
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))),
+  );
+
+  it.effect.each([
+    { name: "an empty version", version: "" },
+    { name: "an empty commit", version: "1.2.3-dev." },
+    { name: "a 39-character commit", version: `1.2.3-dev.${devCommit.slice(1)}` },
+    { name: "a 41-character commit", version: `1.2.3-dev.${devCommit}0` },
+    { name: "a non-hexadecimal commit", version: `1.2.3-dev.g${devCommit.slice(1)}` },
+    { name: "an uppercase commit", version: `1.2.3-dev.${devCommit.toUpperCase()}` },
+    { name: "a negative base version", version: `-1.2.3-dev.${devCommit}` },
+    { name: "a base version missing a patch", version: `1.2-dev.${devCommit}` },
+    { name: "a base version with a leading zero", version: `01.2.3-dev.${devCommit}` },
+  ])("preserves release configuration for $name", ({ version }) =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "zip",
+        version,
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      assert.strictEqual(config.appId, "com.t3tools.t3code");
+      assert.strictEqual(config.productName, desktopPackageJson.productName);
+      assert.strictEqual(config.artifactName, DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
+      assert.deepStrictEqual(config.publish, [
+        { provider: "github", owner: "acme", repo: "app", releaseType: "release" },
+      ]);
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "acme/app" } })),
+      ),
+    ),
+  );
+
+  it("uses the production icons for a Dev version", () => {
+    assert.deepStrictEqual(resolveDesktopBuildIconAssets(`1.2.3-dev.${devCommit}`), {
+      macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
+    });
+  });
+
+  it.effect.each([
+    { version: "1.2.3", productName: desktopPackageJson.productName },
+    { version: "1.2.3-nightly.20260101.1", productName: "T3 Code (Nightly)" },
+  ])("uses the contract artifact template for $version", ({ version, productName }) =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "zip",
+        version,
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "arm64",
+      );
+
+      assert.strictEqual(config.artifactName, DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
+      assert.strictEqual(config.appId, "com.t3tools.t3code");
+      assert.strictEqual(config.productName, productName);
+    }),
+  );
+
+  it.effect.each([
+    { target: "zip", arch: "arm64", version: "1.2.3" },
+    { target: "dmg", arch: "x64", version: `1.2.3-dev.${devCommit}` },
+    { target: "dir", arch: "universal", version: "1.2.3" },
+  ] as const)(
+    "requests ad-hoc signing for an unsigned $arch macOS $target",
+    ({ target, arch, version }) =>
+      Effect.gen(function* () {
+        const config = yield* createBuildConfig(
+          "mac",
+          target,
+          version,
+          false,
+          false,
+          undefined,
+          undefined,
+          false,
+          arch,
+        );
+
+        assert.nestedPropertyVal(config, "mac.identity", "-");
+        assert.notProperty(config.mac, "sign");
+      }),
+  );
+
+  it.effect.each([
+    { name: "without passkey signing options", passkeys: undefined },
+    {
+      name: "with passkey signing options",
+      passkeys: {
+        entitlementsPath: "entitlements.plist",
+        provisioningProfilePath: "app.provisionprofile",
+      },
+    },
+  ])("uses the existing macOS signing hook $name", ({ passkeys }) =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        true,
+        false,
+        undefined,
+        passkeys,
+      );
+
+      assert.notProperty(config.mac, "identity");
+      assert.nestedPropertyVal(
+        config,
+        "mac.sign",
+        NodePath.join(import.meta.dirname, "sign-macos.ts"),
+      );
+      const mac = config.mac as { entitlements?: string; provisioningProfile?: string };
+      assert.strictEqual(mac.entitlements, passkeys?.entitlementsPath);
+      assert.strictEqual(mac.provisioningProfile, passkeys?.provisioningProfilePath);
+    }),
+  );
+
+  it.effect.each([
+    { platform: "linux", target: "AppImage" },
+    { platform: "win", target: "nsis" },
+  ] as const)("omits macOS signing options for unsigned $platform builds", ({ platform, target }) =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        platform,
+        target,
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      assert.notProperty(config, "mac");
+      assert.notProperty(config[platform], "identity");
+    }),
   );
 
   it.effect("names the Electron window class in the Linux desktop entry", () =>
