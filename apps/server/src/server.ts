@@ -107,6 +107,7 @@ import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as PluginCards from "./pluginCards/core/PluginCards.ts";
+import * as InitiativeBoard from "./pluginCards/live/InitiativeBoard.ts";
 import * as ClaudeSessionRegistry from "./cliSessions/ClaudeSessionRegistry.ts";
 import * as CliSessionHandOff from "./cliSessions/CliSessionHandOff.ts";
 import * as CliSessionSync from "./cliSessions/CliSessionSync.ts";
@@ -555,6 +556,8 @@ const layerPluginCards = PluginCards.layer.pipe(
   Layer.provide(ProjectionStoreV2.layer),
 );
 
+const layerInitiativeBoard = InitiativeBoard.layer.pipe(Layer.provide(ProcessRunner.layer));
+
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
 
 const layerWorkspaceFileSystem = WorkspaceFileSystem.layer.pipe(
@@ -730,6 +733,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
   layerPluginCards,
+  layerInitiativeBoard,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),

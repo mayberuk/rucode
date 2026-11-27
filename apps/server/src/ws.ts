@@ -128,6 +128,7 @@ import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import * as PluginCards from "./pluginCards/core/PluginCards.ts";
+import * as InitiativeBoard from "./pluginCards/live/InitiativeBoard.ts";
 import * as CliSessionHandOff from "./cliSessions/CliSessionHandOff.ts";
 import {
   bufferShellLiveStream,
@@ -1489,6 +1490,10 @@ export const layerWsRpc = (
         yield* Effect.serviceOption(PluginCards.PluginCards),
         () => PluginCards.unavailable,
       );
+      const initiativeBoard = Option.getOrElse(
+        yield* Effect.serviceOption(InitiativeBoard.InitiativeBoard),
+        () => InitiativeBoard.unavailable,
+      );
       const cliSessionHandOff = Option.getOrElse(
         yield* Effect.serviceOption(CliSessionHandOff.CliSessionHandOff),
         () => CliSessionHandOff.unavailable,
@@ -2365,6 +2370,8 @@ export const layerWsRpc = (
         [WS_METHODS.pluginCardsSubscribeThread]: (input) =>
           pluginCards.subscribeThread(input.threadId),
         [WS_METHODS.pluginCardsSubscribeLive]: (_input) => pluginCards.subscribeLive,
+        [WS_METHODS.pluginCardsSubscribeInitiative]: (input) =>
+          initiativeBoard.subscribe(input.slug),
         [WS_METHODS.pluginCardsAnswerDecision]: (input) => pluginCards.answerDecision(input),
         [WS_METHODS.pluginCardsRunAction]: (input) => pluginCards.runAction(input),
         [WS_METHODS.pluginCardsReadAsset]: (input) => pluginCards.readAsset(input),

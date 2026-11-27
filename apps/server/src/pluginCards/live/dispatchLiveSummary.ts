@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import type { DispatchInitiativeState } from "../dispatch/initiativeState.ts";
+import { planWaves, SETTLED_PART_STATUSES } from "../dispatch/initiativeWaves.ts";
 import type { DispatchLiveInitiative } from "../dispatch/liveRegistry.ts";
 import type { DispatchRunFeedRow } from "../dispatch/runFeed.ts";
 
@@ -19,7 +20,6 @@ export type FoldedRuns = ReadonlyMap<string, FoldedRun>;
 
 const SETTLED_RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_CHILDREN = 100;
-const SETTLED_PART_STATUSES = new Set(["merged", "gate-pass"]);
 const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const REGISTRY_SUFFIX = ".json";
 
@@ -109,18 +109,7 @@ export const liveChildren = (
       costUsd: null,
     }));
 
-const currentWave = (entry: DispatchLiveInitiative, state: DispatchInitiativeState | null) => {
-  const waves = state?.waves ?? [];
-  const highest = (numbers: ReadonlyArray<number>) =>
-    numbers.length === 0 ? null : Math.max(...numbers);
-  return (
-    highest(waves.filter((wave) => wave.opened && !wave.closed).map((wave) => wave.number)) ??
-    highest(waves.filter((wave) => wave.closed).map((wave) => wave.number)) ??
-    entry.totalWave
-  );
-};
-
-const spendOf = (entry: DispatchLiveInitiative): PluginLiveInitiative["spend"] => {
+export const spendOf = (entry: DispatchLiveInitiative): PluginLiveInitiative["spend"] => {
   // dp folds the orchestrator's own spend into reportedCostUsd, so it is the fuller figure.
   const usd =
     entry.reportedCostUsd > 0
@@ -151,13 +140,10 @@ export const summarizeInitiative = (
   },
 ): PluginLiveInitiative => {
   const parts = state?.parts ?? [];
-  const current = currentWave(entry, state);
-  const total = Math.max(
-    current,
-    ...parts.map((part) => part.wave),
-    ...(state?.waves ?? []).map((wave) => wave.number),
-  );
-  const currentParts = parts.filter((part) => part.wave === current);
+  const plan = state === null ? null : planWaves(state);
+  const current = plan?.current ?? entry.totalWave;
+  const total = plan?.total ?? entry.totalWave;
+  const currentParts = parts.filter((part) => plan?.displayOf(part.wave) === current);
   const liveUntil = parseMillis(entry.liveUntil);
   const running = liveUntil !== null && liveUntil > options.now ? entry.totalRunning : 0;
   return {
@@ -179,7 +165,7 @@ export const summarizeInitiative = (
     parts: parts.map((part) => ({
       id: part.id,
       title: part.title,
-      wave: part.wave,
+      wave: plan?.displayOf(part.wave) ?? part.wave,
       status: part.status,
       threadIds: [
         ...new Set(

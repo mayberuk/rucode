@@ -15,7 +15,7 @@ import { ExternalSessionHolds } from "../../orchestration-v2/ExternalSessionHold
 import * as ProcessRunner from "../../processRunner.ts";
 import type { RecognizableCommand } from "../core/PluginCardSource.ts";
 import { PluginThreadIndex } from "../core/PluginThreadIndex.ts";
-import { makeDispatchDecisionSource } from "./decisionSource.ts";
+import { decisionCardId, makeDispatchDecisionSource } from "./decisionSource.ts";
 
 const THREAD_A = ThreadId.make("thread-a");
 const THREAD_B = ThreadId.make("thread-b");
@@ -283,7 +283,15 @@ it.effect("gives a chat only the decisions that map to it, placed when they were
     const { source, checkoutA, checkoutB, write, lookupReads } = yield* setup({
       transcriptFor: THREAD_A,
     });
-    yield* write(checkoutA, raisedByA("mine-open"));
+    yield* write(
+      checkoutA,
+      raisedByA("mine-open", {
+        kind: "design-review",
+        question: "Which design should continue?",
+        initiative: "alpha",
+        part: "part-a",
+      }),
+    );
     yield* write(
       checkoutA,
       raisedByA("mine-answered", {
@@ -296,9 +304,15 @@ it.effect("gives a chat only the decisions that map to it, placed when they were
     );
     yield* write(
       checkoutB,
-      decisionRecord("theirs", { grantSession: "session-b", needsPerson: true }),
+      decisionRecord("theirs", {
+        grantSession: "session-b",
+        needsPerson: true,
+        initiative: "",
+        applyAfter: "0001-01-01T00:00:00Z",
+      }),
     );
-    yield* write(checkoutB, decisionRecord("unmapped"));
+    yield* write(checkoutB, decisionRecord("theirs-extra", { applyAfter: "" }));
+    yield* write(checkoutB, decisionRecord("malformed", { question: null }));
 
     const mine = decisionCards(yield* source.cardsForThread(THREAD_A));
     assert.deepStrictEqual(
@@ -331,9 +345,56 @@ it.effect("gives a chat only the decisions that map to it, placed when they were
       [[`dispatch.decision:${checkoutB}#theirs`, "terminal-only"]],
     );
 
-    const live = yield* source.live;
-    assert.deepStrictEqual(live.decisions, []);
+    const [live, concurrentLive] = yield* Effect.all([source.live, source.live], {
+      concurrency: 2,
+    });
+    assert.deepStrictEqual(live.decisions, [
+      {
+        cardId: `dispatch.decision:${checkoutA}#mine-open`,
+        decisionId: "mine-open",
+        dir: checkoutA,
+        kind: "design-review",
+        question: "Which design should continue?",
+        initiative: "alpha",
+        part: "part-a",
+        threadId: THREAD_A,
+        needsPerson: false,
+        raisedAt: RAISED_AT,
+        applyAfter: "2026-11-21T10:05:00Z",
+      },
+      {
+        cardId: `dispatch.decision:${checkoutB}#theirs`,
+        decisionId: "theirs",
+        dir: checkoutB,
+        kind: "batch-approval",
+        question: "Approve theirs?",
+        initiative: null,
+        part: "core",
+        threadId: null,
+        needsPerson: true,
+        raisedAt: RAISED_AT,
+        applyAfter: null,
+      },
+      {
+        cardId: `dispatch.decision:${checkoutB}#theirs-extra`,
+        decisionId: "theirs-extra",
+        dir: checkoutB,
+        kind: "batch-approval",
+        question: "Approve theirs-extra?",
+        initiative: null,
+        part: "core",
+        threadId: null,
+        needsPerson: false,
+        raisedAt: RAISED_AT,
+        applyAfter: null,
+      },
+    ]);
+    assert.strictEqual(
+      decisionCardId(checkoutA, "mine-open"),
+      `dispatch.decision:${checkoutA}#mine-open`,
+    );
     assert.deepStrictEqual(live.waitingThreadIds, [THREAD_B]);
+    assert.deepStrictEqual(concurrentLive, live);
     assert.strictEqual(lookupReads(), 1);
   }),
 );
@@ -387,6 +448,12 @@ it.effect("marks a mapped chat with no Claude transcript terminal-only", () =>
       cards.map((card) => card.data.answerable),
       ["terminal-only"],
     );
+    const live = yield* source.live;
+    assert.deepStrictEqual(
+      live.decisions.map(({ threadId }) => threadId),
+      [null],
+    );
+    assert.deepStrictEqual(live.waitingThreadIds, []);
   }),
 );
 
@@ -404,13 +471,26 @@ it.effect("shows a synced chat's decision terminal-only while a terminal holds i
     );
 
     assert.deepStrictEqual(yield* answerable, ["yes"]);
+    assert.deepStrictEqual(
+      (yield* source.live).decisions.map(({ threadId }) => threadId),
+      [THREAD_A],
+    );
     held.set(THREAD_A, "terminal");
     assert.deepStrictEqual(yield* answerable, ["terminal-only"]);
     assert.strictEqual(yield* resolved, "terminal-only");
-    assert.deepStrictEqual((yield* source.live).waitingThreadIds, [THREAD_A]);
+    const live = yield* source.live;
+    assert.deepStrictEqual(
+      live.decisions.map(({ threadId }) => threadId),
+      [null],
+    );
+    assert.deepStrictEqual(live.waitingThreadIds, [THREAD_A]);
     held.delete(THREAD_A);
     assert.deepStrictEqual(yield* answerable, ["yes"]);
     assert.strictEqual(yield* resolved, "yes");
+    assert.deepStrictEqual(
+      (yield* source.live).decisions.map(({ threadId }) => threadId),
+      [THREAD_A],
+    );
   }),
 );
 
@@ -474,40 +554,47 @@ it.effect("shows answer progress on an open decision's card and drops it once re
   }),
 );
 
-it.effect("signals a change after a record is edited on disk, and reads the edit", () =>
-  Effect.gen(function* () {
-    const { source, checkoutA, decisionsDir, initiativesRoot, write, ready, events } = yield* setup(
-      {
-        transcriptFor: THREAD_A,
-        seed: [raisedByA("mine")],
-      },
-    );
-    const watched = new Set<string>();
-    for (let count = 0; count < 3; count++) watched.add(yield* Queue.take(ready));
-    assert.isTrue(watched.has(decisionsDir(checkoutA)));
-    assert.isTrue(watched.has(`${initiativesRoot}/.live`));
+it.effect.each(["answered", "defaulted", "superseded"] as const)(
+  "signals a change and removes a decision after its record becomes %s",
+  (state) =>
+    Effect.gen(function* () {
+      const { source, checkoutA, decisionsDir, initiativesRoot, write, ready, events } =
+        yield* setup({
+          transcriptFor: THREAD_A,
+          seed: [raisedByA("mine", { needsPerson: true })],
+        });
+      const watched = new Set<string>();
+      for (let count = 0; count < 3; count++) watched.add(yield* Queue.take(ready));
+      assert.isTrue(watched.has(decisionsDir(checkoutA)));
+      assert.isTrue(watched.has(`${initiativesRoot}/.live`));
 
-    const changed = yield* Queue.unbounded<void>();
-    yield* Stream.runForEach(source.changes, () => Queue.offer(changed, undefined)).pipe(
-      Effect.forkScoped({ startImmediately: true }),
-    );
-    yield* write(
-      checkoutA,
-      raisedByA("mine", { state: "answered", choice: "go", chosenBy: "person" }),
-    );
-    assert.strictEqual(yield* Queue.take(events), decisionsDir(checkoutA));
-    yield* TestClock.adjust("249 millis");
-    assert.strictEqual(yield* Queue.size(changed), 0);
-    yield* TestClock.adjust("1 millis");
-    yield* Queue.take(changed);
+      const initial = yield* source.live;
+      assert.deepStrictEqual(
+        initial.decisions.map(({ decisionId }) => decisionId),
+        ["mine"],
+      );
+      assert.deepStrictEqual(initial.waitingThreadIds, [THREAD_A]);
+      const changed = yield* Queue.unbounded<void>();
+      yield* Stream.runForEach(source.changes, () => Queue.offer(changed, undefined)).pipe(
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* write(
+        checkoutA,
+        raisedByA("mine", { state, needsPerson: true, choice: "go", chosenBy: "person" }),
+      );
+      assert.strictEqual(yield* Queue.take(events), decisionsDir(checkoutA));
+      yield* TestClock.adjust("249 millis");
+      assert.strictEqual(yield* Queue.size(changed), 0);
+      yield* TestClock.adjust("1 millis");
+      yield* Queue.take(changed);
 
-    assert.deepStrictEqual(
-      decisionCards(yield* source.cardsForThread(THREAD_A)).map((card) => card.data.state),
-      ["answered"],
-    );
-    const live = yield* source.live;
-    assert.deepStrictEqual([live.decisions, live.waitingThreadIds], [[], []]);
-  }),
+      assert.deepStrictEqual(
+        decisionCards(yield* source.cardsForThread(THREAD_A)).map((card) => card.data.state),
+        [state],
+      );
+      const live = yield* source.live;
+      assert.deepStrictEqual([live.decisions, live.waitingThreadIds], [[], []]);
+    }),
 );
 
 it.effect("notices a checkout's first decision raised outside the chat", () =>
@@ -518,6 +605,8 @@ it.effect("notices a checkout's first decision raised outside the chat", () =>
     yield* Queue.take(ready);
     assert.strictEqual(yield* Queue.take(ready), checkoutA);
 
+    const initial = yield* source.live;
+    assert.deepStrictEqual([initial.decisions, initial.waitingThreadIds], [[], []]);
     const changed = yield* Queue.unbounded<void>();
     yield* Stream.runForEach(source.changes, () => Queue.offer(changed, undefined)).pipe(
       Effect.forkScoped({ startImmediately: true }),
@@ -527,7 +616,12 @@ it.effect("notices a checkout's first decision raised outside the chat", () =>
     yield* Queue.take(events);
     yield* TestClock.adjust("250 millis");
     yield* Queue.take(changed);
-    assert.deepStrictEqual((yield* source.live).waitingThreadIds, [THREAD_A]);
+    const live = yield* source.live;
+    assert.deepStrictEqual(
+      live.decisions.map(({ decisionId, threadId }) => [decisionId, threadId]),
+      [["first", null]],
+    );
+    assert.deepStrictEqual(live.waitingThreadIds, [THREAD_A]);
   }),
 );
 
@@ -552,7 +646,7 @@ it.effect(
         transcriptFor: THREAD_A,
       });
       yield* writeRegistry(
-        registryEntry("devbox-offload", {
+        registryEntry("alpha", {
           orchestratorSession: "cli-orchestrator",
           orchestratorCwd: checkoutA,
           repos: [{ root: checkoutA, worktrees: [] }],
@@ -562,15 +656,56 @@ it.effect(
         checkoutA,
         decisionRecord("cli-needs", { grantSession: "cli-session", needsPerson: true }),
       );
-      yield* write(checkoutA, decisionRecord("cli-initiative", { initiative: "devbox-offload" }));
+      yield* write(checkoutA, decisionRecord("cli-initiative", { initiative: "alpha" }));
       yield* write(
         checkoutA,
         decisionRecord("cli-answered", { state: "answered", choice: "go", chosenBy: "person" }),
       );
 
       assert.deepStrictEqual(yield* source.cardsForThread(THREAD_A), []);
-      assert.deepStrictEqual((yield* source.live).waitingThreadIds, []);
+      const live = yield* source.live;
+      assert.deepStrictEqual(
+        live.decisions.map(({ decisionId, threadId }) => [decisionId, threadId]),
+        [
+          ["cli-initiative", null],
+          ["cli-needs", null],
+        ],
+      );
+      assert.deepStrictEqual(live.waitingThreadIds, []);
     }),
+);
+
+it.effect("uses the mapped owner or the first chat with an owning command", () =>
+  Effect.gen(function* () {
+    const { source, checkoutB, write } = yield* setup({
+      transcriptFor: THREAD_B,
+      commands: ({ checkoutB }) => ({
+        [THREAD_A]: [command("dp decision wait shared", null, checkoutB)],
+        [THREAD_B]: [
+          command("dp decision wait shared", null, checkoutB),
+          command("dp decision wait mapped", null, checkoutB),
+          command("dp decision wait raised", null, checkoutB),
+          command("dp decision show inspected", null, checkoutB),
+        ],
+      }),
+    });
+    yield* write(checkoutB, decisionRecord("raised"));
+    yield* write(checkoutB, decisionRecord("shared", { needsPerson: true }));
+    yield* write(checkoutB, decisionRecord("mapped", { grantSession: "session-a" }));
+    yield* write(checkoutB, decisionRecord("inspected"));
+
+    const live = yield* source.live;
+    assert.deepStrictEqual(
+      live.decisions.map(({ decisionId, threadId }) => [decisionId, threadId]),
+      [
+        ["inspected", null],
+        ["mapped", null],
+        ["raised", THREAD_B],
+        ["shared", null],
+      ],
+    );
+    assert.deepStrictEqual(live.waitingThreadIds, [THREAD_A, THREAD_B]);
+  }),
 );
 
 it.effect("marks a chat waiting only for a decision without a default", () =>

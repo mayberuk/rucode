@@ -88,6 +88,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
   [WS_METHODS.pluginCardsSubscribeThread]: AuthOrchestrationReadScope,
   [WS_METHODS.pluginCardsSubscribeLive]: AuthOrchestrationReadScope,
+  [WS_METHODS.pluginCardsSubscribeInitiative]: AuthOrchestrationReadScope,
   [WS_METHODS.pluginCardsReadAsset]: AuthOrchestrationReadScope,
   // Answering a decision posts a message as the user and records the answer with dp.
   [WS_METHODS.pluginCardsAnswerDecision]: AuthOrchestrationOperateScope,

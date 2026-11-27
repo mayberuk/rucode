@@ -1,5 +1,7 @@
 import type {
   EnvironmentId,
+  PluginInitiativeBoard,
+  PluginInitiativeDecision,
   PluginLiveCliSession,
   PluginLiveInitiative,
   PluginLiveState,
@@ -37,6 +39,16 @@ export interface BoardInitiative {
   readonly active: boolean;
 }
 
+export interface InitiativeNeedsYouItem extends PluginInitiativeDecision {
+  readonly threadId: ThreadId | null;
+  readonly answerableInPlace: boolean;
+}
+
+export interface InitiativeProgress {
+  readonly wave: { readonly current: number; readonly total: number };
+  readonly parts: { readonly merged: number; readonly settled: number; readonly total: number };
+}
+
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
@@ -51,6 +63,41 @@ function initiativeKey(environmentId: EnvironmentId, slug: string): string {
 
 function openInitiatives(state: PluginLiveState | null): ReadonlyArray<PluginLiveInitiative> {
   return state === null ? [] : state.initiatives.filter((initiative) => !initiative.closed);
+}
+
+export function liveInitiative(
+  state: PluginLiveState | null,
+  slug: string,
+): PluginLiveInitiative | null {
+  return (
+    state?.initiatives.find((initiative) => initiative.slug === slug && !initiative.closed) ?? null
+  );
+}
+
+export function initiativeProgress(initiative: PluginLiveInitiative): InitiativeProgress {
+  const { current, total } = initiative.wave;
+  let merged = 0;
+  let settled = 0;
+  for (const { status } of initiative.parts) {
+    if (status === "merged") merged++;
+    if (status === "gate-pass" || status === "mr-open" || status === "merged") settled++;
+  }
+  return { wave: { current, total }, parts: { merged, settled, total: initiative.parts.length } };
+}
+
+export function initiativeNeedsYou(
+  board: PluginInitiativeBoard,
+  state: PluginLiveState | null,
+): ReadonlyArray<InitiativeNeedsYouItem> {
+  return board.needsYou.map((decision) => {
+    const threadId =
+      state?.decisions.find(({ cardId }) => cardId === decision.cardId)?.threadId ?? null;
+    return {
+      ...decision,
+      threadId,
+      answerableInPlace: threadId !== null && decision.protection === null,
+    };
+  });
 }
 
 export function hasOpenDecision(state: PluginLiveState | null, threadId: ThreadId): boolean {
@@ -111,13 +158,17 @@ export function initiativeMetrics(
 ): ReadonlyArray<InitiativeMetric> {
   const { wave, settled, running, openDecisions, spend } = initiative;
   return [
-    {
-      label: waveLabel(wave),
-      value: wavePartsValue(wave),
-      fill: share(wave.partsSettled, wave.partsTotal),
-      tone: null,
-      tooltip: `Parts settled in wave ${wave.current} of ${wave.total}`,
-    },
+    ...(wave.total === 0
+      ? []
+      : [
+          {
+            label: waveLabel(wave),
+            value: wavePartsValue(wave),
+            fill: share(wave.partsSettled, wave.partsTotal),
+            tone: null,
+            tooltip: `Parts settled in wave ${wave.current} of ${wave.total}`,
+          },
+        ]),
     {
       label: "Runs settled",
       value: settled.total > 0 ? `${settled.count} of ${settled.total}` : "None",
@@ -161,9 +212,9 @@ function initiativeThreadIds(
 }
 
 function groupEndLabel(wave: Wave): string {
-  return wave.partsTotal > 0
-    ? `${waveLabel(wave)} · ${wavePartsValue(wave)} settled`
-    : waveLabel(wave);
+  const partsLabel = wave.partsTotal > 0 ? `${wavePartsValue(wave)} settled` : "";
+  if (wave.total === 0) return partsLabel;
+  return partsLabel === "" ? waveLabel(wave) : `${waveLabel(wave)} · ${partsLabel}`;
 }
 
 export function initiativeSidebarGroups(

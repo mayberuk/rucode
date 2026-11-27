@@ -108,6 +108,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.secretsAnswerRequest]: "secrets",
   [WS_METHODS.pluginCardsSubscribeThread]: "pluginCards",
   [WS_METHODS.pluginCardsSubscribeLive]: "pluginCards",
+  [WS_METHODS.pluginCardsSubscribeInitiative]: "pluginCards",
   [WS_METHODS.pluginCardsAnswerDecision]: "pluginCards",
   [WS_METHODS.pluginCardsRunAction]: "pluginCards",
   [WS_METHODS.pluginCardsReadAsset]: "pluginCards",

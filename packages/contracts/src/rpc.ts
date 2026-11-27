@@ -418,6 +418,8 @@ import {
   PluginCardsThreadInput,
   PluginDecisionAnswerInput,
   PluginDecisionAnswerResult,
+  PluginInitiativeBoard,
+  PluginInitiativeBoardInput,
   PluginLiveState,
   PluginThreadCards,
 } from "./pluginCards.ts";
@@ -602,6 +604,7 @@ export const WS_METHODS = {
   secretsAnswerRequest: "secrets.answerRequest",
   pluginCardsSubscribeThread: "pluginCards.subscribeThread",
   pluginCardsSubscribeLive: "pluginCards.subscribeLive",
+  pluginCardsSubscribeInitiative: "pluginCards.subscribeInitiative",
   pluginCardsAnswerDecision: "pluginCards.answerDecision",
   pluginCardsRunAction: "pluginCards.runAction",
   pluginCardsReadAsset: "pluginCards.readAsset",
@@ -2248,6 +2251,13 @@ const WsPluginCardsSubscribeLiveRpc = Rpc.make(WS_METHODS.pluginCardsSubscribeLi
   stream: true,
 });
 
+const WsPluginCardsSubscribeInitiativeRpc = Rpc.make(WS_METHODS.pluginCardsSubscribeInitiative, {
+  payload: PluginInitiativeBoardInput,
+  success: PluginInitiativeBoard,
+  error: PluginCardsRpcError,
+  stream: true,
+});
+
 const WsPluginCardsAnswerDecisionRpc = Rpc.make(WS_METHODS.pluginCardsAnswerDecision, {
   payload: PluginDecisionAnswerInput,
   success: PluginDecisionAnswerResult,
@@ -2399,6 +2409,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsAnswerRequestRpc,
   WsPluginCardsSubscribeThreadRpc,
   WsPluginCardsSubscribeLiveRpc,
+  WsPluginCardsSubscribeInitiativeRpc,
   WsPluginCardsAnswerDecisionRpc,
   WsPluginCardsRunActionRpc,
   WsPluginCardsReadAssetRpc,

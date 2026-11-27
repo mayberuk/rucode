@@ -3,6 +3,7 @@ import {
   type DispatchDecisionCard,
   type DispatchDecisionCardData,
   type PluginDecisionAnswerProgress,
+  type PluginLiveDecision,
   type PluginLiveState,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -69,7 +70,8 @@ export interface DispatchDecisionSource extends PluginCardSource {
   ) => Effect.Effect<void>;
 }
 
-const decisionCardId = (dir: string, decisionId: string) => `${CARD_KIND}:${dir}#${decisionId}`;
+export const decisionCardId = (dir: string, decisionId: string) =>
+  `${CARD_KIND}:${dir}#${decisionId}`;
 
 const parseKey = (key: string) => {
   const cut = key.lastIndexOf("#");
@@ -157,9 +159,6 @@ const raisedIds = (output: string | null): ReadonlyArray<string> => {
   if (Option.isSome(json)) return [json.value.id];
   return [...output.matchAll(RAISED_LINE)].map((match) => match[1]!);
 };
-
-const waitsForPerson = (record: DispatchDecisionRecord) =>
-  decisionWaitsOnPerson(toDecisionCardData(record, null, "terminal-only"));
 
 export interface DispatchDecisionSourceOptions {
   readonly initiativesRoot?: string;
@@ -477,13 +476,33 @@ export const makeDispatchDecisionSource = Effect.fn("PluginCards.makeDispatchDec
     const live = Effect.gen(function* () {
       const { open } = yield* snapshot;
       const waiting = new Set<ThreadId>();
+      const decisions: Array<PluginLiveDecision> = [];
       for (const { record, threadId } of open) {
-        if (!waitsForPerson(record)) continue;
+        const data = toDecisionCardData(record, null, "yes");
         const owners = threadId === null ? yield* raisingThreads(record) : [threadId];
-        for (const owner of owners) waiting.add(owner);
+        if (decisionWaitsOnPerson(data)) {
+          for (const owner of owners) waiting.add(owner);
+        }
+        const owner = owners[0];
+        decisions.push({
+          cardId: decisionCardId(record.dir, record.id),
+          decisionId: data.decisionId,
+          dir: data.dir,
+          kind: data.decisionKind,
+          question: data.question,
+          initiative: data.initiative,
+          part: data.part,
+          threadId:
+            owner !== undefined && (yield* answerableIn(owner, owner)) === "yes" ? owner : null,
+          needsPerson: data.needsPerson,
+          raisedAt: data.raisedAt,
+          applyAfter: data.applyAfter,
+        });
       }
       return {
-        decisions: [],
+        decisions: decisions.toSorted((left, right) =>
+          left.cardId < right.cardId ? -1 : left.cardId > right.cardId ? 1 : 0,
+        ),
         waitingThreadIds: [...waiting].toSorted(),
       } satisfies DispatchDecisionLive;
     }).pipe(Effect.withSpan("PluginCards.decisionLive"));

@@ -20,6 +20,7 @@ const LiveChild = Schema.Struct({
 const LiveGate = Schema.Struct({
   state: Schema.String,
   currentCheck: Schema.String,
+  startedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   checks: Schema.Array(
     Schema.Struct({ name: Schema.String, state: Schema.String, reason: Schema.String }),
   ),
@@ -107,7 +108,7 @@ const RUN_OUTCOMES: Readonly<Record<string, DispatchRunProgressCardData["outcome
   unfinished: "aborted",
 };
 
-const executorFor = (part: DispatchLivePart, phaseId: string) => {
+export const executorFor = (part: DispatchLivePart, phaseId: string) => {
   let latest: DispatchLivePart["children"][number] | null = null;
   for (const child of part.children) {
     if (child.kind !== EXECUTOR_KIND || child.phase !== phaseId) continue;
@@ -116,7 +117,9 @@ const executorFor = (part: DispatchLivePart, phaseId: string) => {
   return latest;
 };
 
-const phaseState = (executor: DispatchLivePart["children"][number] | null): PluginStepState => {
+export const phaseState = (
+  executor: DispatchLivePart["children"][number] | null,
+): PluginStepState => {
   if (executor === null) return "pending";
   if (executor.disposition === "") return executor.stale ? "stale" : "running";
   return PASSED_DISPOSITIONS.has(executor.disposition) ? "done" : "failed";
@@ -185,7 +188,7 @@ export function toRunProgressData(
   };
 }
 
-const checkState = (state: string, stale: boolean): PluginCheckState => {
+export const checkState = (state: string, stale: boolean): PluginCheckState => {
   switch (state) {
     case "PASS":
       return stale ? "stale" : "pass";
@@ -197,7 +200,7 @@ const checkState = (state: string, stale: boolean): PluginCheckState => {
   }
 };
 
-const summaryOf = (reason: string) =>
+export const summaryOf = (reason: string) =>
   reason.length > SUMMARY_MAX ? `${reason.slice(0, SUMMARY_MAX - 1).trimEnd()}…` : reason;
 
 const evidenceRow = (evidence: DispatchVerifyEvidence | null) => {

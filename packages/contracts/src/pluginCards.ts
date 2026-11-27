@@ -452,6 +452,147 @@ export const PluginLiveState = Schema.Struct({
 });
 export type PluginLiveState = typeof PluginLiveState.Type;
 
+export const PluginInitiativeBoardInput = Schema.Struct({ slug: TrimmedNonEmptyString });
+export type PluginInitiativeBoardInput = typeof PluginInitiativeBoardInput.Type;
+
+export const PluginInitiativePartStatus = Schema.Literals([
+  "planned",
+  "briefed",
+  "specced",
+  "queued",
+  "running",
+  "gating",
+  "gate-fail",
+  "gate-pass",
+  "mr-open",
+  "merged",
+]);
+export type PluginInitiativePartStatus = typeof PluginInitiativePartStatus.Type;
+
+export const PluginSpendState = Schema.Literals(["exact", "estimated", "incomplete", "unknown"]);
+export type PluginSpendState = typeof PluginSpendState.Type;
+
+export const PluginInitiativeCost = Schema.Struct({
+  usd: Schema.NullOr(Schema.Number),
+  state: PluginSpendState,
+});
+export type PluginInitiativeCost = typeof PluginInitiativeCost.Type;
+
+export const PluginInitiativePhase = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  state: PluginStepState,
+  attempt: Schema.NullOr(Schema.Number),
+});
+export type PluginInitiativePhase = typeof PluginInitiativePhase.Type;
+
+export const PluginInitiativeGateCheck = Schema.Struct({
+  id: Schema.String,
+  state: PluginCheckState,
+  summary: Schema.String,
+});
+export type PluginInitiativeGateCheck = typeof PluginInitiativeGateCheck.Type;
+
+export const PluginInitiativeGate = Schema.Struct({
+  state: Schema.Literals(["running", "passed", "failed"]),
+  at: Schema.NullOr(IsoDateTime),
+  checks: Schema.Array(PluginInitiativeGateCheck),
+});
+export type PluginInitiativeGate = typeof PluginInitiativeGate.Type;
+
+export const PluginInitiativeMergeRequest = Schema.Struct({
+  ref: Schema.String,
+  url: Schema.NullOr(Schema.String),
+  number: Schema.NullOr(Schema.Number),
+});
+export type PluginInitiativeMergeRequest = typeof PluginInitiativeMergeRequest.Type;
+
+export const PluginInitiativePart = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  wave: Schema.Number,
+  status: PluginInitiativePartStatus,
+  phases: Schema.Array(PluginInitiativePhase),
+  gate: Schema.NullOr(PluginInitiativeGate),
+  branch: Schema.NullOr(Schema.String),
+  mergeRequest: Schema.NullOr(PluginInitiativeMergeRequest),
+  cost: PluginInitiativeCost,
+  startedAt: Schema.NullOr(IsoDateTime),
+  lastEventAt: Schema.NullOr(IsoDateTime),
+});
+export type PluginInitiativePart = typeof PluginInitiativePart.Type;
+
+export const PluginInitiativeWave = Schema.Struct({
+  number: Schema.Number,
+  name: Schema.String,
+  moreParts: Schema.Number,
+  state: Schema.Literals(["done", "active", "waiting"]),
+  partsSettled: Schema.Number,
+  partsTotal: Schema.Number,
+  parts: Schema.Array(PluginInitiativePart),
+});
+export type PluginInitiativeWave = typeof PluginInitiativeWave.Type;
+
+export const PluginInitiativeDecision = Schema.Struct({
+  cardId: PluginCardId,
+  decisionId: Schema.String,
+  kind: Schema.String,
+  question: Schema.String,
+  part: Schema.String,
+  options: Schema.Array(
+    Schema.Struct({ key: Schema.String, label: Schema.String, recommended: Schema.Boolean }),
+  ),
+  defaultKey: Schema.NullOr(Schema.String),
+  applyAfter: Schema.NullOr(IsoDateTime),
+  protection: Schema.NullOr(Schema.Literals(["outward", "always-ask"])),
+  needsPerson: Schema.Boolean,
+  raisedAt: IsoDateTime,
+});
+export type PluginInitiativeDecision = typeof PluginInitiativeDecision.Type;
+
+export const PluginInitiativeHeadline = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("closed") }),
+  Schema.Struct({
+    kind: Schema.Literal("needs-you"),
+    decisions: Schema.Number,
+    part: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("failing"),
+    part: Schema.String,
+    failedChecks: Schema.Number,
+  }),
+  Schema.Struct({ kind: Schema.Literal("gating"), part: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("running"),
+    part: Schema.String,
+    phase: Schema.NullOr(Schema.Struct({ index: Schema.Number, total: Schema.Number })),
+    nextPart: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({ kind: Schema.Literal("waiting"), nextPart: Schema.NullOr(Schema.String) }),
+  Schema.Struct({ kind: Schema.Literal("done") }),
+]);
+export type PluginInitiativeHeadline = typeof PluginInitiativeHeadline.Type;
+
+export const PluginInitiativeBoard = Schema.Struct({
+  slug: Schema.String,
+  title: Schema.NullOr(Schema.String),
+  closed: Schema.Boolean,
+  startedAt: Schema.NullOr(IsoDateTime),
+  asOf: IsoDateTime,
+  headline: PluginInitiativeHeadline,
+  parts: Schema.Struct({ settled: Schema.Number, total: Schema.Number }),
+  spend: Schema.Struct({
+    usd: Schema.NullOr(Schema.Number),
+    state: PluginSpendState,
+    ceilingUsd: Schema.NullOr(Schema.Number),
+  }),
+  currentWave: Schema.Number,
+  waves: Schema.Array(PluginInitiativeWave),
+  needsYou: Schema.Array(PluginInitiativeDecision),
+});
+export type PluginInitiativeBoard = typeof PluginInitiativeBoard.Type;
+
 export const PluginCardsThreadInput = Schema.Struct({ threadId: ThreadId });
 export type PluginCardsThreadInput = typeof PluginCardsThreadInput.Type;
 
