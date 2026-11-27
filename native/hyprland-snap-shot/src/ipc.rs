@@ -166,7 +166,7 @@ pub fn destination(windows: Vec<Window>, pid: u32, title: &str) -> Result<Option
         .filter(|w| w.pid == pid && w.title == title && w.mapped && !w.hidden);
     let found = matches.next();
     if matches.next().is_some() {
-        return Err("More than one T3 Code window matches the capture destination.".into());
+        return Err("More than one RuCode window matches the capture destination.".into());
     }
     Ok(found)
 }
@@ -184,7 +184,7 @@ pub fn activate(pid: u32, title: &str) -> Result<()> {
             if request(&lua)?.trim() != "ok"
                 && request(&format!("/dispatch focuswindow address:0x{address:x}"))?.trim() != "ok"
             {
-                return Err("Hyprland could not focus T3 Code.".into());
+                return Err("Hyprland could not focus RuCode.".into());
             }
             return Ok(());
         }
@@ -192,9 +192,9 @@ pub fn activate(pid: u32, title: &str) -> Result<()> {
     }
 }
 
-/// Waits for one Hyprland event, or explains that T3 Code never appeared before `deadline`.
+/// Waits for one Hyprland event, or explains that RuCode never appeared before `deadline`.
 fn next_event(events: &mut BufReader<UnixStream>, deadline: Instant) -> Result<()> {
-    let not_visible = "T3 Code did not become visible.";
+    let not_visible = "RuCode did not become visible.";
     let left = deadline.checked_duration_since(Instant::now());
     events.get_ref().set_read_timeout(Some(
         left.filter(|left| !left.is_zero()).ok_or(not_visible)?,
@@ -235,22 +235,16 @@ mod tests {
     }
     #[test]
     fn destination_requires_unique_process_and_title() {
-        assert!(
-            destination(vec![window(2, "T3")], 1, "T3")
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            destination(vec![window(1, "other")], 1, "T3")
-                .unwrap()
-                .is_none()
-        );
+        assert!(destination(vec![window(2, "T3")], 1, "T3")
+            .unwrap()
+            .is_none());
+        assert!(destination(vec![window(1, "other")], 1, "T3")
+            .unwrap()
+            .is_none());
         assert!(destination(vec![window(1, "T3"), window(1, "T3")], 1, "T3").is_err());
-        assert!(
-            destination(vec![window(2, "T3"), window(1, "T3")], 1, "T3")
-                .unwrap()
-                .is_some()
-        );
+        assert!(destination(vec![window(2, "T3"), window(1, "T3")], 1, "T3")
+            .unwrap()
+            .is_some());
     }
     #[test]
     fn event_wait_explains_an_activation_timeout() {
@@ -261,9 +255,9 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         assert_eq!(
             next_event(&mut events, deadline).unwrap_err().to_string(),
-            "T3 Code did not become visible."
+            "RuCode did not become visible."
         );
-        hyprland.write_all(b"openwindow>>1,1,t3,T3 Code\n").unwrap();
+        hyprland.write_all(b"openwindow>>1,1,t3,RuCode\n").unwrap();
         assert!(next_event(&mut events, deadline).is_ok());
         drop(hyprland);
         assert_eq!(
@@ -274,23 +268,19 @@ mod tests {
     #[test]
     fn rectangles_accept_negative_origins_not_invalid_sizes() {
         assert!(window(1, "t").bounds().valid());
-        assert!(
-            !Rect {
-                x: 0.,
-                y: 0.,
-                width: f64::NAN,
-                height: 10.
-            }
-            .valid()
-        );
-        assert!(
-            !Rect {
-                x: 0.,
-                y: 0.,
-                width: 0.,
-                height: 10.
-            }
-            .valid()
-        );
+        assert!(!Rect {
+            x: 0.,
+            y: 0.,
+            width: f64::NAN,
+            height: 10.
+        }
+        .valid());
+        assert!(!Rect {
+            x: 0.,
+            y: 0.,
+            width: 0.,
+            height: 10.
+        }
+        .valid());
     }
 }

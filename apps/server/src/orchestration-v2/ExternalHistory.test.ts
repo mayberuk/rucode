@@ -191,7 +191,7 @@ it.layer(layerTest)("external history", (it) => {
     }),
   );
 
-  it.effect("sorts history written after a finished T3 Code run below that run's items", () =>
+  it.effect("sorts history written after a finished RuCode run below that run's items", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const sink = yield* EventSink.EventSinkV2;
@@ -202,7 +202,7 @@ it.layer(layerTest)("external history", (it) => {
         commandId: CommandId.make(`send:${threadId}`),
         threadId,
         messageId: MessageId.make(`message:${threadId}`),
-        text: "From T3 Code",
+        text: "From RuCode",
         attachments: [],
         dispatchMode: { type: "start_immediately" },
         createdBy: "user",
@@ -356,7 +356,7 @@ it.layer(layerTest)("external history", (it) => {
     }),
   );
 
-  it.effect("waits out a T3 Code run instead of interleaving with it", () =>
+  it.effect("waits out a RuCode run instead of interleaving with it", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadId = ThreadId.make("thread:external-busy");

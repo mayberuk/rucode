@@ -50,13 +50,13 @@ export const DESKTOP_APP_IDENTITIES: {
   readonly dev: DesktopAppIdentity;
 } = {
   release: {
-    appId: "com.t3tools.t3code",
+    appId: "io.github.mayberuk.rucode",
     productName: undefined,
     t3HomeDirName: ".t3",
   },
   dev: {
-    appId: "com.t3tools.t3code.dev",
-    productName: "T3 Code Dev",
+    appId: "io.github.mayberuk.rucode.dev",
+    productName: "RuCode Dev",
     t3HomeDirName: ".t3-dev",
   },
 };

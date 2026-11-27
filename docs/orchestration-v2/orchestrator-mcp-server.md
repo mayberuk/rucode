@@ -41,8 +41,8 @@ preview toolkit and the orchestration toolkit.
 Before `ProviderSessionManager` opens a new V2 provider session, it asks
 `McpSessionRegistry` for a credential scoped to:
 
-- the T3 environment;
-- the parent T3 thread;
+- the RuCode environment;
+- the parent RuCode thread;
 - the concrete provider instance; and
 - the provider session.
 
@@ -369,7 +369,7 @@ the environment by thread ID. A deleted thread returns `thread_not_found`. The
 default `messages` view returns user messages, assistant
 messages, and proposed plans. The `activity` view also returns summarized tool,
 reasoning, checkpoint, handoff, and runtime-request items. Large item text is
-bounded and reports whether it was truncated. An agent in a T3 thread that
+bounded and reports whether it was truncated. An agent in a RuCode thread that
 reads without a cursor gets the newest items, and `beforePosition=earlierPosition`
 reads older ones. Client callers (the CLI, linked environments, outside MCP
 clients) start at the oldest item instead, because the CLI and linked

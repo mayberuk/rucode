@@ -521,7 +521,7 @@ it.effect("waits for a rucode run to end, then appends terminal records after it
         commandId: CommandId.make("send-from-rucode"),
         threadId: THREAD,
         messageId: MessageId.make("message:from-rucode"),
-        text: "From T3 Code",
+        text: "From RuCode",
         attachments: [],
         dispatchMode: { type: "start_immediately" },
         createdBy: "user",
@@ -532,7 +532,7 @@ it.effect("waits for a rucode run to end, then appends terminal records after it
       yield* attach(fixture);
       yield* awaitLive((sessions) => sessions.some((session) => session.threadId === THREAD));
       yield* sync.drain;
-      assert.deepEqual(yield* messages(THREAD), ["Fix the login bug", "Done.", "From T3 Code"]);
+      assert.deepEqual(yield* messages(THREAD), ["Fix the login bug", "Done.", "From RuCode"]);
 
       const [run] = (yield* orchestrator.getThreadRecords(THREAD, ["runs"])).runs;
       yield* sink.write({
@@ -559,7 +559,7 @@ it.effect("waits for a rucode run to end, then appends terminal records after it
       assert.deepEqual(ordered, [
         "Fix the login bug",
         "Done.",
-        "From T3 Code",
+        "From RuCode",
         "Now add a test",
         "Added.",
       ]);

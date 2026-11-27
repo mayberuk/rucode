@@ -10,17 +10,25 @@ export type Hit = { path: string; line: number; text: string };
 type Pin = { path: string; anchor: RegExp; target: string };
 
 const REPLACEMENTS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
-  { pattern: /\bT3 Code\b/g, replacement: "RuCode" },
-  { pattern: /\bT3 (home|server|thread|environment)\b/g, replacement: "RuCode $1" },
+  { pattern: /(?:\b|(?<=\\[fnrtv]))T3(?: |%20|\+)Code\b/g, replacement: "RuCode" },
+  {
+    pattern: /(?:\b|(?<=\\[fnrtv]))T3 (home|server|thread|environment)\b/g,
+    replacement: "RuCode $1",
+  },
 ];
 
 const MARKDOWN_LINK_FRAGMENT = /(\]\([^)\s#]*#)([^)\s]*)/g;
 const FRAGMENT_SLUG = /(?<![a-z0-9])t3-code(?![a-z0-9])/g;
 
-// Legacy desktop profile and running-app names on users' disks; renaming them orphans their data.
-const PRESERVED_LITERALS = ["T3 Code (Alpha)", "T3 Code (Dev)"];
+// Installed profiles, running apps and shims are recognized by their original names and marker.
+const PRESERVED_LITERALS = [
+  "T3 Code (Alpha)",
+  "T3 Code (Dev)",
+  "Written by T3 Code: runs the desktop app's bundled t3 CLI.",
+];
 
 const PRESERVED_LINE = /fork of T3 Code|upstream T3 Code|T3 Code upstream/i;
+const DEFERRED_INSTALLER_OUTPUT = /Installed T3 Code|to use T3 Code here/;
 
 const EXCLUDED_PATHS: ReadonlyArray<RegExp> = [
   /^\.repos\//,
@@ -64,6 +72,13 @@ function isExcluded(relativePath: string): boolean {
 
 function rebrandLine(filePath: string, line: string): string {
   if (PRESERVED_LINE.test(line)) return line;
+  if (filePath === "scripts/install.test.ts" && DEFERRED_INSTALLER_OUTPUT.test(line)) return line;
+  if (
+    filePath === "packages/shared/src/t3McpToolPresentation.test.ts" &&
+    line.trim() === '"T3 Code ",'
+  ) {
+    return line;
+  }
   let next = line;
   PRESERVED_LITERALS.forEach((literal, index) => {
     next = next.replaceAll(literal, `${index}`);
@@ -86,12 +101,23 @@ function rebrandLine(filePath: string, line: string): string {
 
 export function rebrandText(path: string, text: string): { text: string; hits: Hit[] } {
   const hits: Hit[] = [];
-  const lines = text.split("\n").map((line, index) => {
+  const lines = text.split("\n");
+  // The bundled playbook must match the upstream copy under .github byte for byte.
+  const playbookStart =
+    path === "apps/server/src/triage/triagePrompt.ts"
+      ? lines.findIndex((line) => line.startsWith("export const TRIAGE_PLAYBOOK = `"))
+      : -1;
+  const playbookEnd =
+    playbookStart < 0
+      ? -1
+      : lines.findIndex((line, index) => index > playbookStart && line.trimEnd() === "`;");
+  const rewritten = lines.map((line, index) => {
+    if (index >= playbookStart && index <= playbookEnd) return line;
     const next = rebrandLine(path, line);
     if (next !== line) hits.push({ path, line: index + 1, text: line.trim() });
     return next;
   });
-  return { text: lines.join("\n"), hits };
+  return { text: rewritten.join("\n"), hits };
 }
 
 function applyPins(

@@ -72,6 +72,56 @@ describe("rebrandText", () => {
     );
   });
 
+  it.each([
+    {
+      path: "apps/desktop/package.json",
+      input: '"productName": "T3 Code (Beta)"',
+      expected: '"productName": "RuCode (Beta)"',
+    },
+    {
+      path: "apps/mobile/app.config.ts",
+      input: 'appName: "T3 Code", bundleIdentifier: "com.t3tools.t3code"',
+      expected: 'appName: "RuCode", bundleIdentifier: "com.t3tools.t3code"',
+    },
+    {
+      path: "apps/mobile/app.config.ts",
+      input: 'cameraPermission: "Allow T3 Code to scan pairing QR codes."',
+      expected: 'cameraPermission: "Allow RuCode to scan pairing QR codes."',
+    },
+    {
+      path: "apps/marketing/src/pages/index.astro",
+      input: "<h1>Get T3 Code</h1>",
+      expected: "<h1>Get RuCode</h1>",
+    },
+    {
+      path: "README.md",
+      input: '<img alt="T3 Code logo" />\n<h1>T3 Code</h1>',
+      expected: '<img alt="RuCode logo" />\n<h1>RuCode</h1>',
+    },
+  ])("renames visible text in $path", ({ path, input, expected }) => {
+    assert.strictEqual(rebrandText(path, input).text, expected);
+  });
+
+  it.each(["\\n", "\\r", "\\t", "\\f", "\\v", "\\r\\n"])(
+    "renames text after the whitespace escape %s",
+    (escape) => {
+      assert.strictEqual(
+        rebrandText(
+          "apps/desktop/src/backend/DesktopBackendPool.ts",
+          `Warning:${escape}T3 Code uses the T3 server.`,
+        ).text,
+        `Warning:${escape}RuCode uses the RuCode server.`,
+      );
+    },
+  );
+
+  it.each([
+    ["name=T3%20Code&url=two%20words", "name=RuCode&url=two%20words"],
+    ["client_label=T3+Code+Mobile", "client_label=RuCode+Mobile"],
+  ])("renames the encoded display name in %s", (input, expected) => {
+    assert.strictEqual(rebrandText("apps/web/src/components/mcp/mcpApps.ts", input).text, expected);
+  });
+
   it("rewrites t3-code only inside a Markdown link fragment, and only in .md files", () => {
     const link = "See [setup](t3-code/guide.md#install-t3-code) and [home](#t3-code-home).";
     assert.strictEqual(
@@ -127,6 +177,68 @@ describe("rebrandText", () => {
       "Track T3 Code upstream releases.",
     ].join("\n");
     assert.deepStrictEqual(rebrandText("README.md", forkLines), { text: forkLines, hits: [] });
+  });
+
+  it("keeps the ownership marker used by existing desktop CLI launchers", () => {
+    const text =
+      'export const MARKER = "Written by T3 Code: runs the desktop app\'s bundled t3 CLI.";\n' +
+      'const moved = "T3 Code has moved.";\n';
+    assert.strictEqual(
+      rebrandText("apps/desktop/src/app/DesktopCliShim.ts", text).text,
+      'export const MARKER = "Written by T3 Code: runs the desktop app\'s bundled t3 CLI.";\n' +
+        'const moved = "RuCode has moved.";\n',
+    );
+  });
+
+  it("preserves the recorded MCP tool prefix in its compatibility test", () => {
+    const text = '  "T3 Code ",';
+    assert.deepStrictEqual(
+      rebrandText("packages/shared/src/t3McpToolPresentation.test.ts", text),
+      { text, hits: [] },
+    );
+    assert.strictEqual(rebrandText("apps/web/src/App.tsx", text).text, '  "RuCode ",');
+  });
+
+  it("preserves the bundled upstream triage playbook while renaming the surrounding text", () => {
+    const text = [
+      'const title = "T3 Code triage";',
+      "export const TRIAGE_PLAYBOOK = `# T3 Code triage playbook",
+      "You are a support engineer for T3 Code.",
+      "`;",
+      'const context = "T3 Code triage context";',
+    ].join("\n");
+    assert.strictEqual(
+      rebrandText("apps/server/src/triage/triagePrompt.ts", text).text,
+      [
+        'const title = "RuCode triage";',
+        "export const TRIAGE_PLAYBOOK = `# T3 Code triage playbook",
+        "You are a support engineer for T3 Code.",
+        "`;",
+        'const context = "RuCode triage context";',
+      ].join("\n"),
+    );
+    assert.strictEqual(
+      rebrandText("apps/server/src/otherPrompt.ts", text).text,
+      [
+        'const title = "RuCode triage";',
+        "export const TRIAGE_PLAYBOOK = `# RuCode triage playbook",
+        "You are a support engineer for RuCode.",
+        "`;",
+        'const context = "RuCode triage context";',
+      ].join("\n"),
+    );
+  });
+
+  it.each([
+    ["Installed T3 Code", "Installed RuCode"],
+    ["to use T3 Code here", "to use RuCode here"],
+  ])("keeps the deferred installer output assertion %s", (output, brandedOutput) => {
+    const text = `expect(output).toContain("${output}");`;
+    assert.deepStrictEqual(rebrandText("scripts/install.test.ts", text), { text, hits: [] });
+    assert.strictEqual(
+      rebrandText("apps/server/src/cli/install.test.ts", text).text,
+      `expect(output).toContain("${brandedOutput}");`,
+    );
   });
 });
 
