@@ -369,6 +369,10 @@ describe("scoreThreadSearch beyond Latin text and titles", () => {
     expect(rankTitles("inth", [thread("Show skill names in thread overview")])).toEqual([]);
     expect(rankTitles("tos", [thread("Move Client State to Server")])).toEqual([]);
     expect(rankTitles("rucodev", [thread("RuCode vs Gemini")])).toEqual(["RuCode vs Gemini"]);
+    expect(rankTitles("t3co", [thread("T3 Connect Tunnel Review")])).toEqual([
+      "T3 Connect Tunnel Review",
+    ]);
+    expect(rankTitles("t3co", [thread("Review the T3 Connect Tunnel")])).toEqual([]);
     expect(rankTitles('"sidebar lag"', [thread("Fix sidebar lag")])).toEqual(["Fix sidebar lag"]);
     // A pasted query with a separate accent mark matches the composed title.
     expect(rankTitles("cafe\u0301", [thread("Café menu")])).toEqual(["Café menu"]);

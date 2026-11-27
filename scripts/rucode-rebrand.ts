@@ -21,10 +21,24 @@ const MARKDOWN_LINK_FRAGMENT = /(\]\([^)\s#]*#)([^)\s]*)/g;
 const FRAGMENT_SLUG = /(?<![a-z0-9])t3-code(?![a-z0-9])/g;
 
 // Installed profiles, running apps and shims are recognized by their original names and marker.
+// Wire identifiers other programs match on stay too: the Codex originator, client info and
+// user agent, the GitHub app's registered name, the Android album folder and the connection
+// error wording older servers still send.
 const PRESERVED_LITERALS = [
   "T3 Code (Alpha)",
   "T3 Code (Dev)",
   "Written by T3 Code: runs the desktop app's bundled t3 CLI.",
+  'CODEX_CLIENT_NAME = "T3 Code"',
+  '"clientInfo":{"name":"T3 Code","title":"T3 Code"',
+  'clientInfo: { name: "T3 Code", title: "T3 Code"',
+  '"originator":"T3 Code"',
+  '"userAgent":"T3 Code/',
+  'userAgent: "T3 Code/',
+  "unknown (T3 Code; ",
+  "T3 Code for GitHub",
+  "Pictures/T3 Code",
+  "DIRECTORY_PICTURES}/T3 Code",
+  "Unable to connect to the T3 server WebSocket.",
 ];
 
 const PRESERVED_LINE = /fork of T3 Code|upstream T3 Code|T3 Code upstream/i;

@@ -211,6 +211,30 @@ describe("rebrandText", () => {
     assert.strictEqual(rebrandText("apps/web/src/App.tsx", text).text, '  "RuCode ",');
   });
 
+  it.each([
+    'const CODEX_CLIENT_NAME = "T3 Code";',
+    '{"frame":{"params":{"clientInfo":{"name":"T3 Code","title":"T3 Code","version":"0.0.44"}}}}',
+    'params: { clientInfo: { name: "T3 Code", title: "T3 Code", version: "1" } },',
+    '{"result":{"originator":"T3 Code","source":"vscode"}}',
+    '{"result":{"userAgent":"T3 Code/0.157.0 (Mac OS 27.0.0; arm64) unknown (T3 Code; 0.0.45)"}}',
+    'result: { userAgent: "T3 Code/0.144.3 (Mac OS 15.5.0; x86_64) unknown (T3 Code; 0.1.5)" },',
+    '  appName: "T3 Code for GitHub",',
+    " * The public client ID of the T3 Code for GitHub app, which the device flow needs.",
+    'put(RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/T3 Code")',
+    "/** Adds a local image file to Photos on iOS or Pictures/T3 Code on Android. */",
+    "Unable to connect to the T3 server WebSocket.",
+  ])("preserves the wire identifier on %s", (text) => {
+    assert.deepStrictEqual(rebrandText("apps/server/src/wire.ts", text), { text, hits: [] });
+  });
+
+  it("renames the product on a line that also carries a wire identifier", () => {
+    assert.strictEqual(
+      rebrandText("apps/server/src/wire.ts", '{"originator":"T3 Code","note":"T3 Code is free"}')
+        .text,
+      '{"originator":"T3 Code","note":"RuCode is free"}',
+    );
+  });
+
   it("preserves the bundled upstream triage playbook while renaming the surrounding text", () => {
     const text = [
       'const title = "T3 Code triage";',

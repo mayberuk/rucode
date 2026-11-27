@@ -28,6 +28,15 @@ describe("isTransportConnectionErrorMessage", () => {
   });
 });
 
+describe("isTransportConnectionErrorMessage server WebSocket wording", () => {
+  it.each([
+    "Unable to connect to the T3 server WebSocket.",
+    "Unable to connect to the RuCode server WebSocket.",
+  ])("recognizes %s", (message) => {
+    expect(isTransportConnectionErrorMessage(message)).toBe(true);
+  });
+});
+
 describe("sanitizeThreadErrorMessage", () => {
   it("strips transport errors", () => {
     expect(sanitizeThreadErrorMessage("SocketCloseError: oops")).toBeNull();
