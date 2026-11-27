@@ -134,7 +134,10 @@ export function BoardHeader({
           fill={settledFill(board.parts)}
           tone={null}
           value={partsValue}
-          tooltip={gt("{settled} of {total} parts settled", { settled, total })}
+          tooltip={gt("{settled} of {total, plural, one {# part} other {# parts}} settled", {
+            settled,
+            total,
+          })}
         />
         <UsageRow
           label={gt("Spend")}

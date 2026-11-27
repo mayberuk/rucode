@@ -129,7 +129,10 @@ function InitiativeChooser({
                 </span>
               ) : null}
               <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                {gt("{settled} of {total} parts settled", { settled, total })}
+                {gt("{settled} of {total, plural, one {# part} other {# parts}} settled", {
+                  settled,
+                  total,
+                })}
               </span>
             </Link>
           </li>
