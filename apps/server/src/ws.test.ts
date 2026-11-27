@@ -114,6 +114,7 @@ import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
+import * as ProjectActionSuggestions from "./projectActions/ProjectActionSuggestions.ts";
 import * as IssueService from "./issue/IssueService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -859,6 +860,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
   Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
   Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+  Layer.mock(ProjectActionSuggestions.ProjectActionSuggestions)({}),
   Layer.mock(PullRequestService.PullRequestService)({}),
   Layer.mock(IssueService.IssueService)({}),
   Layer.mock(IssueTrackerConnections.IssueTrackerConnections)({}),

@@ -138,7 +138,7 @@ export const gatherProjectActionContext = Effect.fn("ProjectActionContext.gather
       const bytes = Buffer.concat(chunks);
       return bytes.length > MAX_SOURCE_BYTES ? undefined : bytes.toString("utf8");
     },
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 
   const sources = yield* Effect.all(

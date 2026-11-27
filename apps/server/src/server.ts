@@ -62,6 +62,8 @@ import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as PullRequestReviewGuides from "./persistence/PullRequestReviewGuides.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
+import * as ProjectActionSuggestionLedger from "./projectActions/ProjectActionSuggestionLedger.ts";
+import * as ProjectActionSuggestions from "./projectActions/ProjectActionSuggestions.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as DelegatedTaskAnalytics from "./telemetry/DelegatedTaskAnalytics.ts";
@@ -891,7 +893,11 @@ const layerMakeRoutes = Layer.mergeAll(
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
-    Ws.layer,
+    Ws.layer.pipe(
+      HttpRouter.provideRequest(
+        ProjectActionSuggestions.layer.pipe(Layer.provide(ProjectActionSuggestionLedger.layer)),
+      ),
+    ),
     speechStreamRouteLayer,
   ),
   McpHttpServer.layer.pipe(

@@ -254,6 +254,7 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as IssueService from "./issue/IssueService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
+import * as ProjectActionSuggestions from "./projectActions/ProjectActionSuggestions.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
 import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -1497,6 +1498,7 @@ export const layerWsRpc = (
       const issues = yield* IssueService.IssueService;
       const issueTrackers = yield* IssueTrackerConnections.IssueTrackerConnections;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
+      const projectActionSuggestions = yield* ProjectActionSuggestions.ProjectActionSuggestions;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
       const deviceHostContext =
@@ -3048,6 +3050,7 @@ export const layerWsRpc = (
                 }),
             ),
           ),
+        [WS_METHODS.projectActionsSuggest]: (input) => projectActionSuggestions.suggest(input),
         [WS_METHODS.projectsMutate]: (mutation) =>
           startup.enqueueCommand(mutateProject(mutation)).pipe(
             Effect.mapError(

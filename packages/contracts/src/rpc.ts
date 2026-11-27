@@ -454,6 +454,11 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import {
+  ProjectActionsSuggestError,
+  ProjectActionsSuggestInput,
+  ProjectActionsSuggestResult,
+} from "./projectActions.ts";
 
 export const WS_METHODS = {
   projectsListEntries: "projects.listEntries",
@@ -463,6 +468,7 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
   projectsMutate: "projects.mutate",
+  projectActionsSuggest: "projectActions.suggest",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
   projectsCreateFromThread: "projects.createFromThread",
@@ -1573,6 +1579,12 @@ const WsProjectsMutateRpc = Rpc.make(WS_METHODS.projectsMutate, {
   error: Schema.Union([ProjectMutationError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectActionsSuggestRpc = Rpc.make(WS_METHODS.projectActionsSuggest, {
+  payload: ProjectActionsSuggestInput,
+  success: ProjectActionsSuggestResult,
+  error: Schema.Union([ProjectActionsSuggestError, EnvironmentAuthorizationError]),
+});
+
 const WsProjectsEnsureScratchRpc = Rpc.make(WS_METHODS.projectsEnsureScratch, {
   payload: Schema.Struct({}),
   success: ProjectEnsureScratchResult,
@@ -2467,6 +2479,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsCreateFromThreadRpc,
   WsProjectsWriteFileRpc,
   WsProjectsMutateRpc,
+  WsProjectActionsSuggestRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsFilesystemGetMetadataRpc,
