@@ -15,7 +15,7 @@ import {
 } from "@tanstack/react-router";
 import { createContext, use } from "react";
 import { expect, it, vi } from "vite-plus/test";
-import { cdp, page } from "vite-plus/test/browser";
+import { cdp, page, userEvent } from "vite-plus/test/browser";
 
 import * as environments from "~/state/environments";
 
@@ -694,4 +694,300 @@ it("changes the status icon without a transition or tint when reduced motion is 
   expect(icon && getComputedStyle(icon).transitionProperty).toBe("none");
   expect(icon && getComputedStyle(icon).opacity).toBe("1");
   expect(tint && getComputedStyle(tint).display).toBe("none");
+});
+
+function partDetails(overrides: Partial<PluginInitiativePart> = {}) {
+  return part("part-a", {
+    title: "Checkout retries",
+    wave: 2,
+    status: "running",
+    branch: "checkout-retries",
+    mergeRequest: { ref: "acme/app!12", number: 12, url: mrUrl },
+    startedAt: "2026-11-21T09:00:00Z",
+    lastEventAt: "2026-11-21T09:03:00Z",
+    cost: { usd: 1.25, state: "estimated" },
+    phases: [
+      { id: "phase-a", name: "Account access", state: "done", attempt: 1 },
+      { id: "phase-b", name: "Payment retries", state: "running", attempt: 2 },
+      { id: "phase-c", name: "Receipt history", state: "stale", attempt: null },
+      { id: "phase-d", name: "Order history", state: "stale", attempt: null },
+      { id: "phase-e", name: "Receipt emails", state: "pending", attempt: null },
+      { id: "phase-f", name: "Order emails", state: "failed", attempt: 0 },
+    ],
+    gate: {
+      state: "failed",
+      at: asOf,
+      checks: [
+        { id: "typecheck", state: "pass", summary: "Types match" },
+        { id: "tests", state: "fail", summary: "One retry timed out" },
+      ],
+    },
+    ...overrides,
+  });
+}
+
+function sheetBoard(
+  parts: ReadonlyArray<PluginInitiativePart>,
+  status: InitiativeBoardView["status"] = "ready",
+) {
+  return screenFor(board({ waves: [wave(2, "Checkout", "active", parts)] }, status));
+}
+
+it("opens the selected row's sheet with details, phases, attempts and gate check summaries", async () => {
+  await using screen = await render(sheetBoard([part("part-b"), partDetails()]));
+  const row = screen.getByRole("button", {
+    name: "Checkout retries, Phase 2 of 6 · Payment retries. Open details",
+    exact: true,
+  });
+  const dialog = page.getByRole("dialog", { name: "Checkout retries" });
+  await expect.element(dialog).not.toBeInTheDocument();
+  await row.click();
+  await expect
+    .element(dialog)
+    .toHaveAccessibleDescription("Wave 2 · Checkout · Phase 2 of 6 · Payment retries");
+  for (const [label, value] of [
+    ["Branch", "checkout-retries"],
+    ["Merge request", "!12"],
+    ["Started", "5m ago"],
+    ["Last activity", "2m ago"],
+    ["Cost", "~$1.25"],
+  ] as const) {
+    const term = dialog.getByText(label, { exact: true });
+    await expect.element(term).toBeVisible();
+    expect(term.element().nextElementSibling?.textContent).toBe(value);
+  }
+  for (const [label, href] of [
+    ["!12", mrUrl],
+    ["Open MR", mrUrl],
+  ] as const) {
+    const link = dialog.getByRole("link", { name: label, exact: true });
+    await expect.element(link).toHaveAttribute("href", href);
+    await expect.element(link).toHaveAttribute("target", "_blank");
+    await expect.element(link).toHaveAttribute("rel", "noreferrer");
+  }
+  await expect.element(dialog.getByText("Phases · 1 of 6 done", { exact: true })).toBeVisible();
+  for (const [phase, state] of [
+    ["Account access", "Done · attempt 1"],
+    ["Payment retries", "Running · attempt 2"],
+    ["Receipt history", "Next"],
+    ["Order history", "Stale"],
+    ["Receipt emails", "Pending"],
+    ["Order emails", "Failed · attempt 0"],
+  ] as const) {
+    await expect.element(dialog.getByText(phase, { exact: true })).toBeVisible();
+    expect(dialog.getByText(phase, { exact: true }).element().nextElementSibling?.textContent).toBe(
+      state,
+    );
+  }
+  await expect.element(dialog.getByText("Gate · failed · 1m ago", { exact: true })).toBeVisible();
+  await expect.element(dialog.getByText("No check details yet")).not.toBeInTheDocument();
+  for (const [check, summary, state, icon] of [
+    ["typecheck", "Types match", "Passed", "circle-check"],
+    ["tests", "One retry timed out", "Failed", "circle-x"],
+  ] as const) {
+    await expect.element(dialog.getByText(summary, { exact: true })).toBeVisible();
+    const label = dialog.getByText(check, { exact: true }).element();
+    expect(label.nextElementSibling).toHaveTextContent(summary);
+    const stateIcon = dialog.getByRole("img", { name: state, exact: true });
+    await expect.element(stateIcon).toHaveClass(`lucide-${icon}`);
+    expect(label.parentElement?.previousElementSibling).toBe(stateIcon.element());
+  }
+});
+
+it("closes the sheet and returns focus to its row on Escape and on Close", async () => {
+  await using screen = await render(sheetBoard([part("part-b"), partDetails()]));
+  const row = screen.getByRole("button", { name: /^Checkout retries, .*\. Open details$/ });
+  const dialog = page.getByRole("dialog", { name: "Checkout retries" });
+  await row.click();
+  await expect.element(dialog.getByRole("link", { name: "!12" })).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(dialog).not.toBeInTheDocument();
+  await expect.element(row).toHaveFocus();
+
+  await userEvent.keyboard("{Enter}");
+  await expect.element(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect.element(dialog).not.toBeInTheDocument();
+  await expect.element(row).toHaveFocus();
+});
+
+it("copies the displayed branch from the sheet", async () => {
+  await using screen = await render(sheetBoard([partDetails({ mergeRequest: null })]));
+  using write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+  await screen.getByRole("button", { name: /^Checkout retries, .*\. Open details$/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Checkout retries" });
+  await dialog.getByRole("button", { name: "Copy branch" }).click();
+  await expect.element(dialog.getByRole("button", { name: "Copied" })).toBeVisible();
+  expect(write.mock.calls).toEqual([["checkout-retries"]]);
+  await expect.element(dialog.getByRole("link", { name: "Open MR" })).not.toBeInTheDocument();
+});
+
+it("offers Open MR without a branch and uses the ref when the request has no number", async () => {
+  const row = partDetails({
+    branch: null,
+    mergeRequest: { ref: "acme/app!12", number: null, url: mrUrl },
+  });
+  await using screen = await render(sheetBoard([row]));
+  await screen.getByRole("button", { name: /^Checkout retries, .*\. Open details$/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Checkout retries" });
+  await expect
+    .element(dialog.getByRole("link", { name: "acme/app!12" }))
+    .toHaveAttribute("href", mrUrl);
+  await expect
+    .element(dialog.getByRole("link", { name: "Open MR" }))
+    .toHaveAttribute("href", mrUrl);
+  await expect.element(dialog.getByRole("button", { name: "Copy branch" })).not.toBeInTheDocument();
+});
+
+it("opens from the row surface and keeps the row's MR link independently clickable", async () => {
+  await page.viewport(1000, 700);
+  await using screen = await render(sheetBoard([partDetails()]));
+  const link = screen.getByRole("link", { name: "!12" });
+  const clicked = vi.fn((event: Event) => event.preventDefault());
+  link.element().addEventListener("click", clicked, { once: true });
+  await link.click();
+  expect(clicked).toHaveBeenCalledOnce();
+  const dialog = page.getByRole("dialog", { name: "Checkout retries" });
+  await expect.element(dialog).not.toBeInTheDocument();
+
+  await screen.getByRole("group", { name: /^Checkout retries, Phase 2 of 6/ }).click();
+  await expect.element(dialog).toBeVisible();
+});
+
+it("updates the open sheet with the selected part and closes it when that part leaves", async () => {
+  await using screen = await render(sheetBoard([partDetails(), part("part-b")]));
+  await screen.getByRole("button", { name: /^Checkout retries, .*\. Open details$/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Checkout retries" });
+  await expect.element(dialog).toBeVisible();
+  const failed = partDetails({ status: "gate-fail", wave: 3, branch: "checkout-retries-v2" });
+  await screen.rerender(screenFor(board({ waves: [wave(3, "Payments", "active", [failed])] })));
+  await expect
+    .element(dialog)
+    .toHaveAccessibleDescription("Wave 3 · Payments · One gate check failing · attempt 2");
+  await expect.element(dialog.getByText("checkout-retries-v2", { exact: true })).toBeVisible();
+  await expect
+    .element(dialog.getByText("checkout-retries", { exact: true }))
+    .not.toBeInTheDocument();
+
+  await screen.rerender(sheetBoard([part("part-b")]));
+  await expect.element(dialog).not.toBeInTheDocument();
+  await screen.rerender(sheetBoard([partDetails(), part("part-b")]));
+  await expect.element(dialog).not.toBeInTheDocument();
+  await screen.getByRole("button", { name: "part-b, Planned. Open details" }).click();
+  await expect.element(page.getByRole("dialog", { name: "part-b" })).toBeVisible();
+});
+
+it("explains what is still missing for an unsplit planned part without empty sections or actions", async () => {
+  await using screen = await render(
+    sheetBoard([part("part-a", { title: "", cost: { usd: 0, state: "exact" } })]),
+  );
+  await screen.getByRole("button", { name: "part-a, Planned. Open details" }).click();
+  const dialog = page.getByRole("dialog", { name: "part-a" });
+  await expect.element(dialog).toHaveAccessibleDescription("Wave 2 · Checkout · Planned");
+  for (const label of [
+    "Created when the part starts",
+    "Opens after the gate passes",
+    "Not started",
+    "No activity yet",
+    "Nothing spent yet",
+  ]) {
+    await expect.element(dialog.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect.element(dialog.getByText(/^Phases ·/)).not.toBeInTheDocument();
+  await expect.element(dialog.getByText(/^Gate ·/)).not.toBeInTheDocument();
+  await expect.element(dialog.getByRole("button", { name: "Copy branch" })).not.toBeInTheDocument();
+  await expect.element(dialog.getByRole("link", { name: "Open MR" })).not.toBeInTheDocument();
+  await expect.element(dialog.getByRole("button", { name: "Close" })).toBeVisible();
+  expect(dialog.element().querySelector('[data-slot="sheet-footer"]')).toBeNull();
+});
+
+it.each([
+  ["gate-pass", null, "None"],
+  ["mr-open", { ref: "acme/app!12", number: 12, url: null }, "acme/app!12"],
+  ["mr-open", null, "None"],
+  ["merged", null, "None"],
+] satisfies ReadonlyArray<
+  readonly [PluginInitiativePart["status"], PluginInitiativePart["mergeRequest"], string]
+>)("shows the MR detail for a %s part without an MR URL", async (status, mergeRequest, label) => {
+  await using screen = await render(sheetBoard([part("part-a", { status, mergeRequest })]));
+  await screen.getByRole("button", { name: /^part-a, .*\. Open details$/ }).click();
+  const dialog = page.getByRole("dialog", { name: "part-a" });
+  await expect.element(dialog.getByText(label, { exact: true })).toBeVisible();
+  await expect.element(dialog.getByRole("link")).not.toBeInTheDocument();
+});
+
+it("uses missing-time labels for invalid timestamps carried by a snapshot", async () => {
+  const row = part("part-a", {
+    startedAt: "invalid",
+    lastEventAt: "",
+    gate: { state: "passed", at: "invalid", checks: [] },
+  });
+  await using screen = await render(sheetBoard([row]));
+  await screen.getByRole("button", { name: "part-a, Planned. Open details" }).click();
+  const dialog = page.getByRole("dialog", { name: "part-a" });
+  await expect.element(dialog.getByText("Not started", { exact: true })).toBeVisible();
+  await expect.element(dialog.getByText("No activity yet", { exact: true })).toBeVisible();
+  await expect.element(dialog.getByText("Gate · passed", { exact: true })).toBeVisible();
+});
+
+it("keeps the open sheet on the last snapshot while updates are paused and refreshes on recovery", async () => {
+  const row = partDetails();
+  await using screen = await render(sheetBoard([row]));
+  await screen.getByRole("button", { name: /^Checkout retries, .*\. Open details$/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Checkout retries" });
+  await expect.element(dialog).toBeVisible();
+  await screen.rerender(sheetBoard([row], "unavailable"));
+  const paused = screen.getByText("Updates paused: can't reach the server");
+  await expect.element(paused).toBeVisible();
+  await expect.element(dialog.getByText("checkout-retries", { exact: true })).toBeVisible();
+  await expect.element(dialog.getByText("One retry timed out", { exact: true })).toBeVisible();
+
+  await screen.rerender(sheetBoard([{ ...row, branch: "checkout-retries-v2" }]));
+  await expect.element(paused).not.toBeInTheDocument();
+  await expect.element(dialog.getByText("checkout-retries-v2", { exact: true })).toBeVisible();
+});
+
+it("offers no row to open while a board is loading, even with a previous snapshot", async () => {
+  await using screen = await render(sheetBoard([partDetails()], "loading"));
+  const row = screen.getByRole("button", { name: /Open details$/ });
+  await expect.element(row).not.toBeInTheDocument();
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await screen.rerender(sheetBoard([partDetails()]));
+  await row.click();
+  await expect.element(page.getByRole("dialog", { name: "Checkout retries" })).toBeVisible();
+  await screen.rerender(sheetBoard([partDetails()], "loading"));
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await expect.element(row).not.toBeInTheDocument();
+});
+
+it.each([
+  ["running", now, "Gate · running · just now"],
+  ["passed", null, "Gate · passed"],
+  ["failed", asOf, "Gate · failed · 1m ago"],
+] as const)("shows a %s gate with no check details", async (state, at, label) => {
+  const row = part("part-a", { gate: { state, at, checks: [] } });
+  await using screen = await render(sheetBoard([row]));
+  await screen.getByRole("button", { name: "part-a, Planned. Open details" }).click();
+  const dialog = page.getByRole("dialog", { name: "part-a" });
+  await expect.element(dialog.getByText(label, { exact: true })).toBeVisible();
+  await expect.element(dialog.getByText("No check details yet", { exact: true })).toBeVisible();
+  await expect.element(dialog.getByText(/^Phases ·/)).not.toBeInTheDocument();
+  await expect.element(dialog.getByRole("list")).not.toBeInTheDocument();
+});
+
+it("opens the sheet without a transition under reduced motion", async () => {
+  await using screen = await render(sheetBoard([partDetails()]));
+  const session = cdp();
+  await session.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  await using _preference = {
+    [Symbol.asyncDispose]: async () => {
+      await session.send("Emulation.setEmulatedMedia", { features: [] });
+    },
+  };
+  await screen.getByRole("button", { name: /^Checkout retries, .*\. Open details$/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Checkout retries" });
+  await expect.element(dialog).toBeVisible();
+  expect(getComputedStyle(dialog.element()).transitionProperty).toBe("none");
 });

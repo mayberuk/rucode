@@ -1,6 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { useGT } from "gt-react";
+import { useState } from "react";
 
 import {
   Empty,
@@ -13,6 +14,7 @@ import { Skeleton } from "~/components/ui/skeleton";
 
 import type { InitiativeBoardView } from "../liveAtoms";
 import { BoardHeader } from "./BoardHeader";
+import { PartSheet } from "./PartSheet";
 import { WaveGroup } from "./WaveGroup";
 import { previousWave } from "./board.logic";
 
@@ -52,8 +54,16 @@ export function InitiativeBoard({
   readonly now: string;
 }) {
   const gt = useGT();
+  const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
+  const board = view.status === "loading" ? null : view.board;
+  const selectedWave =
+    selectedPartId === null
+      ? undefined
+      : board?.waves.find(({ parts }) => parts.some(({ id }) => id === selectedPartId));
+  const selectedPart = selectedWave?.parts.find(({ id }) => id === selectedPartId);
+  if (selectedPartId !== null && selectedPart === undefined) setSelectedPartId(null);
+
   if (view.status === "loading") return <BoardSkeleton />;
-  const { board } = view;
   if (board === null) return <InitiativeBoardUnavailable />;
 
   return (
@@ -70,10 +80,23 @@ export function InitiativeBoard({
               total={board.waves.length}
               previousName={previousWave(board, wave.number)?.name ?? null}
               now={now}
+              onOpenPart={setSelectedPartId}
             />
           ))}
         </div>
       )}
+      {selectedPart && selectedWave ? (
+        <PartSheet
+          part={selectedPart}
+          wave={selectedWave}
+          board={board}
+          now={now}
+          open
+          onOpenChange={(open) => {
+            if (!open) setSelectedPartId(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

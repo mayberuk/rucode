@@ -89,9 +89,11 @@ function PartMergeRequest({ part }: { readonly part: PluginInitiativePart }) {
 export function PartRow({
   part,
   now,
+  onOpen,
 }: {
   readonly part: PluginInitiativePart;
   readonly now: string;
+  readonly onOpen: (partId: string) => void;
 }) {
   const gt = useGT();
   const status = usePartStatusText()(part);
@@ -124,7 +126,18 @@ export function PartRow({
             "transition-[opacity,scale] duration-150 ease-out motion-safe:starting:opacity-0 motion-safe:starting:scale-50 motion-reduce:transition-none",
         )}
       />
-      <span className="truncate text-sm text-foreground/90">{title}</span>
+      <button
+        type="button"
+        aria-label={gt("{title}, {status}. Open details", { title, status })}
+        className="truncate text-start text-sm text-foreground/90 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-ring"
+        onClick={(event) => {
+          // Safari does not focus buttons on click, so the sheet needs an explicit return target.
+          event.currentTarget.focus({ preventScroll: true });
+          onOpen(part.id);
+        }}
+      >
+        {title}
+      </button>
       <span
         className={cn(
           "truncate text-xs max-sm:hidden",

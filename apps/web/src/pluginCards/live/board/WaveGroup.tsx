@@ -12,11 +12,13 @@ export function WaveGroup({
   total,
   previousName,
   now,
+  onOpenPart,
 }: {
   readonly wave: PluginInitiativeWave;
   readonly total: number;
   readonly previousName: string | null;
   readonly now: string;
+  readonly onOpenPart: (partId: string) => void;
 }) {
   const gt = useGT();
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
@@ -61,7 +63,7 @@ export function WaveGroup({
       <CollapsiblePanel>
         <div className="flex flex-col pt-1">
           {wave.parts.map((part) => (
-            <PartRow key={part.id} part={part} now={now} />
+            <PartRow key={part.id} part={part} now={now} onOpen={onOpenPart} />
           ))}
         </div>
       </CollapsiblePanel>
