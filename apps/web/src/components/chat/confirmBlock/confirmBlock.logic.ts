@@ -180,6 +180,56 @@ export function buildConfirmReply(
   return lines.join("\n");
 }
 
+const REPLY_LINE = /^(\d+)\. (.+)$/;
+
+function matchReplies(
+  options: ReadonlyArray<ConfirmOption>,
+  from: number,
+  text: string,
+): number[] | null {
+  for (let index = from; index < options.length; index += 1) {
+    const reply = options[index]!.reply;
+    if (text === reply) return [index];
+    if (text.startsWith(`${reply}, `)) {
+      const rest = matchReplies(options, index + 1, text.slice(reply.length + 2));
+      if (rest) return [index, ...rest];
+    }
+  }
+  return null;
+}
+
+/**
+ * Reads back the reply `buildConfirmReply` wrote at the start of a composer draft: the answers it
+ * holds, and its exact text. Reading stops at the first line that is not an answer to a question.
+ */
+export function parseConfirmReply(
+  questions: ReadonlyArray<ConfirmQuestion>,
+  prompt: string,
+): { readonly answers: ConfirmAnswers; readonly reply: string } {
+  const answers = new Map<number, ReadonlyArray<number>>();
+  const lines = prompt.split("\n");
+  let consumed = 0;
+  let previous = 0;
+  for (const line of lines) {
+    const match = REPLY_LINE.exec(line);
+    if (!match) break;
+    const number = Number(match[1]);
+    const question = questions.find((candidate) => candidate.number === number);
+    if (number <= previous || !question || question.kind === "open") break;
+    const single = question.options.findIndex((option) => option.reply === match[2]);
+    const picked = question.multiple
+      ? matchReplies(question.options, 0, match[2]!)
+      : single >= 0
+        ? [single]
+        : null;
+    if (!picked) break;
+    answers.set(number, picked);
+    previous = number;
+    consumed += 1;
+  }
+  return { answers, reply: lines.slice(0, consumed).join("\n") };
+}
+
 export function mergeConfirmReply(
   prompt: string,
   previousReply: string,

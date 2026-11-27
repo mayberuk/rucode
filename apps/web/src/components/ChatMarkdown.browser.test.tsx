@@ -1172,6 +1172,62 @@ describe("confirm block", () => {
     expect(draftPrompt()).toBe("2. Production\n3. Unit tests, Lint");
   });
 
+  it("keeps answers across a remount without writing a second reply", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE);
+    await userEvent.click(screen.getByRole("button", { name: "Yes" }));
+    await screen.rerender(
+      <ChatMarkdown
+        key="remounted"
+        cwd={undefined}
+        text={MESSAGE}
+        threadRef={confirmThread}
+        confirmBlock="answerable"
+      />,
+    );
+    await expect
+      .element(screen.getByRole("button", { name: "Yes" }))
+      .toHaveAttribute("aria-pressed", "true");
+    await expect.element(screen.getByText("1 of 3 answered")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Staging" }));
+    expect(draftPrompt()).toBe("1. yes\n2. Staging");
+  });
+
+  it("stacks options whose labels would overflow a narrow column", async () => {
+    setupConfirm();
+    const LONG = "Widen the rollout to the whole staging fleet in the first ten minutes";
+    await using screen = await render(
+      <div style={{ width: 280 }}>
+        <ChatMarkdown
+          cwd={undefined}
+          text={[
+            BODY,
+            "",
+            "**Needs your call — 1. Pick any: How should it roll out?**",
+            `- ${LONG} (my pick)`,
+            "- Run `pnpm build` first and then every other step by hand",
+            "- Wait",
+          ].join("\n")}
+          threadRef={confirmThread}
+          confirmBlock="answerable"
+        />
+      </div>,
+    );
+    const block = screen.getByRole("group", { name: "Questions from the agent" }).element();
+    const buttons = [...block.querySelectorAll("button")];
+    expect(buttons).toHaveLength(3);
+    const limit = block.getBoundingClientRect().right;
+    for (const button of buttons) {
+      expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(limit);
+      expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
+    }
+    await userEvent.click(screen.getByRole("button", { name: /Widen the rollout/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Run pnpm build first/ }));
+    expect(draftPrompt()).toBe(
+      `1. ${LONG}, Run \`pnpm build\` first and then every other step by hand`,
+    );
+  });
+
   it("shows the number-key hints only while the block has focus", async () => {
     setupConfirm();
     await using screen = await renderConfirm(MESSAGE);

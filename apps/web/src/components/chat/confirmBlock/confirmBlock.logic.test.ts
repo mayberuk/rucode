@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildConfirmReply,
   mergeConfirmReply,
+  parseConfirmReply,
   parseConfirmSection,
   splitInlineCode,
   toggleConfirmAnswer,
@@ -498,6 +499,83 @@ describe("buildConfirmReply", () => {
     expect(
       buildConfirmReply([question({ number: 1, multiple: true })], answers([[1, [1, 7]]])),
     ).toBe("1. B");
+  });
+});
+
+describe("parseConfirmReply", () => {
+  const questions = [
+    question({ number: 1, kind: "yes-no", options: YES_NO }),
+    question({ number: 2, options: [option("Staging"), option("Production")] }),
+    question({
+      number: 3,
+      multiple: true,
+      options: [option("Lint"), option("Tests, unit"), option("Types")],
+    }),
+    question({ number: 4, kind: "open", options: [] }),
+  ];
+
+  it.each([
+    {
+      name: "reads back what buildConfirmReply wrote",
+      prompt: "1. yes\n2. Production\n3. Lint, Types\n\nMine",
+      answers: [
+        [1, [0]],
+        [2, [1]],
+        [3, [0, 2]],
+      ],
+      reply: "1. yes\n2. Production\n3. Lint, Types",
+    },
+    {
+      name: "keeps a label that contains the separator",
+      prompt: "3. Tests, unit, Types",
+      answers: [[3, [1, 2]]],
+      reply: "3. Tests, unit, Types",
+    },
+    {
+      name: "is empty for a draft with no reply",
+      prompt: "Also check the docs",
+      answers: [],
+      reply: "",
+    },
+    { name: "is empty for an empty draft", prompt: "", answers: [], reply: "" },
+    {
+      name: "stops at an answer that is not an option",
+      prompt: "1. no\n2. Preview\n3. Lint",
+      answers: [[1, [1]]],
+      reply: "1. no",
+    },
+    {
+      name: "stops at an out-of-order line",
+      prompt: "2. Staging\n1. yes",
+      answers: [[2, [0]]],
+      reply: "2. Staging",
+    },
+    {
+      name: "ignores open questions and unknown numbers",
+      prompt: "4. maybe\n9. yes",
+      answers: [],
+      reply: "",
+    },
+    {
+      name: "reads multiple answers only in option order",
+      prompt: "3. Types, Lint",
+      answers: [],
+      reply: "",
+    },
+  ])("$name", ({ prompt, answers: expected, reply }) => {
+    const result = parseConfirmReply(questions, prompt);
+    expect([...result.answers.entries()]).toEqual(expected);
+    expect(result.reply).toBe(reply);
+  });
+
+  it("round-trips through buildConfirmReply and mergeConfirmReply", () => {
+    const picked = answers([
+      [2, [0]],
+      [3, [1]],
+    ]);
+    const reply = buildConfirmReply(questions, picked);
+    const prompt = mergeConfirmReply("Mine", "", reply);
+    expect(parseConfirmReply(questions, prompt)).toEqual({ answers: picked, reply });
   });
 });
 
