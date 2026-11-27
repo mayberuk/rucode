@@ -193,3 +193,16 @@ export function mergeConfirmReply(
   if (nextReply === "") return rest;
   return rest === "" ? nextReply : `${nextReply}\n\n${rest}`;
 }
+
+export interface InlineSegment {
+  readonly text: string;
+  readonly code: boolean;
+}
+
+/** Splits agent text on backtick spans; an unpaired backtick stays plain text. */
+export function splitInlineCode(text: string): ReadonlyArray<InlineSegment> {
+  return text
+    .split(/`([^`]+)`/)
+    .map((part, index) => ({ text: part, code: index % 2 === 1 }))
+    .filter((segment) => segment.text !== "");
+}

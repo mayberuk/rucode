@@ -108,5 +108,15 @@
   "70a3de849bad5b87": "In another Claude process",
   "2efc03fea1f5d4d0": "In tmux",
   "588974a600220ac7": "In a terminal",
-  "0a5b021fc90c6a42": "In terminal"
+  "0a5b021fc90c6a42": "In terminal",
+  "62f3ccbbb618d50d": "Questions from the agent",
+  "42d5795d66c0fcd6": "Question {number}: {text}",
+  "4f0eba513ae85e9a": "Pick any",
+  "d8cb4c44252ddb52": "Answers to question {number}",
+  "255624ca3232b204": "Yes",
+  "d2a4c751fe055ac5": "No",
+  "a3df8e8097df8392": "my pick",
+  "862ede3e3e82e3a9": "{answered} of {total} answered",
+  "671d1bc91d0ad172": "Pick",
+  "5c8772e727c04218": "Question"
 }

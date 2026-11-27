@@ -11,6 +11,7 @@ import "../index.css";
 
 import { filesystemEnvironment } from "../state/filesystem";
 import { useRightPanelStore } from "../rightPanelStore";
+import { useComposerDraftStore } from "../composerDraftStore";
 import {
   CHAT_USER_MARKDOWN_REMARK_PLUGINS,
   remarkEnableOrderedListNumbers,
@@ -1034,5 +1035,257 @@ describe("ChatMarkdown remote media", () => {
       "![shot](https://copy.example.test/a.png)",
     );
     expect(placeholder?.hasAttribute("data-thread-find-ignore")).toBe(true);
+  });
+});
+
+describe("confirm block", () => {
+  const confirmThread = {
+    environmentId: EnvironmentId.make("confirm-environment"),
+    threadId: ThreadId.make("confirm-thread"),
+  };
+  const BODY = "Here is the plan for the release.";
+  const MESSAGE = [
+    BODY,
+    "",
+    "**Just confirm — 1. Push the branch and open a draft PR?**",
+    "**Needs your call — 2. Which target should get the build?**",
+    "- Staging",
+    "- Production (my pick)",
+    "**Needs your call — 3. Pick any: Which checks should run?**",
+    "- Typecheck",
+    "- Unit tests",
+    "- Lint",
+  ].join("\n");
+  const OPEN_ONLY = [BODY, "", "**Needs your call — 1. Anything else I should know?**"].join("\n");
+
+  function setupConfirm() {
+    setup();
+    useComposerDraftStore.setState({ draftsByThreadKey: {} });
+  }
+
+  const draftPrompt = () =>
+    useComposerDraftStore.getState().getComposerDraft(confirmThread)?.prompt ?? "";
+  const rowOf = (screen: { container: HTMLElement }, number: number) =>
+    screen.container.querySelector<HTMLElement>(`[data-confirm-row="${number}"]`)!;
+  const pressKeyOn = (element: Element, init: KeyboardEventInit) =>
+    act(async () => {
+      element.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }),
+      );
+    });
+  const renderConfirm = (text: string, props: Partial<Parameters<typeof ChatMarkdown>[0]> = {}) =>
+    render(
+      <ChatMarkdown
+        cwd={undefined}
+        text={text}
+        threadRef={confirmThread}
+        confirmBlock="answerable"
+        {...props}
+      />,
+    );
+
+  it("sets the questions apart from the message and fills the composer from number keys", async () => {
+    setupConfirm();
+    useComposerDraftStore.getState().setPrompt(confirmThread, "Also check the docs");
+    await using screen = await renderConfirm(MESSAGE);
+
+    const block = screen.getByRole("group", { name: "Questions from the agent" });
+    await expect.element(block).toBeVisible();
+    const body = screen.getByText(BODY, { exact: true }).element();
+    expect(
+      body.compareDocumentPosition(block.element()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.container.querySelector("strong")).toBeNull();
+    expect(getComputedStyle(block.element()).borderTopWidth).toBe("1px");
+    expect(getComputedStyle(block.element()).borderLeftWidth).toBe("0px");
+    await expect.element(screen.getByText("0 of 3 answered")).toBeVisible();
+
+    await act(async () => rowOf(screen, 1).focus());
+    await userEvent.keyboard("1");
+    await expect
+      .element(screen.getByRole("button", { name: "Yes" }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(draftPrompt()).toBe("1. yes\n\nAlso check the docs");
+    await expect.element(rowOf(screen, 2)).toHaveFocus();
+    await expect.element(screen.getByText("1 of 3 answered")).toBeVisible();
+
+    await userEvent.keyboard("3");
+    expect(draftPrompt()).toBe("1. yes\n\nAlso check the docs");
+    await userEvent.keyboard("2");
+    expect(draftPrompt()).toBe("1. yes\n2. Production\n\nAlso check the docs");
+    await expect.element(rowOf(screen, 3)).toHaveFocus();
+
+    await userEvent.keyboard("1");
+    await userEvent.keyboard("2");
+    expect(draftPrompt()).toBe(
+      "1. yes\n2. Production\n3. Typecheck, Unit tests\n\nAlso check the docs",
+    );
+    await expect.element(rowOf(screen, 3)).toHaveFocus();
+
+    await userEvent.keyboard("{Control>}3{/Control}");
+    await userEvent.keyboard("{Meta>}3{/Meta}");
+    await userEvent.keyboard("{Alt>}3{/Alt}");
+    expect(draftPrompt()).toBe(
+      "1. yes\n2. Production\n3. Typecheck, Unit tests\n\nAlso check the docs",
+    );
+
+    await userEvent.keyboard("{ArrowDown}");
+    await expect.element(rowOf(screen, 3)).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect.element(rowOf(screen, 2)).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect.element(rowOf(screen, 1)).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect.element(rowOf(screen, 1)).toHaveFocus();
+
+    await userEvent.keyboard("1");
+    await expect
+      .element(screen.getByRole("button", { name: "Yes" }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(draftPrompt()).toBe("2. Production\n3. Typecheck, Unit tests\n\nAlso check the docs");
+    await expect.element(rowOf(screen, 1)).toHaveFocus();
+
+    await userEvent.keyboard("2");
+    expect(draftPrompt()).toBe(
+      "1. no\n2. Production\n3. Typecheck, Unit tests\n\nAlso check the docs",
+    );
+    await expect.element(rowOf(screen, 1)).toHaveFocus();
+
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    await userEvent.keyboard("1");
+    await userEvent.keyboard("2");
+    expect(draftPrompt()).toBe("1. no\n2. Production\n\nAlso check the docs");
+  });
+
+  it("clears the whole reply and keeps only what the user typed", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE);
+    await userEvent.click(screen.getByRole("button", { name: "Yes" }));
+    expect(draftPrompt()).toBe("1. yes");
+    await userEvent.click(screen.getByRole("button", { name: "Yes" }));
+    expect(draftPrompt()).toBe("");
+    await userEvent.click(screen.getByRole("button", { name: "Staging" }));
+    await userEvent.click(screen.getByRole("button", { name: "Production my pick" }));
+    expect(draftPrompt()).toBe("2. Production");
+    await userEvent.click(screen.getByRole("button", { name: "Lint" }));
+    await userEvent.click(screen.getByRole("button", { name: "Unit tests" }));
+    expect(draftPrompt()).toBe("2. Production\n3. Unit tests, Lint");
+  });
+
+  it("shows the number-key hints only while the block has focus", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE);
+    const hints = screen.getByText("Question", { exact: true }).element().parentElement!;
+    expect(getComputedStyle(hints).opacity).toBe("0");
+    expect(getComputedStyle(hints).transitionDuration).toBe("0.15s");
+
+    await act(async () => rowOf(screen, 1).focus());
+    await vi.waitFor(() => expect(getComputedStyle(hints).opacity).toBe("1"));
+    const keys = () => [...hints.querySelectorAll("kbd")].map((key) => key.textContent);
+    expect(keys()).toEqual(["1", "2", "↑", "↓"]);
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    await vi.waitFor(() => expect(keys()).toEqual(["1", "2", "3", "↑", "↓"]));
+
+    await act(async () => rowOf(screen, 3).blur());
+    await vi.waitFor(() => expect(getComputedStyle(hints).opacity).toBe("0"));
+  });
+
+  it("shows disabled answers and leaves the draft alone when the viewer cannot answer", async () => {
+    setupConfirm();
+    useComposerDraftStore.getState().setPrompt(confirmThread, "Mine");
+    await using screen = await renderConfirm(MESSAGE, { confirmBlock: "readonly" });
+    await expect
+      .element(screen.getByRole("group", { name: "Questions from the agent" }))
+      .toBeVisible();
+    for (const name of ["Yes", "No", "Staging", "Typecheck"]) {
+      await expect.element(screen.getByRole("button", { name, exact: true })).toBeDisabled();
+    }
+    const row = rowOf(screen, 1);
+    expect(row.hasAttribute("tabindex")).toBe(false);
+    await pressKeyOn(row, { key: "1" });
+    await pressKeyOn(row, { key: "ArrowDown" });
+    expect(draftPrompt()).toBe("Mine");
+    await expect
+      .element(screen.getByRole("button", { name: "Yes" }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(screen.container.textContent).not.toContain("answered");
+  });
+
+  it("settles on the read-only block when there is no thread to write the reply to", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE, { threadRef: undefined });
+    await expect.element(screen.getByRole("button", { name: "Yes" })).toBeDisabled();
+    expect(rowOf(screen, 1).hasAttribute("tabindex")).toBe(false);
+    expect(screen.container.textContent).not.toContain("answered");
+  });
+
+  it("renders the whole text as ordinary markdown while streaming and the block once it ends", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE, { isStreaming: true });
+    expect(screen.container.querySelector("[data-confirm-row]")).toBeNull();
+    expect(screen.container.querySelector("strong")?.textContent).toBe(
+      "Just confirm — 1. Push the branch and open a draft PR?",
+    );
+    await screen.rerender(
+      <ChatMarkdown
+        cwd={undefined}
+        text={MESSAGE}
+        threadRef={confirmThread}
+        confirmBlock="answerable"
+        isStreaming={false}
+      />,
+    );
+    await expect
+      .element(screen.getByRole("group", { name: "Questions from the agent" }))
+      .toBeVisible();
+    expect(screen.container.querySelector("strong")).toBeNull();
+  });
+
+  it("renders no block without the opt-in prop", async () => {
+    setupConfirm();
+    await using screen = await render(
+      <ChatMarkdown
+        cwd={undefined}
+        text={MESSAGE}
+        threadRef={confirmThread}
+        className="user-message-markdown"
+      />,
+    );
+    expect(screen.container.querySelector("[data-confirm-row]")).toBeNull();
+    expect(screen.container.querySelector("strong")?.textContent).toBe(
+      "Just confirm — 1. Push the branch and open a draft PR?",
+    );
+  });
+
+  it("shows open-only questions without answers, count or hints and never writes the draft", async () => {
+    setupConfirm();
+    useComposerDraftStore.getState().setPrompt(confirmThread, "Mine");
+    await using screen = await renderConfirm(OPEN_ONLY);
+    await expect.element(screen.getByText("Anything else I should know?")).toBeVisible();
+    expect(screen.container.querySelectorAll("button")).toHaveLength(0);
+    expect(screen.container.querySelectorAll("kbd")).toHaveLength(0);
+    expect(screen.container.textContent).not.toContain("answered");
+    const row = rowOf(screen, 1);
+    expect(row.hasAttribute("tabindex")).toBe(false);
+    await pressKeyOn(row, { key: "1" });
+    expect(draftPrompt()).toBe("Mine");
+  });
+
+  it("renders a sent reply as an ordered list that keeps the written numbers", async () => {
+    setupConfirm();
+    await using screen = await render(
+      <ChatMarkdown
+        cwd={undefined}
+        text={"1. yes\n3. Typecheck, Unit tests"}
+        className="user-message-markdown"
+        lineBreaks
+        parseRawHtml={false}
+        extraRemarkPlugins={SOURCE_NUMBER_PLUGINS}
+      />,
+    );
+    const items = [...screen.container.querySelectorAll("ol > li")];
+    expect(items.map((item) => item.textContent?.trim())).toEqual(["yes", "Typecheck, Unit tests"]);
+    expect(items.map((item) => item.getAttribute("value"))).toEqual([null, "3"]);
+    expect(getComputedStyle(items[0]!.parentElement!).listStyleType).toBe("decimal");
   });
 });

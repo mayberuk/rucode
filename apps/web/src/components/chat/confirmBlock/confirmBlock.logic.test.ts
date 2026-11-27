@@ -3,6 +3,7 @@ import {
   buildConfirmReply,
   mergeConfirmReply,
   parseConfirmSection,
+  splitInlineCode,
   toggleConfirmAnswer,
   type ConfirmAnswers,
   type ConfirmQuestion,
@@ -590,5 +591,32 @@ describe("mergeConfirmReply", () => {
 
   it.each(merges)("$name", ({ prompt, previous, next, expected }) => {
     expect(mergeConfirmReply(prompt, previous, next)).toBe(expected);
+  });
+});
+
+describe("splitInlineCode", () => {
+  it.each([
+    ["plain text", [{ text: "plain text", code: false }]],
+    [
+      "Push `acme/app` now",
+      [
+        { text: "Push ", code: false },
+        { text: "acme/app", code: true },
+        { text: " now", code: false },
+      ],
+    ],
+    ["`only`", [{ text: "only", code: true }]],
+    [
+      "`a` and `b`",
+      [
+        { text: "a", code: true },
+        { text: " and ", code: false },
+        { text: "b", code: true },
+      ],
+    ],
+    ["an unpaired ` tick", [{ text: "an unpaired ` tick", code: false }]],
+    ["", []],
+  ])("splits %j", (input, expected) => {
+    expect(splitInlineCode(input)).toEqual(expected);
   });
 });
