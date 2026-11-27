@@ -205,22 +205,36 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.tapError(() => fs.remove(staging).pipe(Effect.ignore)));
   });
 
+  // A `rucode` link is ours only if it leads to a launcher named rucode, this home's or another's;
+  // a link the user made to the `t3` launcher is theirs.
+  const isOurRucodeLink = Effect.fn("DesktopCliCommand.isOurRucodeLink")(
+    function* (link: string) {
+      if (!(yield* isOurLink(link))) return false;
+      return ["rucode", "rucode.cmd"].includes(path.basename(yield* fs.readLink(link)));
+    },
+    Effect.orElseSucceed(() => false),
+  );
+
   // `rucode` sits beside a `t3` link and follows its ownership rules, and only leads to a launcher
   // this app wrote. Best effort: a foreign `rucode` stays as it is and never fails the `t3` install.
+  // Returns false when the launcher is missing or not ours, so a caller can try again later.
   const linkRucode = Effect.fn("DesktopCliCommand.linkRucode")(
     function* (directory: string) {
-      if (!userCandidates(environment.homeDirectory).includes(directory)) return;
+      if (!userCandidates(environment.homeDirectory).includes(directory)) return true;
       const info = yield* fs.stat(rucodeLauncher);
-      if (info.type !== "File" || Number(info.size) > 16_384) return;
-      if (!(yield* fs.readFileString(rucodeLauncher)).includes(DesktopCliShim.MARKER)) return;
+      if (info.type !== "File" || Number(info.size) > 16_384) return false;
+      if (!(yield* fs.readFileString(rucodeLauncher)).includes(DesktopCliShim.MARKER)) return false;
       const link = path.join(directory, "rucode");
-      if (!(yield* isOurLink(link))) {
-        yield* fs.symlink(rucodeLauncher, link);
-      } else if ((yield* fs.readLink(link)) !== rucodeLauncher) {
-        yield* swapLink(rucodeLauncher, link);
-      }
+      yield* Effect.gen(function* () {
+        if (!(yield* isOurRucodeLink(link))) {
+          yield* fs.symlink(rucodeLauncher, link);
+        } else if ((yield* fs.readLink(link)) !== rucodeLauncher) {
+          yield* swapLink(rucodeLauncher, link);
+        }
+      }).pipe(Effect.ignore);
+      return true;
     },
-    Effect.orElseSucceed(() => undefined),
+    Effect.orElseSucceed(() => false),
   );
 
   const installedAt = Effect.gen(function* () {
@@ -388,7 +402,7 @@ export const make = Effect.gen(function* () {
       if (replaced !== undefined && replaced !== link) {
         yield* fs.remove(replaced).pipe(Effect.ignore);
         const oldRucode = path.join(path.dirname(replaced), "rucode");
-        if (yield* isOurLink(oldRucode)) yield* fs.remove(oldRucode).pipe(Effect.ignore);
+        if (yield* isOurRucodeLink(oldRucode)) yield* fs.remove(oldRucode).pipe(Effect.ignore);
       }
       return yield* state;
     }
@@ -412,7 +426,7 @@ export const make = Effect.gen(function* () {
     for (const directory of knownLocations(environment.homeDirectory, environment.platform)) {
       for (const name of ["t3", "rucode"]) {
         const link = path.join(directory, name);
-        if (yield* isOurLink(link)) {
+        if (yield* name === "rucode" ? isOurRucodeLink(link) : isOurLink(link)) {
           yield* fs.remove(link).pipe(Effect.mapError(() => fail(`Could not remove ${link}.`)));
         }
       }
@@ -453,11 +467,15 @@ export const make = Effect.gen(function* () {
         // Once, for a t3 installed before rucode existed; a rucode the user removed stays removed.
         if (!windows && !(yield* exists(rucodeLinkMarker))) {
           const linked = Option.getOrUndefined(yield* installedAt);
+          // The launcher may not be written yet on this launch; leave the marker for the next one.
+          let tried = true;
           if (linked !== undefined) {
             const target = yield* fs.readLink(linked).pipe(Effect.option);
-            if (Option.getOrUndefined(target) === launcher) yield* linkRucode(path.dirname(linked));
+            if (Option.getOrUndefined(target) === launcher) {
+              tried = yield* linkRucode(path.dirname(linked));
+            }
           }
-          yield* fs.writeFileString(rucodeLinkMarker, "").pipe(Effect.ignore);
+          if (tried) yield* fs.writeFileString(rucodeLinkMarker, "").pipe(Effect.ignore);
         }
         return;
       }

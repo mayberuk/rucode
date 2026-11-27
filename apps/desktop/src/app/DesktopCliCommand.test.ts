@@ -183,6 +183,24 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
         expect(yield* fs.exists(upgradedLink)).toBe(false);
         expect((yield* upgraded.install).installedPath).toBe(upgradedLink);
       }
+
+      // An update's first launch can run before the `rucode` launcher is written; it links nothing
+      // and leaves the marker, so the next launch links `rucode`.
+      const racedHome = yield* fs.makeTempDirectoryScoped();
+      const raced = yield* commandIn({ home: racedHome, env });
+      yield* raced.installOnFirstLaunch;
+      const racedLauncher = path.join(racedHome, ".t3", "bin", "rucode");
+      const racedLink = path.join(racedHome, ".local", "bin", "rucode");
+      const racedMarker = path.join(racedHome, ".t3", "userdata", "cli-command-rucode-link");
+      const racedContent = yield* fs.readFileString(racedLauncher);
+      yield* Effect.forEach([racedLauncher, racedLink, racedMarker], (file) => fs.remove(file));
+      yield* raced.installOnFirstLaunch;
+      expect(Option.isSome(yield* fs.readLink(racedLink).pipe(Effect.option))).toBe(false);
+      expect(yield* fs.exists(racedMarker)).toBe(false);
+      yield* fs.writeFileString(racedLauncher, racedContent);
+      yield* raced.installOnFirstLaunch;
+      expect(yield* fs.readLink(racedLink)).toBe(racedLauncher);
+      expect(yield* fs.exists(racedMarker)).toBe(true);
     }),
   );
 
@@ -250,6 +268,24 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       expect(yield* fs.readFileString(unowned)).toBe("someone's rucode launcher\n");
       const unownedLink = path.join(unownedHome, ".local", "bin", "rucode");
       expect(Option.isSome(yield* fs.readLink(unownedLink).pipe(Effect.option))).toBe(false);
+
+      // A `rucode` the user linked to the `t3` launcher is not ours to replace or remove.
+      const handHome = yield* fs.makeTempDirectoryScoped();
+      const hand = yield* commandIn({ home: handHome });
+      yield* hand.installOnFirstLaunch;
+      const handLink = path.join(handHome, ".local", "bin", "rucode");
+      const handTarget = path.join(handHome, ".t3", "bin", "t3");
+      yield* fs.remove(handLink);
+      yield* fs.remove(path.join(handHome, ".t3", "userdata", "cli-command-rucode-link"));
+      yield* fs.symlink(handTarget, handLink);
+      yield* hand.install;
+      expect(yield* fs.readLink(handLink)).toBe(handTarget);
+      yield* fs.remove(path.join(handHome, ".t3", "userdata", "cli-command-rucode-link"));
+      yield* hand.installOnFirstLaunch;
+      expect(yield* fs.readLink(handLink)).toBe(handTarget);
+      yield* hand.uninstall;
+      expect(yield* fs.exists(path.join(handHome, ".local", "bin", "t3"))).toBe(false);
+      expect(yield* fs.readLink(handLink)).toBe(handTarget);
 
       const launcher = path.join(home, ".t3", "bin", "t3");
       yield* fs.writeFileString(launcher, "npm's t3\n");
