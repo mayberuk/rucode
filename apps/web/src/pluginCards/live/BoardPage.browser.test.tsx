@@ -375,22 +375,15 @@ it("shows a title, thin metric bars, running parts and snapshot ages", async () 
   expect(settled.querySelector('[style*="25%"]')).toBeVisible();
   expect(spend.querySelector('[style*="80%"]')).toHaveClass("bg-warning");
   await expect
-    .element(screen.getByText("Payment retries, Receipt history", { exact: true }))
+    .element(screen.getByText("Payment retries and 1 more part", { exact: true }))
+    .toBeVisible();
+  await expect
+    .element(screen.getByLabelText("Running: Payment retries, Receipt history"))
     .toBeVisible();
 });
 
 it.each([
   [{ kind: "closed" }, "This initiative is closed."],
-  [
-    { kind: "needs-you", decisions: 1, part: "part-a" },
-    "A decision from Account access needs your answer.",
-  ],
-  [
-    { kind: "needs-you", decisions: 2, part: "part-a" },
-    "2 decisions need your answer, the oldest from Account access.",
-  ],
-  [{ kind: "needs-you", decisions: 1, part: null }, "A decision needs your answer."],
-  [{ kind: "needs-you", decisions: 2, part: null }, "2 decisions need your answer."],
   [{ kind: "failing", part: "part-a", failedChecks: 0 }, "Account access failed its gate."],
   [
     { kind: "failing", part: "part-a", failedChecks: 1 },
@@ -441,7 +434,7 @@ it("settles loading on a ready board, then keeps rows during a failure and clear
   await expect.element(row).toBeVisible();
   await screen.rerender(screenFor(board({}, "unavailable")));
   await expect.element(row).toBeVisible();
-  const paused = screen.getByText("Updates paused: can't reach the server");
+  const paused = screen.getByText("Updates paused: showing the board as of 1m ago");
   await expect.element(paused).toBeVisible();
   await screen.rerender(screenFor());
   await expect.element(paused).not.toBeInTheDocument();
@@ -488,16 +481,16 @@ it("opens waves by state until the user toggles each wave independently", async 
     screenFor(board({ waves: [first, second, { ...third, state }] }));
   await using screen = await render(content("waiting"));
   const done = screen.getByRole("button", {
-    name: /Account access wave 1 of 3 · done 1 of 1 settled/,
+    name: /Account access Wave 1 of 3 · done 1 of 1 settled/,
   });
   const active = screen.getByRole("button", {
-    name: /Payment retries and 2 more wave 2 of 3 · in progress/,
+    name: /Payment retries and 2 more parts Wave 2 of 3 · in progress/,
   });
   const next = screen.getByRole("button", { name: /^Receipt history/ });
   await expect.element(done).toHaveAttribute("aria-expanded", "false");
   await expect.element(active).toHaveAttribute("aria-expanded", "true");
   await expect.element(next).toHaveAttribute("aria-expanded", "false");
-  await expect.element(next).toHaveAccessibleName(/wave 3 of 3 · waits on Payment retries/);
+  await expect.element(next).toHaveAccessibleName(/Wave 3 of 3 · waits on Payment retries/);
   await expect.element(screen.getByText("part-b", { exact: true })).toBeVisible();
   await expect.element(screen.getByText("part-a", { exact: true })).not.toBeInTheDocument();
   await expect.element(screen.getByText("part-c", { exact: true })).not.toBeInTheDocument();
@@ -524,7 +517,7 @@ it("names a first waiting wave without inventing a predecessor", async () => {
   );
   await expect
     .element(
-      screen.getByRole("button", { name: "Account access wave 1 of 1 · waiting 0 of 0 settled" }),
+      screen.getByRole("button", { name: "Account access Wave 1 of 1 · waiting 0 of 0 settled" }),
     )
     .toHaveAttribute("aria-expanded", "false");
 });
@@ -606,13 +599,13 @@ it.each([
 
 it.each([
   ["planned", "Planned", "circle"],
-  ["briefed", "Briefed", "circle"],
+  ["briefed", "Briefed", "file-text"],
   ["specced", "Spec written", "circle-dot-dashed"],
   ["queued", "Up next", "clock"],
   ["running", "Running", "circle-dashed"],
-  ["gating", "Running the gate", "circle-dashed"],
+  ["gating", "Running the gate", "shield-ellipsis"],
   ["gate-fail", "Gate failed", "circle-alert"],
-  ["gate-pass", "Gate passed", "circle-check"],
+  ["gate-pass", "Gate passed", "shield-check"],
   ["mr-open", "MR open", "git-pull-request-arrow"],
   ["merged", "Merged", "circle-check"],
 ] satisfies ReadonlyArray<readonly [PluginInitiativePart["status"], string, string]>)(
@@ -944,7 +937,7 @@ it("keeps the open sheet on the last snapshot while updates are paused and refre
   const dialog = page.getByRole("dialog", { name: "Checkout retries" });
   await expect.element(dialog).toBeVisible();
   await screen.rerender(sheetBoard([row], "unavailable"));
-  const paused = screen.getByText("Updates paused: can't reach the server");
+  const paused = screen.getByText("Updates paused: showing the board as of 1m ago");
   await expect.element(paused).toBeVisible();
   await expect.element(dialog.getByText("checkout-retries", { exact: true })).toBeVisible();
   await expect.element(dialog.getByText("One retry timed out", { exact: true })).toBeVisible();
@@ -1051,22 +1044,33 @@ function setup({ canAnswer = true }: { canAnswer?: boolean } = {}) {
     }),
   );
 
-  const ui = (items: ReadonlyArray<InitiativeNeedsYouItem>, time = now, showBoard = true) => (
+  const ui = (
+    items: ReadonlyArray<InitiativeNeedsYouItem>,
+    time = now,
+    showBoard = true,
+    extra: Pick<Partial<PluginInitiativeBoard>, "headline"> & {
+      status?: InitiativeBoardView["status"];
+    } = {},
+  ) => (
     <RegistryContext.Provider value={registry}>
       <ToastProvider>
         {showBoard ? (
           <InitiativeBoard
             environmentId={environmentId}
             view={{
-              ...board({
-                waves: [
-                  wave(1, "Checkout", "active", [
-                    part("part-a", { title: "Checkout retries" }),
-                    part("part-b", { title: "Receipt history" }),
-                  ]),
-                ],
-                needsYou: items,
-              }),
+              ...board(
+                {
+                  waves: [
+                    wave(1, "Checkout", "active", [
+                      part("part-a", { title: "Checkout retries" }),
+                      part("part-b", { title: "Receipt history" }),
+                    ]),
+                  ],
+                  needsYou: items,
+                  ...(extra.headline ? { headline: extra.headline } : {}),
+                },
+                extra.status,
+              ),
               needsYou: items,
             }}
             now={time}
@@ -1078,6 +1082,71 @@ function setup({ canAnswer = true }: { canAnswer?: boolean } = {}) {
 
   return { ui, answer, calls, [Symbol.dispose]: () => stack.dispose() };
 }
+
+it("lists the primary option last in every decision row", async () => {
+  using env = setup();
+  const leading = decision();
+  const trailing = decision({
+    cardId: "dispatch.decision:alpha#decision-b",
+    question: "Continue receipts?",
+    options: [
+      { key: "pause", label: "Pause receipts", recommended: false },
+      { key: "keep", label: "Keep receipts", recommended: true },
+    ],
+  });
+  await using screen = await render(env.ui([leading, trailing]));
+  const buttons = screen.getByRole("region", { name: "Needs you" }).getByRole("button").all();
+  expect(buttons.map((button) => button.element().textContent)).toStrictEqual([
+    "Skip checkout",
+    "Keep checkout",
+    "Pause receipts",
+    "Keep receipts",
+  ]);
+});
+
+it("words the headline from the decisions still unanswered, then falls back to the board's next headline", async () => {
+  using env = setup();
+  const headline = { kind: "needs-you", decisions: 2, part: "part-a" } as const;
+  await using screen = await render(
+    env.ui([decision(), anotherDecision()], now, true, { headline }),
+  );
+  using _timers = fakeTimers();
+  const group = screen.getByRole("region", { name: "Needs you" });
+  const toast = page.getByRole("region", { name: "Notifications" });
+  await expect
+    .element(
+      screen.getByText("2 decisions need your answer, the oldest from Checkout retries.", {
+        exact: true,
+      }),
+    )
+    .toBeVisible();
+
+  await group.getByRole("button", { name: "Keep checkout" }).click();
+  await expect
+    .element(
+      screen.getByText("A decision from Receipt history needs your answer.", { exact: true }),
+    )
+    .toBeVisible();
+
+  await group.getByRole("button", { name: "Keep receipts" }).click();
+  await expect
+    .element(screen.getByText("Waiting for the next wave to open.", { exact: true }))
+    .toBeVisible();
+  await expect.element(screen.getByText(/0 decisions/)).not.toBeInTheDocument();
+
+  await toast.getByRole("button", { name: "Undo" }).first().click();
+  await expect.element(screen.getByText(/^A decision from .* needs your answer\.$/)).toBeVisible();
+});
+
+it("turns answering off while the board is paused", async () => {
+  using env = setup();
+  await using screen = await render(env.ui([decision()], now, true, { status: "unavailable" }));
+  const group = screen.getByRole("region", { name: "Needs you" });
+  await expect.element(group.getByRole("button", { name: "Keep checkout" })).toBeDisabled();
+  await expect.element(group.getByRole("button", { name: "Skip checkout" })).toBeDisabled();
+  await screen.rerender(env.ui([decision()]));
+  await expect.element(group.getByRole("button", { name: "Keep checkout" })).toBeEnabled();
+});
 
 it.each([
   ["2026-11-21T09:04:00Z", "Checkout retries · Continues with Skip checkout in 2 minutes"],
@@ -1145,7 +1214,9 @@ it("undoes only the picked decision and never sends it", async () => {
   await expect.element(toast.getByText("Continue checkout?")).toBeVisible();
   expect(env.answer).not.toHaveBeenCalled();
 
-  await toast.getByRole("button", { name: "Undo" }).click();
+  const undo = toast.getByRole("button", { name: "Undo" });
+  await expect.element(undo).toHaveClass("border-input");
+  await undo.click();
   await expect.element(question).toBeVisible();
   await expect.element(group.getByText("2", { exact: true })).toBeVisible();
   await act(() => vi.advanceTimersByTime(6000));

@@ -4,6 +4,7 @@ import {
   type PluginInitiativeCost,
   type PluginInitiativeDecision,
   type PluginInitiativeGate,
+  type PluginInitiativeHeadline,
   type PluginInitiativeMergeRequest,
   type PluginInitiativePart,
   type PluginInitiativePhase,
@@ -156,12 +157,57 @@ export function runningParts(board: PluginInitiativeBoard): ReadonlyArray<Plugin
   );
 }
 
+const SETTLED_STATUSES: ReadonlySet<string> = new Set(["gate-pass", "mr-open", "merged"]);
+const WAITING_STATUSES: ReadonlySet<string> = new Set(["planned", "briefed", "specced", "queued"]);
+
+/** The headline the server picks once no decision is open, in the server's priority order. */
+export function headlineWithoutDecisions(board: PluginInitiativeBoard): PluginInitiativeHeadline {
+  const parts = board.waves.flatMap(({ parts }) => parts);
+  const failing = parts.find(
+    ({ status, wave }) => status === "gate-fail" && wave <= board.currentWave,
+  );
+  if (failing) {
+    return { kind: "failing", part: failing.id, failedChecks: failedCheckCount(failing.gate) };
+  }
+  const gating = parts.find(({ status }) => status === "gating");
+  if (gating) return { kind: "gating", part: gating.id };
+  const running = parts.find(({ status }) => status === "running");
+  if (running) {
+    const { done, total } = phaseSummary(running.phases);
+    return {
+      kind: "running",
+      part: running.id,
+      phase: total === 0 ? null : { index: Math.min(done + 1, total), total },
+      nextPart: parts.find(({ status }) => status === "queued")?.id ?? null,
+    };
+  }
+  if (parts.length > 0 && parts.every(({ status }) => SETTLED_STATUSES.has(status))) {
+    return { kind: "done" };
+  }
+  return {
+    kind: "waiting",
+    nextPart:
+      parts.find(({ status, wave }) => wave >= board.currentWave && WAITING_STATUSES.has(status))
+        ?.id ?? null,
+  };
+}
+
 export function primaryOptionKey({ options, defaultKey }: PluginInitiativeDecision): string | null {
   return (
     options.find(({ recommended }) => recommended)?.key ??
     options.find(({ key }) => key === defaultKey)?.key ??
     null
   );
+}
+
+export function optionsPrimaryLast(
+  decision: PluginInitiativeDecision,
+): PluginInitiativeDecision["options"] {
+  const primaryKey = primaryOptionKey(decision);
+  return [
+    ...decision.options.filter(({ key }) => key !== primaryKey),
+    ...decision.options.filter(({ key }) => key === primaryKey),
+  ];
 }
 
 export function minutesUntil(iso: string, now: string): number {

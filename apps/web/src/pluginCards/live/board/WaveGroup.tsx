@@ -25,7 +25,10 @@ export function WaveGroup({
   const open = userOpen ?? wave.state === "active";
   const title =
     wave.moreParts > 0
-      ? gt("{name} and {count} more", { name: wave.name, count: wave.moreParts })
+      ? gt("{name} and {count, plural, one {# more part} other {# more parts}}", {
+          name: wave.name,
+          count: wave.moreParts,
+        })
       : wave.name;
   const state =
     wave.state === "done"
@@ -56,8 +59,8 @@ export function WaveGroup({
         }
       >
         {title}{" "}
-        <span className="font-normal text-muted-foreground">
-          {gt("wave {number} of {total} · {state}", { number: wave.number, total, state })}
+        <span className="ms-1 font-normal text-muted-foreground">
+          {gt("Wave {number} of {total} · {state}", { number: wave.number, total, state })}
         </span>
       </CollapsibleTrigger>
       <CollapsiblePanel>

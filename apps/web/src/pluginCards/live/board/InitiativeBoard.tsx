@@ -57,6 +57,7 @@ export function InitiativeBoard({
 }) {
   const gt = useGT();
   const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
+  const [answered, setAnswered] = useState<ReadonlySet<string>>(() => new Set());
   const board = view.status === "loading" ? null : view.board;
   const selectedWave =
     selectedPartId === null
@@ -68,12 +69,24 @@ export function InitiativeBoard({
   if (view.status === "loading") return <BoardSkeleton />;
   if (board === null) return <InitiativeBoardUnavailable />;
 
+  const paused = view.status === "unavailable";
+  const needsYou = view.needsYou.map((item) => ({ ...item, part: partTitle(board, item.part) }));
+  const open = needsYou.filter(({ cardId }) => !answered.has(cardId));
+
   return (
     <div className="flex flex-col gap-6">
-      <BoardHeader board={board} now={now} paused={view.status === "unavailable"} />
+      <BoardHeader
+        board={board}
+        decisions={{ count: open.length, oldestPart: open[0]?.part || null }}
+        now={now}
+        paused={paused}
+      />
       <NeedsYouGroup
         environmentId={environmentId}
-        items={view.needsYou.map((item) => ({ ...item, part: partTitle(board, item.part) }))}
+        items={needsYou}
+        answered={answered}
+        setAnswered={setAnswered}
+        paused={paused}
         now={now}
       />
       {board.waves.length === 0 ? (

@@ -69,7 +69,7 @@ function BoardFrame({
           </WorkspaceBreadcrumb>
         </WorkspacePageHeader>
         <div className="topbar-scroll-fade scrollbar-gutter-both min-h-0 flex-1 overflow-y-auto">
-          <WorkspacePageContainer width="expanded" className="min-h-full gap-4">
+          <WorkspacePageContainer width="readable" className="min-h-full gap-4">
             {children}
           </WorkspacePageContainer>
         </div>

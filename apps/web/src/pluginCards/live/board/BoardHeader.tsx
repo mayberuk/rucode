@@ -1,30 +1,44 @@
-import type { PluginInitiativeBoard } from "@t3tools/contracts";
+import type { PluginInitiativeBoard, PluginInitiativeHeadline } from "@t3tools/contracts";
 import { useGT } from "gt-react";
+import { CloudOffIcon } from "lucide-react";
 
 import { UsageRow } from "~/components/chat/ThreadDetailsUsage";
 import { formatElapsedDurationLabel } from "~/timestampFormat";
 
-import { partTitle, runningParts, settledFill, spendView } from "./board.logic";
+import {
+  headlineWithoutDecisions,
+  partTitle,
+  runningParts,
+  settledFill,
+  spendView,
+} from "./board.logic";
 
-function headlineText(board: PluginInitiativeBoard, gt: ReturnType<typeof useGT>): string {
-  const { headline } = board;
+export interface OpenDecisions {
+  readonly count: number;
+  readonly oldestPart: string | null;
+}
+
+function headlineText(
+  board: PluginInitiativeBoard,
+  headline: PluginInitiativeHeadline,
+  decisions: OpenDecisions,
+  gt: ReturnType<typeof useGT>,
+): string {
   switch (headline.kind) {
     case "closed":
       return gt("This initiative is closed.");
     case "needs-you":
-      return headline.part === null
+      if (decisions.count === 0) {
+        return headlineText(board, headlineWithoutDecisions(board), decisions, gt);
+      }
+      return decisions.oldestPart === null
         ? gt(
             "{count, plural, =1 {A decision needs your answer.} other {# decisions need your answer.}}",
-            {
-              count: headline.decisions,
-            },
+            { count: decisions.count },
           )
         : gt(
             "{count, plural, =1 {A decision from {part} needs your answer.} other {# decisions need your answer, the oldest from {part}.}}",
-            {
-              count: headline.decisions,
-              part: partTitle(board, headline.part),
-            },
+            { count: decisions.count, part: decisions.oldestPart },
           );
     case "failing": {
       const part = partTitle(board, headline.part);
@@ -65,10 +79,12 @@ function headlineText(board: PluginInitiativeBoard, gt: ReturnType<typeof useGT>
 
 export function BoardHeader({
   board,
+  decisions,
   now,
   paused,
 }: {
   readonly board: PluginInitiativeBoard;
+  readonly decisions: OpenDecisions;
   readonly now: string;
   readonly paused: boolean;
 }) {
@@ -93,17 +109,26 @@ export function BoardHeader({
     incomplete: gt("Incomplete"),
     unknown: gt("Unknown"),
   }[board.spend.state];
-  const running =
-    runningParts(board)
-      .map(({ title, id }) => title || id)
-      .join(", ") || gt("Nothing");
+  const runningTitles = runningParts(board).map(({ title, id }) => title || id);
+  const [firstRunning] = runningTitles;
+  const runningValue =
+    firstRunning === undefined
+      ? gt("Nothing")
+      : runningTitles.length === 1
+        ? firstRunning
+        : gt("{title} and {count, plural, one {# more part} other {# more parts}}", {
+            title: firstRunning,
+            count: runningTitles.length - 1,
+          });
 
   return (
     <header className="flex flex-col gap-3">
       <div className="flex flex-col gap-1 px-2.5">
         <h2 className="text-sm font-medium text-foreground">{board.title || board.slug}</h2>
-        <p className="text-sm leading-relaxed text-muted-foreground">{headlineText(board, gt)}</p>
-        <p className="text-xs text-muted-foreground/70">
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          {headlineText(board, board.headline, decisions, gt)}
+        </p>
+        <p className="text-xs text-muted-foreground">
           {gt(
             "{parts, plural, one {# part} other {# parts}} in {waves, plural, one {# wave} other {# waves}}",
             {
@@ -123,8 +148,11 @@ export function BoardHeader({
               : gt(" · updated {age} ago", { age: updated })}
         </p>
         {paused ? (
-          <p className="text-xs text-muted-foreground/70">
-            {gt("Updates paused: can't reach the server")}
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <CloudOffIcon aria-hidden className="size-3.5 shrink-0" />
+            {updated === "just now"
+              ? gt("Updates paused: showing the board as of just now")
+              : gt("Updates paused: showing the board as of {age} ago", { age: updated })}
           </p>
         ) : null}
       </div>
@@ -146,7 +174,14 @@ export function BoardHeader({
           value={spendValue}
           tooltip={spendState}
         />
-        <UsageRow label={gt("Running")} fill={null} tone={null} value={running} tooltip={running} />
+        <UsageRow
+          label={gt("Running")}
+          fill={null}
+          tone={null}
+          value={runningValue}
+          ariaValue={runningTitles.join(", ") || runningValue}
+          tooltip={runningTitles.join(", ") || runningValue}
+        />
       </div>
     </header>
   );

@@ -12,12 +12,15 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { boardSearchFromUrl } from "../boardSearch";
+import { PART_STATUS_LOOK } from "./boardLook";
 import {
   boardTarget,
   failedCheckCount,
   formatCost,
+  headlineWithoutDecisions,
   mergeRequestLabel,
   minutesUntil,
+  optionsPrimaryLast,
   partTitle,
   type PhaseSummary,
   phaseSummary,
@@ -403,6 +406,56 @@ describe("primaryOptionKey", () => {
   });
 });
 
+describe("optionsPrimaryLast", () => {
+  const keep = { key: "keep", label: "Keep", recommended: false };
+  const skip = { key: "skip", label: "Skip", recommended: false };
+  const pause = { key: "pause", label: "Pause", recommended: false };
+  const decision = (options: PluginInitiativeDecision["options"], defaultKey: string | null) => ({
+    cardId: PluginCardId.make("dispatch.decision:alpha"),
+    decisionId: "alpha",
+    kind: "scope",
+    question: "Which scope?",
+    part: "part-a",
+    options,
+    defaultKey,
+    applyAfter: null,
+    protection: null,
+    needsPerson: false,
+    raisedAt: "2026-11-21T09:00:00Z",
+  });
+
+  it.each([
+    [
+      "moves a leading recommended option to the end",
+      [{ ...keep, recommended: true }, skip, pause],
+      null,
+      ["skip", "pause", "keep"],
+    ],
+    [
+      "leaves a trailing recommended option in place",
+      [skip, pause, { ...keep, recommended: true }],
+      null,
+      ["skip", "pause", "keep"],
+    ],
+    [
+      "moves a default with no recommendation to the end",
+      [keep, skip, pause],
+      "keep",
+      ["skip", "pause", "keep"],
+    ],
+    [
+      "keeps the given order when nothing is primary",
+      [keep, skip, pause],
+      null,
+      ["keep", "skip", "pause"],
+    ],
+  ] as const)("%s", (_name, options, defaultKey, expected) => {
+    expect(optionsPrimaryLast(decision(options, defaultKey)).map(({ key }) => key)).toStrictEqual(
+      expected,
+    );
+  });
+});
+
 it.each([
   ["clamps a past time to zero", "2026-11-21T08:57:59Z", 0],
   ["returns zero at the reference time", "2026-11-21T09:00:00Z", 0],
@@ -538,4 +591,49 @@ describe("board wave helpers", () => {
   ] as const)("runningParts %s", (_name, waves, expected) => {
     expect(runningParts({ ...board, waves })).toStrictEqual(expected);
   });
+
+  describe("headlineWithoutDecisions", () => {
+    const planned = part("part-p", "Plan", 3, "planned");
+    const failed = part("part-f", "Fail", 3, "gate-fail");
+
+    it.each([
+      [
+        "prefers a failing gate over a running gate",
+        [wave(1, [gating, failed])],
+        { kind: "failing", part: "part-f", failedChecks: 0 },
+      ],
+      [
+        "ignores a failing gate in a later wave",
+        [wave(1, [gating]), wave(4, [part("part-l", "Late", 4, "gate-fail")])],
+        { kind: "gating", part: "part-c" },
+      ],
+      [
+        "reports the running part with the next queued one",
+        [wave(3, [running, part("part-q", "Queue", 3, "queued")])],
+        { kind: "running", part: "part-a", phase: null, nextPart: "part-q" },
+      ],
+      [
+        "reports done when every part is settled",
+        [wave(3, [part("part-m", "M", 3, "merged"), part("part-g", "G", 3, "gate-pass")])],
+        { kind: "done" },
+      ],
+      [
+        "waits on the first unstarted part at or after the current wave",
+        [wave(1, [part("part-o", "Old", 1, "planned")]), wave(3, [planned])],
+        { kind: "waiting", nextPart: "part-p" },
+      ],
+      [
+        "waits without a next part when there are no parts",
+        [],
+        { kind: "waiting", nextPart: null },
+      ],
+    ] as const)("%s", (_name, waves, expected) => {
+      expect(headlineWithoutDecisions({ ...board, waves })).toStrictEqual(expected);
+    });
+  });
+});
+
+it("gives every part status its own icon so no status relies on colour alone", () => {
+  const icons = Object.values(PART_STATUS_LOOK).map(({ icon }) => icon);
+  expect(new Set(icons).size).toBe(icons.length);
 });

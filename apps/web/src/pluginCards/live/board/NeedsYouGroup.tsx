@@ -7,7 +7,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { useGT } from "gt-react";
 import { HandIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, type Dispatch, type SetStateAction } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsiblePanel } from "~/components/ui/collapsible";
@@ -16,22 +16,27 @@ import { answerPluginDecision } from "~/rpc/pluginCards";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import type { InitiativeNeedsYouItem } from "../liveStateIndex";
-import { minutesUntil, primaryOptionKey } from "./board.logic";
+import { minutesUntil, optionsPrimaryLast, primaryOptionKey } from "./board.logic";
 
 export function NeedsYouGroup({
   environmentId,
   items,
+  answered,
+  setAnswered,
+  paused,
   now,
 }: {
   readonly environmentId: EnvironmentId;
   readonly items: ReadonlyArray<InitiativeNeedsYouItem>;
+  readonly answered: ReadonlySet<string>;
+  readonly setAnswered: Dispatch<SetStateAction<ReadonlySet<string>>>;
+  readonly paused: boolean;
   readonly now: string;
 }) {
   const gt = useGT();
   const headingId = useId();
   const answerDecision = useAtomCommand(answerPluginDecision, { reportFailure: false });
   const canAnswer = useAtomValue(answerPluginDecision.permissionAtom(environmentId));
-  const [answered, setAnswered] = useState<ReadonlySet<string>>(() => new Set());
   const visibleCount = items.filter(({ cardId }) => !answered.has(cardId)).length;
 
   const pickOption = (
@@ -74,6 +79,7 @@ export function NeedsYouGroup({
       title: gt("Answered: {option}", { option: label }),
       description: item.question,
       timeout: 6000,
+      data: { actionVariant: "outline" },
       actionProps: {
         children: gt("Undo"),
         onClick: () => {
@@ -143,10 +149,11 @@ export function NeedsYouGroup({
                       </div>
                       <div className="flex shrink-0 flex-wrap items-center gap-1.5 max-sm:w-full sm:max-w-1/2">
                         {item.answerableInPlace && canAnswer ? (
-                          item.options.map((option) => (
+                          optionsPrimaryLast(item).map((option) => (
                             <Button
                               key={option.key}
                               size="xs"
+                              disabled={paused}
                               variant={option.key === primaryKey ? "default" : "outline"}
                               onClick={() => pickOption(item, option)}
                             >

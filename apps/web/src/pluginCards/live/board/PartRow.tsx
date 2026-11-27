@@ -78,7 +78,7 @@ function PartMergeRequest({ part }: { readonly part: PluginInitiativePart }) {
     );
   }
   return (
-    <span className="truncate text-xs text-muted-foreground/70">
+    <span className="truncate text-xs text-muted-foreground">
       {status === "running" || status === "gating" || status === "gate-fail"
         ? gt("After gate")
         : null}
@@ -147,7 +147,7 @@ export function PartRow({
         {status}
       </span>
       {total === 0 ? (
-        <span className="text-2xs text-muted-foreground/70">{gt("Not split")}</span>
+        <span className="text-2xs text-muted-foreground">{gt("Not split")}</span>
       ) : (
         <div
           role="img"
