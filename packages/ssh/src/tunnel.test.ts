@@ -1527,6 +1527,7 @@ describe("Dev build source runner", () => {
     options: {
       readonly miseNodeVersion?: string;
       readonly miseInstalledNodeVersions?: readonly string[];
+      readonly miseStderr?: string;
       readonly nvmDefaultNodeVersion?: string;
       readonly builtCommit?: string;
       readonly fetchFails?: boolean;
@@ -1574,25 +1575,22 @@ describe("Dev build source runner", () => {
       if (installed === undefined) {
         nodeShim(miseShims, "mise", options.miseNodeVersion);
       } else {
-        // Like a real shim: MISE_NODE_VERSION picks the version, otherwise the global one runs.
-        NodeFS.mkdirSync(miseShims, { recursive: true });
-        const global = options.miseNodeVersion ?? process.versions.node;
-        executable(
-          NodePath.join(miseShims, "node"),
-          `case "\${MISE_NODE_VERSION:-}" in
-${installed
-  .map((v) => `  ${v}) T3_TEST_NODE=mise@${v}; PRELOAD='${versionPreload(v)}' ;;`)
-  .join("\n")}
-  *) T3_TEST_NODE=mise@global; PRELOAD='${versionPreload(global)}' ;;
-esac
-export T3_TEST_NODE
-exec '${process.execPath}' --require "$PRELOAD" "$@"`,
-        );
+        // The system Node sits first on PATH and the shim runs the global version whatever
+        // MISE_NODE_VERSION says, so only an install's own bin directory yields the right Node.
+        nodeShim(bin, "system", "22.23.1");
+        nodeShim(miseShims, "mise@global", options.miseNodeVersion ?? process.versions.node);
+        const installs = NodePath.join(home, ".local/share/mise/installs/node");
+        for (const v of installed) {
+          nodeShim(NodePath.join(installs, v, "bin"), `mise@${v}`, v);
+        }
         NodeFS.mkdirSync(NodePath.join(home, ".local/bin"), { recursive: true });
         executable(
           NodePath.join(home, ".local/bin/mise"),
-          `[ "$1 $2 $3 $4" = "ls --installed --no-header node" ] || exit 0
-${installed.map((v) => `printf 'node  %s  ~/.config/mise/config.toml  %s\\n' '${v}' '${v}'`).join("\n")}`,
+          `case "$1 $2" in
+  "ls --installed")
+${options.miseStderr === undefined ? "" : `    printf '%s\\n' '${options.miseStderr}' >&2\n`}${installed.map((v) => `    printf 'node  %s  ~/.config/mise/config.toml  %s\\n' '${v}' '${v}'\n`).join("")}    ;;
+  "where node@"*) echo '${installs}'/"\${2#node@}" ;;
+esac`,
         );
       }
       executable(
@@ -1716,6 +1714,20 @@ esac`,
     assert.equal(run.stdout, `entry ${run.entry} mise@26.12.1 serve --port 1`);
   });
 
+  it("reports what mise said when it lists no Node at all", () => {
+    const run = runSourceRunner({
+      miseNodeVersion: "22.23.1",
+      miseInstalledNodeVersions: [],
+      miseStderr: "mise ERROR ~/.config/mise/config.toml is not trusted",
+    });
+    assert.notEqual(run.status, 0);
+    assert.include(
+      run.stderr,
+      "mise reported: mise ERROR ~/.config/mise/config.toml is not trusted",
+    );
+    assert.equal(run.stdout, "");
+  });
+
   it("says mise has no matching Node when none of its installed versions satisfy the range", () => {
     const run = runSourceRunner({
       miseNodeVersion: "22.23.1",
@@ -1724,6 +1736,7 @@ esac`,
     assert.notEqual(run.status, 0);
     assert.include(run.stderr, ENGINE_RANGE);
     assert.include(run.stderr, "mise has no installed Node matching");
+    assert.notInclude(run.stderr, "mise reported");
     assert.equal(run.stdout, "");
     assert.isFalse(run.events.some((event) => event.startsWith("npx")));
   });

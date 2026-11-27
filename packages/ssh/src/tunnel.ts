@@ -391,31 +391,41 @@ remote_node_satisfies_engine() {
   if [ -z "$T3_NODE_ENGINE_RANGE" ]; then
     return 0
   fi
-  node - "$T3_NODE_ENGINE_RANGE" <<'NODE'
+  "\${1:-node}" - "$T3_NODE_ENGINE_RANGE" <<'NODE'
 @@T3_NODE_ENGINE_CHECK_SCRIPT@@
 NODE
 }
 
 select_mise_node_version() {
   T3_MISE_NODE_UNMATCHED=""
+  T3_MISE_NODE_NOTE=""
   T3_MISE_BIN="$HOME/.local/bin/mise"
   if [ ! -x "$T3_MISE_BIN" ]; then
     T3_MISE_BIN="$(command -v mise || true)"
   fi
   [ -n "$T3_MISE_BIN" ] || return 0
+  T3_MISE_LISTING="$("$T3_MISE_BIN" ls --installed --no-header node 2>&1 || true)"
+  T3_MISE_NODE_CANDIDATES="$(printf '%s\\n' "$T3_MISE_LISTING" | sed -n 's/^node[[:space:]][[:space:]]*\\([^[:space:]][^[:space:]]*\\).*/\\1/p')"
   T3_MISE_NODE_PICK=""
-  for T3_MISE_NODE_CANDIDATE in $("$T3_MISE_BIN" ls --installed --no-header node 2>/dev/null | sed -n 's/^node[[:space:]][[:space:]]*\\([^[:space:]][^[:space:]]*\\).*/\\1/p'); do
-    MISE_NODE_VERSION="$T3_MISE_NODE_CANDIDATE"
-    export MISE_NODE_VERSION
-    if remote_node_satisfies_engine >/dev/null 2>&1; then
+  T3_MISE_NODE_PICK_DIR=""
+  for T3_MISE_NODE_CANDIDATE in $T3_MISE_NODE_CANDIDATES; do
+    T3_MISE_NODE_DIR="$("$T3_MISE_BIN" where "node@$T3_MISE_NODE_CANDIDATE" 2>/dev/null || true)"
+    if [ -n "$T3_MISE_NODE_DIR" ] && [ -x "$T3_MISE_NODE_DIR/bin/node" ] && remote_node_satisfies_engine "$T3_MISE_NODE_DIR/bin/node" >/dev/null 2>&1; then
       T3_MISE_NODE_PICK="$T3_MISE_NODE_CANDIDATE"
+      T3_MISE_NODE_PICK_DIR="$T3_MISE_NODE_DIR"
     fi
   done
   if [ -n "$T3_MISE_NODE_PICK" ]; then
     MISE_NODE_VERSION="$T3_MISE_NODE_PICK"
+    export MISE_NODE_VERSION
+    PATH="$T3_MISE_NODE_PICK_DIR/bin:$PATH"
+    export PATH
   else
     unset MISE_NODE_VERSION
     T3_MISE_NODE_UNMATCHED=1
+    if [ -z "$T3_MISE_NODE_CANDIDATES" ]; then
+      T3_MISE_NODE_NOTE="$(printf '%s\\n' "$T3_MISE_LISTING" | sed -n '1p')"
+    fi
   fi
 }
 
@@ -551,6 +561,9 @@ t3_source_require_node() {
     printf 'Running commit %s on this host needs git and Node %s. Install them, or configure a Node version manager for non-interactive shells.\\n' "$T3_SOURCE_COMMIT" "$T3_NODE_ENGINE_RANGE" >&2
     if [ -n "\${T3_MISE_NODE_UNMATCHED:-}" ]; then
       printf 'mise has no installed Node matching %s.\\n' "$T3_NODE_ENGINE_RANGE" >&2
+      if [ -n "\${T3_MISE_NODE_NOTE:-}" ]; then
+        printf 'mise reported: %s\\n' "$T3_MISE_NODE_NOTE" >&2
+      fi
     fi
     exit 1
   fi
