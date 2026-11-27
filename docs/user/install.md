@@ -47,8 +47,8 @@ command it names and open the pairing URL to connect to that server. Stop it
 before starting a replacement, or use a different `--base-dir` for an
 independent server.
 
-To try RuCode once without installing it, run `npx t3@latest` instead (needs
-Node.js for `npx`). It offers to install the `t3` command first. If you say no,
+The `t3` npm package comes from upstream T3 Code. To try upstream T3 Code once
+without installing it, run `npx t3@latest` instead (needs Node.js for `npx`). It offers to install the `t3` command first. If you say no,
 it asks again at the next minor release, and `npx t3 install` installs it later.
 `npx t3` always runs the version npm picked, even when a `t3` is installed. On
 the nightly train, run your installed `t3` (for example `t3 connect`), not
@@ -169,7 +169,7 @@ folder paths, so in the web app use **Add project** instead.
 
 ## Mobile app
 
-Install RuCode from the
+RuCode does not publish its own mobile app. Upstream T3 Code's app is on the
 [App Store](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or
 [Google Play](https://play.google.com/store/apps/details?id=com.t3tools.t3code).
 The phone connects to a server on another machine. Follow
@@ -179,7 +179,7 @@ Store links and QR codes are also available in **Settings → About → Mobile a
 on web and desktop. The store apps work with both stable and Nightly servers. Test builds are optional:
 
 - **iPhone and iPad:** TestFlight is invite-only.
-- **Android:** download an APK from the
+- **Android:** download an APK from upstream T3 Code's
   [Android beta releases](https://github.com/pingdotgg/t3code/releases?q=android-beta-).
 
 If the app crashes during launch, open Settings → Diagnostics on the next launch
