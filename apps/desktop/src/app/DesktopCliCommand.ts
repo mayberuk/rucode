@@ -445,7 +445,15 @@ export const make = Effect.gen(function* () {
 
   const installOnFirstLaunch: DesktopCliCommand["Service"]["installOnFirstLaunch"] = Effect.gen(
     function* () {
-      if (!environment.isPackaged || (yield* exists(firstLaunchMarker))) return;
+      if (!environment.isPackaged) return;
+      if (yield* exists(firstLaunchMarker)) {
+        const linked = Option.getOrUndefined(yield* installedAt);
+        if (linked !== undefined) {
+          const target = yield* fs.readLink(linked).pipe(Effect.option);
+          if (Option.getOrUndefined(target) === launcher) yield* linkRucode(path.dirname(linked));
+        }
+        return;
+      }
       // Mark first so a failed or removed install is never retried behind the user's back.
       yield* fs.writeFileString(firstLaunchMarker, "");
       if (!freshInstall) {

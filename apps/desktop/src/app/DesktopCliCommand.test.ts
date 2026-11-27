@@ -121,9 +121,13 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       expect(yield* fs.readFileString(path.join(home, ".t3", "bin", "rucode"))).toBe(
         yield* fs.readFileString(path.join(home, ".t3", "bin", "t3")),
       );
-      // Install after an update restores a `rucode` the earlier app version never linked.
+      // After an update, Install and a later launch both restore a `rucode` the earlier app version
+      // never linked.
       yield* fs.remove(rucodeLink);
       expect((yield* command.install).installedPath).toBe(link);
+      expect(yield* fs.readLink(rucodeLink)).toBe(path.join(home, ".t3", "bin", "rucode"));
+      yield* fs.remove(rucodeLink);
+      yield* command.installOnFirstLaunch;
       expect(yield* fs.readLink(rucodeLink)).toBe(path.join(home, ".t3", "bin", "rucode"));
 
       // Add to PATH appends one line, once, and keeps a final line with no newline intact.
@@ -148,6 +152,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       // Removed stays removed: first launch never installs again.
       yield* command.installOnFirstLaunch;
       expect(yield* fs.exists(link)).toBe(false);
+      expect(Option.isSome(yield* fs.readLink(rucodeLink).pipe(Effect.option))).toBe(false);
 
       // Also when first launch was put off (no shell PATH yet) and the user removed it meanwhile.
       const laterHome = yield* fs.makeTempDirectoryScoped();
@@ -216,6 +221,8 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
         const foreignCommand = yield* commandIn({ home: foreignHome });
         const installed = yield* foreignCommand.install;
         expect(installed.installedPath).toBe(path.join(foreignHome, ".local", "bin", "t3"));
+        yield* foreignCommand.installOnFirstLaunch;
+        yield* foreignCommand.installOnFirstLaunch;
         yield* foreignCommand.uninstall;
         expect(yield* fs.exists(path.join(foreignHome, ".local", "bin", "t3"))).toBe(false);
         if (dangling) {
