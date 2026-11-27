@@ -135,6 +135,14 @@ describe("ClientSettings terminal close confirmation", () => {
   });
 });
 
+describe("ClientSettings boring sidebar", () => {
+  it("groups by project for settings without a saved preference and keeps a saved false", () => {
+    expect(decodeClientSettings({}).boringSidebarEnabled).toBe(true);
+    expect(decodeClientSettings({ boringSidebarEnabled: false }).boringSidebarEnabled).toBe(false);
+    expect(decodeClientSettings({ boringSidebarEnabled: true }).boringSidebarEnabled).toBe(true);
+  });
+});
+
 describe("ServerSettings usage price overrides", () => {
   const prices = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };
 

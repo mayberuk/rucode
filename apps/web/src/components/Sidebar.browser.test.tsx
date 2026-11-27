@@ -7,10 +7,14 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   EnvironmentId,
   type LocalApi,
+  type PluginLiveInitiative,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { useSyncExternalStore } from "react";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
@@ -22,10 +26,16 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
-import { useProjects, useServerConfigs, useQuietThreadShells } from "../state/entities";
+import {
+  useProjects,
+  useServerConfigs,
+  useQuietThreadShells,
+  useThreadShell,
+} from "../state/entities";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
+import { useUiStateStore } from "../uiStateStore";
 import { readLocalApi } from "../localApi";
 import * as liveAtoms from "../pluginCards/live/liveAtoms";
 import type { Project } from "../types";
@@ -402,7 +412,7 @@ describe("sidebar settled pagination", () => {
 
 describe("sidebar initiative groups", () => {
   const environmentId = EnvironmentId.make("local");
-  const groupedProject = project("active");
+  const groupedProject = project("acme");
   const shell = (id: string, title: string, overrides: Partial<EnvironmentThreadShell> = {}) =>
     makeThreadFixture({
       environmentId,
@@ -411,7 +421,17 @@ describe("sidebar initiative groups", () => {
       title,
       ...overrides,
     });
-  const threads = [
+  const running = {
+    runtime: {
+      status: "running" as const,
+      activeRunId: null,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerName: "Codex",
+      lastError: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    },
+  };
+  const baseThreads = [
     shell("inbox", "Inbox chat"),
     shell("part", "Part one chat"),
     shell("orchestrator", "Orchestrator chat"),
@@ -421,28 +441,77 @@ describe("sidebar initiative groups", () => {
     }),
   ];
   const group = {
-    key: `${environmentId}:nov18`,
+    key: `${environmentId}:checkout-retries`,
     environmentId,
-    slug: "nov18",
-    label: "Nov 18 rollout",
+    slug: "checkout-retries",
+    label: "Checkout retries",
     threadIds: [ThreadId.make("orchestrator"), ThreadId.make("part"), ThreadId.make("pinned")],
     endLabel: "Wave 2 of 3 · 1 of 2 parts settled",
   };
+  const liveInitiative = (overrides: Partial<PluginLiveInitiative> = {}): PluginLiveInitiative => ({
+    slug: group.slug,
+    title: group.label,
+    closed: false,
+    wave: { current: 2, total: 3, partsSettled: 1, partsTotal: 2 },
+    settled: { count: 1, total: 2 },
+    running: 1,
+    openDecisions: 0,
+    spend: { usd: null, state: "unknown" },
+    orchestratorThreadId: ThreadId.make("orchestrator"),
+    asOf: "2026-01-01T00:00:00.000Z",
+    parts: [
+      { id: "alpha", title: null, wave: 1, status: "merged", threadIds: [] },
+      { id: "beta", title: null, wave: 2, status: "mr-open", threadIds: [ThreadId.make("part")] },
+    ],
+    ...overrides,
+  });
   const routeThreadRef = { environmentId, threadId: ThreadId.make("inbox") };
+  const tree = () => (
+    <SidebarProvider>
+      <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+    </SidebarProvider>
+  );
+  const follows = (earlier: Element, later: Element) =>
+    (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
-  function setup(stack: DisposableStack, boringSidebarEnabled: boolean) {
+  function setup(
+    stack: DisposableStack,
+    options: {
+      readonly boringSidebarEnabled: boolean;
+      readonly threads?: ReadonlyArray<EnvironmentThreadShell>;
+      readonly openDecisionThreadIds?: ReadonlyArray<string>;
+      readonly live?: PluginLiveInitiative | null;
+    },
+  ) {
     const previousSettings = getClientSettings();
     stack.defer(() => __setClientSettingsForTests(previousSettings));
-    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, boringSidebarEnabled });
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      boringSidebarEnabled: options.boringSidebarEnabled,
+    });
     stack.defer(() => window.localStorage.removeItem("t3code:sidebar:initiative-collapsed"));
+    stack.defer(() => useUiStateStore.setState({ projectExpandedById: {} }));
     stack.use(vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([group]));
+    const decisionKeys = (options.openDecisionThreadIds ?? []).map((id) =>
+      scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(id))),
+    );
+    stack.use(vi.spyOn(liveAtoms, "useOpenDecisionThreadKeys").mockReturnValue(decisionKeys));
+    // Read through a store so a test can deliver the live state after the first render.
+    let live = options.live === undefined ? liveInitiative() : options.live;
+    const listeners = new Set<() => void>();
     stack.use(
-      vi
-        .spyOn(liveAtoms, "useAnyThreadHasOpenDecision")
-        .mockImplementation((refs) => refs.some((ref) => ref.threadId === "part")),
+      vi.spyOn(liveAtoms, "useLiveInitiative").mockImplementation(() =>
+        useSyncExternalStore(
+          (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          () => live,
+        ),
+      ),
     );
     vi.mocked(useProjects).mockReturnValue([groupedProject]);
-    vi.mocked(useQuietThreadShells).mockReturnValue(threads);
+    vi.mocked(useQuietThreadShells).mockReturnValue([...(options.threads ?? baseThreads)]);
     vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef: routeThreadRef });
     vi.mocked(useHandleNewThread).mockReturnValue({
       activeDraftThread: null,
@@ -453,89 +522,607 @@ describe("sidebar initiative groups", () => {
       routeDraftId: null,
       routeThreadRef,
     });
+    return {
+      deliverLive: (next: PluginLiveInitiative | null) =>
+        act(() => {
+          live = next;
+          for (const listener of listeners) listener();
+        }),
+    };
   }
 
-  it("groups the listed chats after pinned ones, collapses them and opens the board", async () => {
+  it("names the project, toggles members in place, says what a collapsed group needs and opens the board on its wave", async () => {
     using stack = new DisposableStack();
-    setup(stack, false);
-    await using screen = await render(
-      <SidebarProvider>
-        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
-      </SidebarProvider>,
-    );
-    const header = screen.getByRole("button", { name: /^Nov 18 rollout/ });
-    const groupRow = (title: string) => screen.getByText(title, { exact: true }).first();
-    await expect.element(header).toHaveAttribute("aria-expanded", "true");
-    // Label then the count of grouped chats; the pinned one stays out of it.
-    expect(header.element().textContent).toBe("Nov 18 rollout2");
-    await expect.element(groupRow("Orchestrator chat")).toBeInTheDocument();
-    await expect.element(groupRow("Part one chat")).toBeInTheDocument();
-    const endRow = screen.getByRole("button", { name: group.endLabel, exact: true });
-    await expect.element(endRow).toBeInTheDocument();
+    setup(stack, { boringSidebarEnabled: false, openDecisionThreadIds: ["part"] });
+    {
+      await using first = await render(tree());
+      const header = first.getByRole("button", { name: /^acme · Checkout retries/ });
+      const row = (title: string) => first.getByText(title, { exact: true }).first();
+      await expect.element(header).toHaveAttribute("aria-expanded", "true");
+      // Favicon, project, separator, label, then the count of grouped chats; the pinned one stays out.
+      // The favicon falls back to initials, so match from the project name on.
+      expect(header.element().textContent).toMatch(/acme·Checkout retries2$/);
+      await expect.element(row("Orchestrator chat")).toBeInTheDocument();
+      await expect.element(row("Part one chat")).toBeInTheDocument();
+      const wave = first.getByTestId("sidebar-initiative-wave");
+      expect(first.getByText(/Show \d+ more/).query()).toBeNull();
+      expect(
+        [
+          row("Pinned chat"),
+          header,
+          row("Orchestrator chat"),
+          row("Part one chat"),
+          wave,
+          row("Inbox chat"),
+        ]
+          .map((locator) => locator.element())
+          .every((element, index, all) => index === 0 || follows(all[index - 1]!, element)),
+      ).toBe(true);
 
-    const follows = (earlier: Element, later: Element) =>
-      (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-    const pinned = groupRow("Pinned chat").element();
-    const orchestrator = groupRow("Orchestrator chat").element();
-    const part = groupRow("Part one chat").element();
-    const inbox = groupRow("Inbox chat").element();
-    expect(follows(pinned, header.element())).toBe(true);
-    expect(follows(header.element(), orchestrator)).toBe(true);
-    expect(follows(orchestrator, part)).toBe(true);
-    expect(follows(part, endRow.element())).toBe(true);
-    expect(follows(endRow.element(), inbox)).toBe(true);
+      // The shift guard drops pointer presses on rows that just appeared; keys pass.
+      header.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(header).toHaveAttribute("aria-expanded", "false");
+      expect(first.router!.state.location.pathname).toBe("/");
+      await expect
+        .element(first.getByText("Orchestrator chat", { exact: true }))
+        .not.toBeInTheDocument();
+      await expect
+        .element(first.getByText("Part one chat", { exact: true }))
+        .not.toBeInTheDocument();
+      await expect.element(wave).toBeInTheDocument();
+      // The hidden part chat has an open decision, so the header says so in words.
+      expect(header.element().textContent).toMatch(/acme·Checkout retriesNeeds you$/);
+      await expect
+        .element(first.getByRole("button", { name: "acme · Checkout retries, Needs you" }))
+        .toBeInTheDocument();
+      expect(
+        JSON.parse(window.localStorage.getItem("t3code:sidebar:initiative-collapsed")!),
+      ).toEqual({
+        [group.key]: true,
+      });
+    }
+    await using screen = await render(tree());
+    const reloaded = screen.getByRole("button", { name: /^acme · Checkout retries/ });
+    await expect.element(reloaded).toHaveAttribute("aria-expanded", "false");
+    reloaded.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(reloaded).toHaveAttribute("aria-expanded", "true");
+    expect(reloaded.element().textContent).toMatch(/acme·Checkout retries2$/);
+    const part = screen.getByText("Part one chat", { exact: true }).first();
+    await expect.element(part).toBeInTheDocument();
+    expect(screen.router!.state.location.pathname).toBe("/");
 
-    // The shift guard drops pointer presses on rows that just appeared; keys pass.
+    part.element().closest<HTMLElement>("[data-sidebar-row]")!.focus();
+    await userEvent.keyboard("{ArrowDown}");
+    const waveRow = screen.getByTestId("sidebar-initiative-wave");
+    await expect.element(waveRow).toHaveFocus();
+    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Wave 2 of 3/));
+    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/1 of 2 merged/));
+    await expect
+      .element(waveRow)
+      .toHaveAccessibleName("Wave 2 of 3: 1 of 2 parts merged. Open the board");
+
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() => expect(screen.router!.state.location.pathname).toBe("/board"));
+    expect(screen.router!.state.location.search).toEqual({ environmentId, slug: group.slug });
+  });
+
+  const longLabel = "Checkout retries and every follow-up migration we planned for the quarter";
+  it.each([
+    {
+      name: "a project and label that fit",
+      project: "acme",
+      label: "Checkout retries",
+      labelTruncated: false,
+      projectTruncated: false,
+    },
+    {
+      name: "a label that fits only when the project gives way",
+      project: "acme-app",
+      label: "Checkout retries",
+      labelTruncated: false,
+      projectTruncated: true,
+    },
+    {
+      name: "a label too long for the row",
+      project: "acme-app",
+      label: longLabel,
+      labelTruncated: true,
+      projectTruncated: true,
+    },
+    {
+      name: "a long project and a long label",
+      project: "acme-application-monorepo-with-a-very-long-name",
+      label: longLabel,
+      labelTruncated: true,
+      projectTruncated: true,
+    },
+  ])(
+    "lets the flat header's label use the free width and keeps the count inside: $name",
+    async ({ project: projectName, label, labelTruncated, projectTruncated }) => {
+      using stack = new DisposableStack();
+      const style = document.createElement("style");
+      style.textContent = appCss;
+      document.head.append(style);
+      stack.defer(() => style.remove());
+      setup(stack, { boringSidebarEnabled: false });
+      vi.mocked(useProjects).mockReturnValue([{ ...groupedProject, title: projectName }]);
+      stack.use(
+        vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([{ ...group, label }]),
+      );
+      await using screen = await render(
+        <SidebarProvider>
+          <div style={{ width: "16rem", flex: "none" }}>
+            <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+          </div>
+        </SidebarProvider>,
+      );
+      const header = screen.getByRole("button", { name: new RegExp(`^${projectName} · `) });
+      await expect.element(header).toBeInTheDocument();
+      const button = header.element();
+      const spans = Array.from(button.querySelectorAll("span"));
+      const labelText = spans.find((span) => span.textContent === label)!;
+      const projectText = spans.find((span) => span.textContent === projectName)!;
+      const count = spans.find((span) => span.textContent === "2")!;
+
+      expect(count.getBoundingClientRect().right).toBeLessThanOrEqual(
+        button.getBoundingClientRect().right,
+      );
+      const gapToCount =
+        count.getBoundingClientRect().left - labelText.getBoundingClientRect().right;
+      expect(gapToCount).toBeGreaterThanOrEqual(0);
+      // Out of room, the label ends one gap, the hidden rule's minimum width and one gap before the count.
+      if (labelTruncated || projectTruncated) expect(gapToCount).toBeLessThanOrEqual(26);
+      expect(labelText.scrollWidth > labelText.clientWidth).toBe(labelTruncated);
+      expect(projectText.scrollWidth > projectText.clientWidth).toBe(projectTruncated);
+      expect(projectText.clientWidth).toBeGreaterThan(0);
+    },
+  );
+
+  it("counts a spawned session of a hidden member in the collapsed initiative's status", async () => {
+    using stack = new DisposableStack();
+    setup(stack, {
+      boringSidebarEnabled: false,
+      threads: [
+        ...baseThreads,
+        shell("part-child", "Part session", {
+          lineage: {
+            rootThreadId: ThreadId.make("part"),
+            parentThreadId: ThreadId.make("part"),
+            relationshipToParent: null,
+          },
+          runtime: { ...running.runtime, status: "failed" as const },
+        }),
+      ],
+    });
+    await using screen = await render(tree());
+    const header = screen.getByRole("button", { name: /^acme · Checkout retries/ });
     header.element().focus();
     await userEvent.keyboard("{Enter}");
     await expect.element(header).toHaveAttribute("aria-expanded", "false");
-    // A hidden chat with an open decision shows the attention dot on the collapsed header.
-    expect(header.element().textContent).toBe("Nov 18 rollout, needs you2");
     await expect
-      .element(screen.getByText("Orchestrator chat", { exact: true }))
-      .not.toBeInTheDocument();
-    await expect
-      .element(screen.getByText("Part one chat", { exact: true }))
-      .not.toBeInTheDocument();
-    await expect.element(screen.getByText("Pinned chat", { exact: true })).toBeInTheDocument();
-    const collapsedEnd = screen.getByRole("button", {
-      name: `Show 2 more · ${group.endLabel}`,
-      exact: true,
-    });
-    await expect.element(collapsedEnd).toBeInTheDocument();
-    expect(JSON.parse(window.localStorage.getItem("t3code:sidebar:initiative-collapsed")!)).toEqual(
-      {
-        [group.key]: true,
-      },
-    );
-
-    header.element().focus();
-    await userEvent.keyboard("{Enter}");
-    await expect.element(header).toHaveAttribute("aria-expanded", "true");
-    expect(header.element().textContent).toBe("Nov 18 rollout2");
-    await expect.element(groupRow("Orchestrator chat")).toBeInTheDocument();
-    await expect.element(groupRow("Part one chat")).toBeInTheDocument();
-
-    using navigate = vi.spyOn(screen.router!, "navigate");
-    endRow.element().focus();
-    await userEvent.keyboard("{Enter}");
-    await vi.waitFor(() =>
-      expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ to: "/board" })),
-    );
+      .element(screen.getByRole("button", { name: "acme · Checkout retries, 1 failed" }))
+      .toBeInTheDocument();
   });
 
-  it("keeps project folders and shows no initiative group in folder mode", async () => {
+  it("puts an initiative inside its project folder, before the folder's own threads, and counts its members in the closed folder", async () => {
     using stack = new DisposableStack();
-    setup(stack, true);
-    await using screen = await render(
-      <SidebarProvider>
-        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
-      </SidebarProvider>,
-    );
+    setup(stack, {
+      boringSidebarEnabled: true,
+      threads: [
+        shell("inbox", "Inbox chat"),
+        shell("busy", "Busy chat", running),
+        shell("part", "Part one chat"),
+        shell("orchestrator", "Orchestrator chat", running),
+      ],
+    });
+    await using screen = await render(tree());
+    const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
+    const header = screen.getByRole("button", { name: /^acme · Checkout retries/ });
+    await expect.element(header).toBeInTheDocument();
+    // Inside its folder the header names only the initiative.
+    expect(header.element().textContent).toBe("Checkout retries2");
+    const row = (title: string) => screen.getByText(title, { exact: true }).first();
+    expect(
+      [
+        folder,
+        header,
+        row("Orchestrator chat"),
+        row("Part one chat"),
+        screen.getByTestId("sidebar-initiative-wave"),
+        row("Inbox chat"),
+      ]
+        .map((locator) => locator.element())
+        .every((element, index, all) => index === 0 || follows(all[index - 1]!, element)),
+    ).toBe(true);
+
+    // Arrow keys walk folder -> initiative -> its members, and back up one level at a time.
+    folder.element().focus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.element(header).toHaveFocus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.element(screen.getByRole("button", { name: /^Orchestrator chat/ })).toHaveFocus();
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect.element(header).toHaveFocus();
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect.element(folder).toHaveFocus();
+    header.element().focus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.element(header).toHaveAttribute("aria-expanded", "true");
+
+    folder.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+    // Both running threads are hidden: the folder's own and the initiative's.
+    await expect.element(folder).toHaveAccessibleName("acme, 2 working");
+    await vi.waitFor(() => expect(folder.element().textContent).toMatch(/acme2 working$/));
+    await expect.element(header).not.toBeInTheDocument();
+    await expect.element(row("Inbox chat")).toBeInTheDocument();
+  });
+
+  it("shows the freshest hidden thread's age on a closed folder with nothing to report", async () => {
+    using stack = new DisposableStack();
+    setup(stack, {
+      boringSidebarEnabled: true,
+      threads: [
+        shell("inbox", "Inbox chat"),
+        shell("older", "Older chat", { latestUserMessageAt: "2026-01-01T06:00:00.000Z" }),
+        shell("newer", "Newer chat", { latestUserMessageAt: "2026-01-02T12:00:00.000Z" }),
+        shell("part", "Part one chat"),
+        shell("orchestrator", "Orchestrator chat"),
+      ],
+    });
+    stack.use(vi.mocked(useNowMinute).mockReturnValue("2026-01-03T00:00"));
+    await using screen = await render(tree());
+    const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
+    await expect.element(folder).toHaveAttribute("aria-expanded", "true");
+    folder.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+    await expect.element(folder).toHaveAccessibleName("acme, 12h");
+  });
+
+  it.each([
+    {
+      name: "no waves",
+      live: liveInitiative({
+        wave: { current: 0, total: 0, partsSettled: 0, partsTotal: 0 },
+        parts: [],
+      }),
+      text: "No waves yet",
+    },
+    { name: "no live state", live: null, text: "Open the board" },
+  ])("keeps the wave row linking to the board with $name", async ({ live, text }) => {
+    using stack = new DisposableStack();
+    setup(stack, { boringSidebarEnabled: false, live });
+    await using screen = await render(tree());
+    const waveRow = screen.getByTestId("sidebar-initiative-wave");
+    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(new RegExp(`^${text}`)));
+    expect(waveRow.element().textContent).not.toMatch(/Wave \d/);
     await expect
       .element(screen.getByText("Orchestrator chat", { exact: true }).first())
       .toBeInTheDocument();
-    expect(screen.container.querySelector('[data-testid="sidebar-initiative-header"]')).toBeNull();
-    expect(screen.getByRole("button", { name: group.endLabel }).query()).toBeNull();
+    waveRow.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() => expect(screen.router!.state.location.pathname).toBe("/board"));
+    expect(screen.router!.state.location.search).toEqual({ environmentId, slug: group.slug });
+  });
+
+  it("replaces the loading wave row text once the live initiative arrives", async () => {
+    using stack = new DisposableStack();
+    const { deliverLive } = setup(stack, { boringSidebarEnabled: false, live: null });
+    await using screen = await render(tree());
+    const waveRow = screen.getByTestId("sidebar-initiative-wave");
+    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Open the board/));
+    await deliverLive(liveInitiative());
+    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Wave 2 of 3/));
+    expect(waveRow.element().textContent).not.toContain("Open the board");
+  });
+});
+
+describe("sidebar spawned sessions", () => {
+  const environmentId = EnvironmentId.make("local");
+  const appProject = project("acme-app");
+  const apiProject = project("acme-api");
+  const shell = (id: string, title: string, overrides: Partial<EnvironmentThreadShell> = {}) =>
+    makeThreadFixture({
+      environmentId,
+      projectId: appProject.id,
+      id: ThreadId.make(id),
+      title,
+      ...overrides,
+    });
+  const spawnedBy = (parentId: string) => ({
+    lineage: {
+      rootThreadId: ThreadId.make(parentId),
+      parentThreadId: ThreadId.make(parentId),
+      relationshipToParent: null,
+    },
+  });
+  const parent = shell("parent", "Parent chat");
+  const firstChild = shell("first-child", "First session", {
+    ...spawnedBy("parent"),
+    createdAt: "2026-01-02T00:00:00.000Z",
+    latestUserMessageAt: "2026-01-02T12:00:00.000Z",
+  });
+  const secondChild = shell("second-child", "Second session", {
+    ...spawnedBy("parent"),
+    projectId: apiProject.id,
+    createdAt: "2026-01-02T06:00:00.000Z",
+  });
+  const runningSecondChild = {
+    ...secondChild,
+    runtime: {
+      status: "running" as const,
+      activeRunId: null,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerName: "Codex",
+      lastError: null,
+      updatedAt: "2026-01-02T06:00:00.000Z",
+    },
+  };
+  const other = shell("other", "Other chat");
+  const parentKey = scopedThreadKey(scopeThreadRef(environmentId, parent.id));
+  const tree = () => (
+    <SidebarProvider>
+      <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+    </SidebarProvider>
+  );
+  const follows = (earlier: Element, later: Element) =>
+    (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  function setup(
+    stack: DisposableStack,
+    options: {
+      readonly boringSidebarEnabled: boolean;
+      readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+      readonly routeThreadId?: string;
+    },
+  ) {
+    const previousSettings = getClientSettings();
+    stack.defer(() => __setClientSettingsForTests(previousSettings));
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      boringSidebarEnabled: options.boringSidebarEnabled,
+    });
+    stack.defer(() => window.localStorage.removeItem("t3code:sidebar:spawned-expanded"));
+    stack.defer(() => useUiStateStore.setState({ projectExpandedById: {} }));
+    stack.use(vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([]));
+    stack.use(vi.spyOn(liveAtoms, "useOpenDecisionThreadKeys").mockReturnValue([]));
+    // The live shell is missing, so rows render from the snapshot alone.
+    stack.use(vi.mocked(useThreadShell).mockReturnValue(null));
+    stack.use(vi.mocked(useNowMinute).mockReturnValue("2026-01-03T00:00"));
+    const routeThreadRef = {
+      environmentId,
+      threadId: ThreadId.make(options.routeThreadId ?? "other"),
+    };
+    vi.mocked(useProjects).mockReturnValue([appProject, apiProject]);
+    vi.mocked(useQuietThreadShells).mockReturnValue([...options.threads]);
+    vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef: routeThreadRef });
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: null,
+      defaultProjectRef: { environmentId, projectId: appProject.id },
+      defaultProjectFallbackReady: true,
+      handleNewThread: vi.fn().mockResolvedValue(null),
+      routeDraftId: null,
+      routeThreadRef,
+    });
+  }
+
+  it("keeps sessions under their parent behind a count, opens them in place and navigates into them", async () => {
+    using stack = new DisposableStack();
+    setup(stack, {
+      boringSidebarEnabled: false,
+      threads: [parent, firstChild, runningSecondChild, other],
+    });
+    {
+      await using first = await render(tree());
+      // The name flips between Show and Hide, so the test id follows the one button.
+      const toggle = first.getByTestId("sidebar-spawned-toggle");
+      await expect
+        .element(toggle)
+        .toHaveAccessibleName("Show 2 sessions this thread started, 1 working");
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(toggle.element().textContent).toBe("2");
+      expect(toggle.element().querySelector(".lucide-circle-dashed")).not.toBeNull();
+      await expect.element(first.getByText("Other chat", { exact: true })).toBeInTheDocument();
+      expect(first.getByText("First session", { exact: true }).query()).toBeNull();
+      expect(first.getByText("Second session", { exact: true }).query()).toBeNull();
+
+      toggle.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect
+        .element(toggle)
+        .toHaveAccessibleName("Hide 2 sessions this thread started, 1 working");
+      expect(first.router!.state.location.pathname).toBe("/");
+      expect(JSON.parse(window.localStorage.getItem("t3code:sidebar:spawned-expanded")!)).toEqual({
+        [parentKey]: true,
+      });
+      const parentRow = first.container.querySelector<HTMLElement>(
+        `[data-sidebar-row="${CSS.escape(parentKey)}"]`,
+      )!;
+      const firstRow = first.getByRole("button", {
+        name: "First session, session started by Parent chat",
+      });
+      const secondRow = first.getByRole("button", {
+        name: "Second session, session started by Parent chat",
+      });
+      await expect.element(firstRow).toBeInTheDocument();
+      await expect.element(secondRow).toBeInTheDocument();
+      expect(follows(parentRow, firstRow.element())).toBe(true);
+      expect(follows(firstRow.element(), secondRow.element())).toBe(true);
+      // Neither child is also a top-level row.
+      expect(first.container.querySelectorAll('[data-sidebar-row$=":first-child"]')).toHaveLength(
+        1,
+      );
+      expect(firstRow.element().textContent).toContain("First session");
+      expect(firstRow.element().textContent).toContain("12h");
+      expect(secondRow.element().textContent).toContain("Working");
+
+      parentRow.focus();
+      await userEvent.keyboard("{ArrowRight}");
+      await expect.element(firstRow).toHaveFocus();
+      await userEvent.keyboard("{ArrowLeft}");
+      expect(document.activeElement).toBe(parentRow);
+    }
+    await using screen = await render(tree());
+    const reloaded = screen.getByTestId("sidebar-spawned-toggle");
+    await expect
+      .element(reloaded)
+      .toHaveAccessibleName("Hide 2 sessions this thread started, 1 working");
+    await expect.element(reloaded).toHaveAttribute("aria-expanded", "true");
+    const child = screen.getByRole("button", {
+      name: "First session, session started by Parent chat",
+    });
+    child.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() =>
+      expect(screen.router!.state.location.pathname).toBe(`/${environmentId}/first-child`),
+    );
+
+    reloaded.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(reloaded).toHaveAttribute("aria-expanded", "false");
+    await expect.element(screen.getByTestId("sidebar-row-spawned")).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem("t3code:sidebar:spawned-expanded")!)).toEqual({});
+  });
+
+  const failedChild = {
+    ...secondChild,
+    runtime: { ...runningSecondChild.runtime, status: "failed" as const },
+  };
+  const needyChild = { ...firstChild, hasPendingApprovals: true };
+
+  it.each([
+    {
+      name: "a session that needs you outranks a working one",
+      children: [needyChild, runningSecondChild],
+      label: "Needs you",
+      icon: "lucide-hand",
+    },
+    {
+      name: "a failed session outranks an idle one",
+      children: [firstChild, failedChild],
+      label: "1 failed",
+      icon: "lucide-circle-alert",
+    },
+    {
+      name: "a working session shows more than a colour",
+      children: [firstChild, runningSecondChild],
+      label: "1 working",
+      icon: "lucide-circle-dashed",
+    },
+  ])("states the strongest session state in words and an icon: $name", async (spec) => {
+    using stack = new DisposableStack();
+    setup(stack, { boringSidebarEnabled: false, threads: [parent, ...spec.children, other] });
+    await using screen = await render(tree());
+    const toggle = screen.getByTestId("sidebar-spawned-toggle");
+    await expect
+      .element(toggle)
+      .toHaveAccessibleName(`Show 2 sessions this thread started, ${spec.label}`);
+    expect(toggle.element().querySelector(`.${spec.icon}`)).not.toBeNull();
+    expect(toggle.element().textContent).toBe("2");
+    expect(toggle.element().querySelector(".text-secondary-label")?.textContent).toBe("2");
+  });
+
+  it.each([
+    { name: "needs approval", child: needyChild, label: "acme-app, Needs you" },
+    { name: "failed", child: failedChild, label: "acme-app, 1 failed" },
+  ])(
+    "reads a closed folder's nested session that is $name as the folder's status",
+    async ({ child, label }) => {
+      using stack = new DisposableStack();
+      setup(stack, { boringSidebarEnabled: true, threads: [parent, child, other] });
+      await using screen = await render(tree());
+      const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
+      await expect.element(folder).toHaveAttribute("aria-expanded", "true");
+      folder.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+      await expect.element(folder).toHaveAccessibleName(label);
+    },
+  );
+
+  it("follows the snapshot: nothing while loading, hidden without the parent, nested with it, gone with the children", async () => {
+    using stack = new DisposableStack();
+    setup(stack, { boringSidebarEnabled: false, threads: [] });
+    await using screen = await render(tree());
+    const toggles = () =>
+      screen.container.querySelectorAll('[data-testid="sidebar-spawned-toggle"]');
+    expect(toggles()).toHaveLength(0);
+    expect(screen.container.querySelectorAll('[data-testid="sidebar-row-spawned"]')).toHaveLength(
+      0,
+    );
+
+    // The parent is archived, so it is absent from the shells.
+    vi.mocked(useQuietThreadShells).mockReturnValue([firstChild, secondChild, other]);
+    await screen.rerender(tree());
+    await expect.element(screen.getByText("Other chat", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("First session", { exact: true }).query()).toBeNull();
+    expect(screen.getByText("Second session", { exact: true }).query()).toBeNull();
+    expect(toggles()).toHaveLength(0);
+
+    vi.mocked(useQuietThreadShells).mockReturnValue([parent, firstChild, secondChild, other]);
+    await screen.rerender(tree());
+    const toggle = screen.getByRole("button", { name: "Show 2 sessions this thread started" });
+    await expect.element(toggle).toBeInTheDocument();
+    expect(toggle.element().querySelector(".text-secondary-label")?.textContent).toBe("2");
+    expect(screen.getByText("First session", { exact: true }).query()).toBeNull();
+    toggle.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect
+      .element(
+        screen.getByRole("button", { name: "First session, session started by Parent chat" }),
+      )
+      .toBeInTheDocument();
+
+    vi.mocked(useQuietThreadShells).mockReturnValue([parent, other]);
+    await screen.rerender(tree());
+    await vi.waitFor(() => expect(toggles()).toHaveLength(0));
+    // A removed row fades out as a clone without its test id, so match the live rows only.
+    await expect.element(screen.getByTestId("sidebar-row-spawned")).not.toBeInTheDocument();
+    await expect
+      .element(screen.getByText("Parent chat", { exact: true }).first())
+      .toBeInTheDocument();
+  });
+
+  it("gives no folder to a project whose only thread is nested, and keeps an open child with its parent in a closed folder", async () => {
+    using stack = new DisposableStack();
+    setup(stack, {
+      boringSidebarEnabled: true,
+      threads: [parent, firstChild, secondChild, other],
+      routeThreadId: "second-child",
+    });
+    await using screen = await render(tree());
+    const folders = () =>
+      [...screen.container.querySelectorAll('[data-testid="sidebar-project-folder"]')].map(
+        (folder) => folder.textContent ?? "",
+      );
+    await vi.waitFor(() => expect(folders()).toHaveLength(1));
+    expect(folders()[0]).toContain("acme-app");
+    expect(folders()[0]).not.toContain("acme-api");
+
+    // Collapsed by default, the list still shows the open child under its parent.
+    const secondRow = screen.getByRole("button", {
+      name: "Second session, session started by Parent chat",
+    });
+    await expect.element(secondRow).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("First session", { exact: true }).query()).toBeNull();
+
+    const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
+    folder.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+    await expect.element(screen.getByText("Other chat", { exact: true })).not.toBeInTheDocument();
+    await expect.element(screen.getByText("Parent chat", { exact: true })).toBeInTheDocument();
+    await expect.element(secondRow).toBeInTheDocument();
+    expect(
+      follows(screen.getByText("Parent chat", { exact: true }).element(), secondRow.element()),
+    ).toBe(true);
   });
 });

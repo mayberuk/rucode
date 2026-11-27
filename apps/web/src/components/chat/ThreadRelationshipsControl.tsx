@@ -205,6 +205,9 @@ function relationshipLabel(edge: ThreadRelationshipEdge, currentThreadId: Thread
   if (edge.kind === "subagent") {
     return edge.sourceThreadId === currentThreadId ? "Subagent" : "Parent agent";
   }
+  if (edge.kind === "spawned") {
+    return edge.sourceThreadId === currentThreadId ? "Spawned session" : "Parent thread";
+  }
   return edge.sourceThreadId === currentThreadId ? "Fork" : "Parent thread";
 }
 
@@ -742,7 +745,7 @@ export function ThreadRelationshipsPanel(props: {
         : undefined) ?? threadRelationshipRowStatus(graph, { threadId, edge });
     const RelationshipIcon = isParent
       ? CornerLeftUpIcon
-      : isSubagent
+      : isSubagent || edge.kind === "spawned"
         ? BotIcon
         : node?.thread?.lineage.sideChat === true
           ? MessagesSquareIcon
