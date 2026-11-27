@@ -1,6 +1,8 @@
+import type { EnvironmentId } from "@t3tools/contracts";
+
 export interface BoardSearch {
-  readonly environmentId: string | undefined;
-  readonly slug: string | undefined;
+  readonly environmentId?: EnvironmentId;
+  readonly slug?: string;
 }
 
 const bounded = (value: unknown): string | undefined => {
@@ -9,8 +11,10 @@ const bounded = (value: unknown): string | undefined => {
 };
 
 export function boardSearchFromUrl(raw: Record<string, unknown>): BoardSearch {
+  const environmentId = bounded(raw.environmentId);
+  const slug = bounded(raw.slug);
   return {
-    environmentId: bounded(raw.environmentId),
-    slug: bounded(raw.slug),
+    ...(environmentId !== undefined && { environmentId: environmentId as EnvironmentId }),
+    ...(slug !== undefined && { slug }),
   };
 }

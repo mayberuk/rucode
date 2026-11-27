@@ -9,14 +9,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vite-plus/test";
 
 import { Route as BoardRoute } from "../../routes/_chat.board";
-import { boardSearchFromUrl, type BoardSearch } from "./boardSearch";
+import { boardSearchFromUrl } from "./boardSearch";
 
 vi.mock("./BoardPage", () => ({ BoardPage: () => "Board page test marker" }));
 
 const cases: ReadonlyArray<{
   name: string;
   raw: Record<string, unknown>;
-  expected: BoardSearch;
+  expected: { environmentId?: string; slug?: string };
   url?: string;
 }> = [
   {
@@ -25,30 +25,30 @@ const cases: ReadonlyArray<{
     expected: { environmentId: "alpha", slug: "checkout-retries" },
   },
   {
-    name: "keeps an absent environment as an own key",
+    name: "omits an absent environment",
     raw: { slug: "checkout-retries" },
-    expected: { environmentId: undefined, slug: "checkout-retries" },
+    expected: { slug: "checkout-retries" },
   },
   {
-    name: "keeps an absent slug as an own key",
+    name: "omits an absent slug",
     raw: { environmentId: "alpha" },
-    expected: { environmentId: "alpha", slug: undefined },
+    expected: { environmentId: "alpha" },
   },
   {
-    name: "returns both own keys for empty search",
+    name: "returns no keys for empty search",
     raw: {},
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
     url: "/board",
   },
   {
-    name: "clears empty strings in both fields",
+    name: "omits empty strings in both fields",
     raw: { environmentId: "", slug: "" },
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
   },
   {
-    name: "clears whitespace-only strings in both fields",
+    name: "omits whitespace-only strings in both fields",
     raw: { environmentId: " \t", slug: "\n " },
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
   },
   {
     name: "stringifies zero and a positive numeric slug",
@@ -64,32 +64,32 @@ const cases: ReadonlyArray<{
   {
     name: "rejects NaN and positive infinity",
     raw: { environmentId: NaN, slug: Infinity },
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
   },
   {
     name: "rejects negative infinity and NaN",
     raw: { environmentId: -Infinity, slug: NaN },
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
   },
   {
     name: "rejects objects in both fields",
     raw: { environmentId: { id: "alpha" }, slug: { id: "checkout-retries" } },
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
   },
   {
     name: "rejects arrays in both fields",
     raw: { environmentId: ["alpha"], slug: ["checkout-retries"] },
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
   },
   {
     name: "rejects booleans in both fields",
     raw: { environmentId: true, slug: false },
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
   },
   {
     name: "rejects null in both fields",
     raw: { environmentId: null, slug: null },
-    expected: { environmentId: undefined, slug: undefined },
+    expected: {},
   },
   {
     name: "drops extra keys and preserves an unknown slug",
