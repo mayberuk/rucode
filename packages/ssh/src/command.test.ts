@@ -77,26 +77,26 @@ describe("ssh command", () => {
     );
   });
 
-  it.effect("overrides an alias's RemoteCommand and RequestTTY", () =>
+  it.effect("overrides an alias's RemoteCommand, RequestTTY and forwards", () =>
     Effect.sync(() => {
-      assert.deepEqual(
-        baseSshArgs(
-          { alias: "devbox", hostname: "devbox", username: null, port: 2222 },
-          { batchMode: "yes" },
-        ),
-        [
-          "-o",
-          "BatchMode=yes",
-          "-o",
-          "ConnectTimeout=10",
-          "-o",
-          "RemoteCommand=none",
-          "-o",
-          "RequestTTY=no",
-          "-p",
-          "2222",
-        ],
-      );
+      const target = { alias: "devbox", hostname: "devbox", username: null, port: 2222 };
+      assert.deepEqual(baseSshArgs(target, { batchMode: "yes" }), [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "RemoteCommand=none",
+        "-o",
+        "RequestTTY=no",
+        "-o",
+        "ClearAllForwardings=yes",
+        "-p",
+        "2222",
+      ]);
+      const tunnelArgs = baseSshArgs(target, { forwardsPorts: true });
+      assert.include(tunnelArgs, "ExitOnForwardFailure=no");
+      assert.notInclude(tunnelArgs, "ClearAllForwardings=yes");
     }),
   );
 

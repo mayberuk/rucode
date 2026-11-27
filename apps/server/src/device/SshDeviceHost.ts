@@ -386,10 +386,8 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
         ChildProcess.make(
           ssh,
           [
-            ...baseSshArgs(targetFor(config), { batchMode: "yes" }),
+            ...baseSshArgs(targetFor(config), { batchMode: "yes", forwardsPorts: true }),
             ...identityArgs(config),
-            "-o",
-            "ExitOnForwardFailure=yes",
             // Multiplexed clients exit after handing forwards to the master; own this connection.
             "-o",
             "ControlMaster=no",

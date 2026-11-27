@@ -106,7 +106,7 @@ export const buildSshHostSpecEffect = (
 
 export function baseSshArgs(
   target: DesktopSshEnvironmentTarget,
-  input?: { readonly batchMode?: "yes" | "no" },
+  input?: { readonly batchMode?: "yes" | "no"; readonly forwardsPorts?: boolean },
 ): string[] {
   return [
     "-o",
@@ -119,6 +119,11 @@ export function baseSshArgs(
     "RemoteCommand=none",
     "-o",
     "RequestTTY=no",
+    // An alias's LocalForward or RemoteForward listener is often already bound by the
+    // user's own session. ClearAllForwardings would also drop a tunnel's own -L, so a
+    // tunnel lets those forwards fail instead and checks its own listener.
+    "-o",
+    input?.forwardsPorts ? "ExitOnForwardFailure=no" : "ClearAllForwardings=yes",
     ...(target.port !== null ? ["-p", String(target.port)] : []),
   ];
 }

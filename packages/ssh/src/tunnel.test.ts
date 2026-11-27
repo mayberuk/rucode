@@ -705,6 +705,66 @@ describe("ssh tunnel scripts", () => {
     }),
   );
 
+  it.effect("says so when ssh stays up but its own forward could not listen", () =>
+    Effect.gen(function* () {
+      const tunnelSpawned = yield* Deferred.make<void>();
+      const spawner = ChildProcessSpawner.make((command) =>
+        commandArgs(command).includes("-N")
+          ? Deferred.succeed(tunnelSpawned, undefined).pipe(
+              Effect.as({
+                ...makeRunningProcess(() => undefined),
+                stderr: Stream.make(
+                  new TextEncoder().encode(
+                    "Warning: remote port forwarding failed for listen path /home/julius/bridge.sock\r\n" +
+                      "bind [127.0.0.1]:41773: Address already in use\r\n",
+                  ),
+                ),
+              }),
+            )
+          : Effect.succeed(makeSuccessfulProcess('{"remotePort":3773}\n')),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, hangingHttpClient),
+        Layer.succeed(
+          NetService.NetService,
+          NetService.NetService.of({
+            ...testNetService,
+            hasListenerOnHost: () => Effect.succeed(false),
+          }),
+        ),
+        SshAuth.SshPasswordPrompt.disabledLayer,
+        SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* SshTunnel.SshEnvironmentManager;
+        const ensure = yield* Effect.forkChild(
+          Effect.result(
+            manager.ensureEnvironment({
+              alias: "devbox",
+              hostname: "devbox",
+              username: null,
+              port: null,
+            }),
+          ),
+        );
+        yield* Deferred.await(tunnelSpawned);
+        // Past the connect timeout, so a probe that ignored stderr would fail as a timeout instead.
+        yield* TestClock.adjust(Duration.seconds(91));
+        const result = yield* Fiber.join(ensure);
+        assert.isTrue(Result.isFailure(result));
+        if (Result.isFailure(result)) {
+          assert.equal(
+            result.failure.message,
+            "SSH connected to devbox but could not listen on 127.0.0.1:41773.",
+          );
+        }
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+  );
+
   it.effect("waits for a tunnel whose ssh connection outlasts the readiness timeout", () =>
     Effect.gen(function* () {
       const LOCAL_PORT = 41_773;
