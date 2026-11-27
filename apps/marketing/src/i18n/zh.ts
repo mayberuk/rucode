@@ -76,7 +76,7 @@ export const zh: Messages = {
   download: {
     title: "下载 RuCode：macOS、Windows 和 Linux 版 | RuCode",
     description:
-      "下载 RuCode 官方桌面应用（macOS、Windows 或 Linux），或获取 iOS 和 Android 应用。t3.codes 是唯一的官方下载网站。",
+      "下载 RuCode 桌面应用（macOS、Windows 或 Linux）。t3.codes 是原项目 T3 的官方网站。",
     breadcrumb: "下载",
     heading: "下载 RuCode",
     channelLabel: "发布通道",

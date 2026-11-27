@@ -78,7 +78,7 @@ export const ko: Messages = {
   download: {
     title: "macOS, Windows, Linux용 RuCode 다운로드 | RuCode",
     description:
-      "macOS, Windows, Linux용 공식 RuCode 데스크톱 앱을 다운로드하거나 iOS 및 Android 앱을 받으세요. 공식 다운로드 사이트는 t3.codes뿐입니다.",
+      "macOS, Windows, Linux용 RuCode 데스크톱 앱을 다운로드하세요. t3.codes는 원본 프로젝트인 T3의 공식 사이트입니다.",
     breadcrumb: "다운로드",
     heading: "RuCode 다운로드",
     channelLabel: "릴리스 채널",

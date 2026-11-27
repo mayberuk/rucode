@@ -3,6 +3,8 @@
 The RuCode masters in `prod/` are `rucode-icon.svg` for the squircle, `rucode-icon-square.svg` for iOS, `rucode-mark.svg` for the single-colour glyph, and `rucode-favicon-{16,32}.svg` for the hand-pixelled favicons.
 Run `node scripts/render-rucode-icons.ts` from the repository root on Linux to regenerate the tracked icons for all channels, including the 1024×1024 macOS pre-Tahoe PNGs with an 824×824 body.
 The production Icon Composer project also carries the ሩ layer and plum gradient.
+`scripts/render-rucode-icons.ts` is the source of truth for the RuCode art on Linux. `vp run icons:export` and `vp run icons:check` (macOS only) still read the T3 Icon Composer projects in `assets/dev` and `assets/nightly`, so they no longer reproduce the RuCode renders until those projects are updated.
+Never hand-edit the generated PNG and ICO files.
 
 ## Android launcher and splash artwork
 

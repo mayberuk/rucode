@@ -43,7 +43,7 @@ It works with Claude Code, Codex, Cursor, OpenCode, Grok Build, Antigravity, Kir
 
 ### Desktop app
 
-[Download RuCode](https://t3.codes/download) for macOS, Windows, or Linux. You can also use a package manager:
+RuCode builds are on the fork's [GitHub Releases](https://github.com/mayberuk/rucode/releases). The t3.codes download page and the package managers below install upstream T3 Code, not this fork:
 
 | Platform       | Command                                                              |
 | -------------- | -------------------------------------------------------------------- |

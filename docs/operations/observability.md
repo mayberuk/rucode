@@ -239,7 +239,7 @@ macOS app bundle example:
 T3CODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
 T3CODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
 T3CODE_OTLP_LOGS_URL=http://localhost:4318/v1/logs \
-"/Applications/RuCode.app/Contents/MacOS/RuCode"
+"/Applications/RuCode (Beta).app/Contents/MacOS/RuCode (Beta)"
 ```
 
 Direct binary example:

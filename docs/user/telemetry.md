@@ -1,6 +1,6 @@
 # Product usage data
 
-The RuCode server sends product usage events to RuCode's own endpoint at `ingest.t3.codes`,
+The RuCode server sends product usage events to T3's own endpoint at `ingest.t3.codes`,
 associated with a hashed account or installation identifier. To count how many installations one person
 uses, the server also sends hashed account identifiers: your T3 Connect account, your OpenAI and
 Claude accounts when you are signed in, and a random identifier for each device that connects. The endpoint keeps a copy of each
@@ -36,7 +36,7 @@ if the server has opted out. The browser app has no relay tracing toggle.
 
 ## Mobile app diagnostics
 
-When the iOS or Android app crashes or hits an error, it sends a report to RuCode: the error
+When the iOS or Android app crashes or hits an error, it sends a report to T3: the error
 message, the stack trace, the app version, and the device model and OS version. Each launch also
 sends startup timings, and every report carries a random ID for the install. Reports go through
 the T3 Connect relay to Axiom. They do not include your threads, prompts, or connection details,

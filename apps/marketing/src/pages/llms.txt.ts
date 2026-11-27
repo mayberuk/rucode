@@ -7,16 +7,21 @@ import { absoluteUrl, SITE_TAGLINE } from "../lib/seo";
 export const GET: APIRoute = () => {
   const body = `# RuCode
 
-> ${SITE_TAGLINE}. RuCode is free, MIT-licensed, and built by T3 Tools Inc. It runs Claude Code, Codex, Cursor, OpenCode, Grok, Antigravity, and other coding agents from one desktop, web, and mobile app.
+> ${SITE_TAGLINE}. RuCode is a free, MIT-licensed fork of upstream T3 Code. It runs Claude Code, Codex, Cursor, OpenCode, Grok, Antigravity, and other coding agents from one desktop, web, and mobile app.
 
-The only official websites are https://t3.codes and the web app at https://app.t3.codes. Official builds come from ${absoluteUrl("/download")}, ${GITHUB_REPOSITORY_URL}/releases, the \`t3\` package on npm (\`npx t3@latest\`), the iOS App Store, and Google Play. Any other website that offers a RuCode download is not affiliated with T3 Tools Inc.
+The t3.codes website, the web app at https://app.t3.codes, the \`t3\` package on npm (\`npx t3@latest\`), the iOS App Store listing, and the Google Play listing belong to upstream T3 Code, not to this fork. RuCode's own source and builds are at https://github.com/mayberuk/rucode.
 
-## Official links
+## RuCode links
 
-- [Download RuCode](${absoluteUrl("/download")}): macOS, Windows, and Linux installers
-- [Web app](https://app.t3.codes): connect to a RuCode server from a browser
-- [Source code](${GITHUB_REPOSITORY_URL}): the MIT-licensed repository
-- [Releases](${GITHUB_REPOSITORY_URL}/releases): release builds and changelogs
+- [Source code](https://github.com/mayberuk/rucode): the MIT-licensed repository
+- [Releases](https://github.com/mayberuk/rucode/releases): RuCode release builds
+
+## Upstream T3 Code links
+
+- [Download upstream T3 Code](${absoluteUrl("/download")}): macOS, Windows, and Linux installers
+- [Web app](https://app.t3.codes): upstream T3 Code's web app
+- [Source code](${GITHUB_REPOSITORY_URL}): upstream T3 Code's repository
+- [Releases](${GITHUB_REPOSITORY_URL}/releases): upstream T3 Code's release builds and changelogs
 - [npm package](https://www.npmjs.com/package/t3): run \`npx t3@latest\`
 - [iOS app](${IOS_APP_STORE_URL})
 - [Android app](${ANDROID_PLAY_STORE_URL})

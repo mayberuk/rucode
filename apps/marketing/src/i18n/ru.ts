@@ -78,7 +78,7 @@ export const ru: Messages = {
   download: {
     title: "Скачать RuCode для macOS, Windows и Linux | RuCode",
     description:
-      "Скачайте официальное десктопное приложение RuCode для macOS, Windows или Linux либо приложения для iOS и Android. Единственный официальный сайт для загрузки: t3.codes.",
+      "Скачайте десктопное приложение RuCode для macOS, Windows или Linux. Официальный сайт исходного проекта T3: t3.codes.",
     breadcrumb: "Скачать",
     heading: "Скачать RuCode",
     channelLabel: "Канал релизов",

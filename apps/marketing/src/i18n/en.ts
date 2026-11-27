@@ -78,7 +78,7 @@ export const en = {
   download: {
     title: "Download RuCode for macOS, Windows, and Linux | RuCode",
     description:
-      "Download the official RuCode desktop app for macOS, Windows, or Linux, or get the iOS and Android apps. t3.codes is the only official download site.",
+      "Download the RuCode desktop app for macOS, Windows, or Linux. t3.codes is the official website of upstream T3 Code.",
     breadcrumb: "Download",
     heading: "Download RuCode",
     channelLabel: "Release channel",

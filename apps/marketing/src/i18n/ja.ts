@@ -83,7 +83,7 @@ export const ja: Messages = {
   download: {
     title: "RuCode をダウンロード（macOS、Windows、Linux）| RuCode",
     description:
-      "公式の RuCode デスクトップアプリ（macOS、Windows、Linux）や、iOS・Android アプリをダウンロードできます。公式のダウンロードサイトは t3.codes だけです。",
+      "RuCode デスクトップアプリ（macOS、Windows、Linux）をダウンロードできます。t3.codes は、元のプロジェクトである T3 の公式サイトです。",
     breadcrumb: "ダウンロード",
     heading: "RuCode をダウンロード",
     channelLabel: "リリースチャンネル",

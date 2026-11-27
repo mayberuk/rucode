@@ -71,8 +71,8 @@ update it with `git pull` and a rebuild.
 
 ## Desktop app
 
-Download a release from [GitHub Releases](https://github.com/pingdotgg/t3code/releases),
-or use a package manager:
+Download RuCode from the fork's [GitHub Releases](https://github.com/mayberuk/rucode/releases).
+The package managers below install upstream T3 Code, not this fork:
 
 | Platform           | Install                                                      |
 | ------------------ | ------------------------------------------------------------ |
@@ -109,8 +109,8 @@ in-app updater.
 
 ### Nix (nixpkgs)
 
-RuCode is maintained in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/t3/t3code).
-The command above installs from `nixos-unstable` and requires Nix 2.30 or later with
+Upstream T3 Code is maintained in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/t3/t3code).
+The command above installs upstream T3 Code from `nixos-unstable` and requires Nix 2.30 or later with
 `nix-command` and `flakes` enabled. Launch the desktop app with `t3code-desktop`;
 the package also includes the `t3` command.
 
