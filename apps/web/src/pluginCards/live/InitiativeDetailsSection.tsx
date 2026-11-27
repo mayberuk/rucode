@@ -38,7 +38,9 @@ export function InitiativeDetailsSection({
       }
     >
       <div className="flex flex-col">
-        <ThreadDetailsControl render={<Link to="/board" />}>
+        <ThreadDetailsControl
+          render={<Link to="/board" search={{ environmentId, slug: initiative.slug }} />}
+        >
           <LayersIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
           <span className={cn("min-w-0 flex-1 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
             {initiative.title ?? initiative.slug}
