@@ -108,6 +108,8 @@ import {
 } from "@t3tools/shared/codexMarkdownDirectives";
 import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
 import { MarkdownMath } from "./chat/MarkdownMath";
+import { ConfirmBlock } from "./chat/confirmBlock/ConfirmBlock";
+import { parseConfirmSection } from "./chat/confirmBlock/confirmBlock.logic";
 import {
   resolveMarkdownMediaPreview,
   type ExpandedImagePreview,
@@ -267,6 +269,8 @@ interface ChatMarkdownProps {
   /** The change request's repository, when it can differ from the checkout at `cwd`. */
   sourceControlMediaRepository?: string | undefined;
   headingLevelOffset?: number | undefined;
+  /** Renders a closing "Just confirm / Needs your call" section as answerable questions. */
+  confirmBlock?: "answerable" | "readonly" | undefined;
 }
 
 export interface ChatMarkdownContextReference {
@@ -1901,8 +1905,13 @@ function ChatMarkdown({
   parseRawHtml = true,
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
   renderInsights = false,
+  confirmBlock,
   ...props
 }: ChatMarkdownProps) {
+  const confirmSection =
+    confirmBlock !== undefined && !inline && props.isStreaming !== true
+      ? parseConfirmSection(text)
+      : null;
   const { componentState, handleCopy, markdownRef, localMediaPreview, closeLocalMediaPreview } =
     useChatMarkdownState({ text, inline, ...props });
   const hasInsights = renderInsights && text.includes("★ Insight");
@@ -1944,7 +1953,7 @@ function ChatMarkdown({
           : sharedRemarkPlugins,
         extraRemarkPlugins,
       );
-  const blocks = streamingBlocks ?? [text];
+  const blocks = streamingBlocks ?? [confirmSection?.body ?? text];
 
   return (
     <Root
@@ -1976,6 +1985,13 @@ function ChatMarkdown({
           />
         ))}
       </ChatMarkdownRendererContext>
+      {confirmSection && confirmBlock ? (
+        <ConfirmBlock
+          section={confirmSection}
+          mode={props.threadRef ? confirmBlock : "readonly"}
+          threadRef={props.threadRef}
+        />
+      ) : null}
       {localMediaPreview ? (
         <ExpandedImageDialog preview={localMediaPreview} onClose={closeLocalMediaPreview} />
       ) : null}

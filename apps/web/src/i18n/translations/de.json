@@ -115,5 +115,15 @@
   "70a3de849bad5b87": "In einem anderen Claude-Prozess",
   "2efc03fea1f5d4d0": "In tmux",
   "588974a600220ac7": "In einem Terminal",
-  "0a5b021fc90c6a42": "Im Terminal"
+  "0a5b021fc90c6a42": "Im Terminal",
+  "62f3ccbbb618d50d": "Fragen des Agenten",
+  "42d5795d66c0fcd6": "Frage {number}: {text}",
+  "4f0eba513ae85e9a": "Mehrfachauswahl",
+  "d8cb4c44252ddb52": "Antworten auf Frage {number}",
+  "255624ca3232b204": "Ja",
+  "d2a4c751fe055ac5": "Nein",
+  "a3df8e8097df8392": "meine Wahl",
+  "862ede3e3e82e3a9": "{answered} von {total} beantwortet",
+  "671d1bc91d0ad172": "Auswählen",
+  "5c8772e727c04218": "Frage"
 }

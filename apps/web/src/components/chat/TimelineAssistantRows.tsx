@@ -21,6 +21,7 @@ import {
   useProject,
   useQuietThreadShell,
 } from "../../state/entities";
+import { useConfirmBlockMode } from "./confirmBlock/useConfirmBlockMode";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { AssistantCitationSource } from "./AssistantCitationSource";
 import { resolveAssistantMessageCopyState } from "./MessagesTimeline.logic";
@@ -45,6 +46,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
     row.message.streaming ? ctx.threadRef : null,
     row.projectedItem?.item.id,
   );
+  const confirmMode = useConfirmBlockMode(ctx.threadRef, row.message.id, ctx.canOperateThread);
   const text = liveText ?? row.message.text;
   const messageText =
     text || (row.message.streaming || row.suppressEmptyResponse ? "" : "(empty response)");
@@ -72,6 +74,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
               }
               threadRef={ctx.threadRef ?? undefined}
               isStreaming={Boolean(row.message.streaming)}
+              confirmBlock={confirmMode}
               lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
               skills={ctx.skills}
               headingLevelOffset={MESSAGE_HEADING_LEVEL}
