@@ -127,6 +127,8 @@ const attachment = (fields: Partial<ClaudeSessionRegistry.Attachment> = {}) => (
 
 interface Fixture {
   readonly stateDir: string;
+  /** The server's home directory; unlike the temp tree, it is outside `/tmp`. */
+  readonly home: string;
   readonly repo: string;
   readonly transcript: string;
   readonly attachments: SubscriptionRef.SubscriptionRef<
@@ -142,6 +144,13 @@ interface Fixture {
     never
   >;
   readonly write: (contents: string) => Effect.Effect<void>;
+  /** Writes another session's transcript, with `__CWD__` set to `cwd`. */
+  readonly writeSession: (sessionId: string, cwd: string, contents: string) => Effect.Effect<void>;
+  /** Contents served for `/proc/<key>`, such as `200/environ`; every other `/proc` path fails. */
+  readonly proc: Map<string, string>;
+  readonly addProject: (id: ProjectId, workspaceRoot: string) => void;
+  /** Workspace roots passed to `ProjectService.bootstrap`. */
+  readonly bootstraps: Array<string>;
   readonly touch: Effect.Effect<void>;
   /** How many times the whole transcript has been loaded. */
   readonly wholeReads: () => number;
@@ -152,7 +161,10 @@ interface Fixture {
  * File-system events are raised by the test (`touch`), since real ones arrive on wall-clock time.
  */
 const withFixture = <A, E, R>(
-  options: { readonly enabled: boolean | null },
+  options: {
+    readonly enabled: boolean | null;
+    readonly environment?: Readonly<Record<string, string>>;
+  },
   body: (fixture: Fixture) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
@@ -163,17 +175,29 @@ const withFixture = <A, E, R>(
     const claudeHome = `${home}/.claude`;
     const transcriptDir = `${claudeHome}/projects/-home-dev-repo`;
     const transcript = `${transcriptDir}/${SESSION}.jsonl`;
+    // Placement skips anything under /tmp as temporary, so new session cwds live below a home
+    // outside it. Nothing is created there; a cwd only names where Claude ran.
+    const serverHome = "/nonexistent/home/acme";
     yield* fs.makeDirectory(repo, { recursive: true });
     yield* fs.makeDirectory(transcriptDir, { recursive: true });
     yield* fs.makeDirectory(`${claudeHome}/sessions`, { recursive: true });
 
     const fileEvents = yield* PubSub.unbounded<FileSystem.WatchEvent>();
     let wholeReads = 0;
+    // The suite may run on a machine with these pids, inside a Claude session of its own.
+    const proc = new Map<string, string>();
     const watching = FileSystem.FileSystem.of({
       ...fs,
       readFile: (path) => {
         if (path === transcript) wholeReads++;
         return fs.readFile(path);
+      },
+      readFileString: (path, encoding) => {
+        if (!path.startsWith("/proc/")) return fs.readFileString(path, encoding);
+        const stubbed = proc.get(path.slice("/proc/".length));
+        return stubbed === undefined
+          ? fs.readFileString(`${root}/no-proc/${path}`, encoding)
+          : Effect.succeed(stubbed);
       },
       watch: (path, watchOptions) =>
         path.endsWith(".jsonl")
@@ -200,11 +224,19 @@ const withFixture = <A, E, R>(
           return !(yield* input.keepIf ?? Effect.succeed(false));
         }),
     });
+    const projectShells = [
+      { id: PROJECT, workspaceRoot: repo } as unknown as OrchestrationProjectShell,
+    ];
+    const bootstraps: Array<string> = [];
     const projects = Layer.mock(ProjectService.ProjectService)({
-      listShells: () =>
-        Effect.succeed([
-          { id: PROJECT, workspaceRoot: repo } as unknown as OrchestrationProjectShell,
-        ]),
+      listShells: () => Effect.sync(() => [...projectShells]),
+      bootstrap: (input) =>
+        Effect.sync(() => {
+          bootstraps.push(input.workspaceRoot);
+          return { project: { id: input.projectId }, created: true } as unknown as Effect.Success<
+            ReturnType<ProjectService.ProjectService["Service"]["bootstrap"]>
+          >;
+        }),
     });
     const config = yield* ProviderReplayHarness.makeReplayServerConfig("cli-session-sync");
     const syncLayer = CliSessionSync.layer.pipe(
@@ -238,24 +270,40 @@ const withFixture = <A, E, R>(
       const scope = yield* Scope.make();
       const built = yield* Layer.buildWithScope(syncLayer, scope).pipe(
         Effect.provideContext(context),
-        Effect.provideService(HostProcess.HomeDirectory, home),
-        Effect.provideService(HostProcess.Environment, { CLAUDE_CONFIG_DIR: claudeHome }),
+        Effect.provideService(HostProcess.HomeDirectory, serverHome),
+        Effect.provideService(HostProcess.Environment, {
+          ...options.environment,
+          CLAUDE_CONFIG_DIR: claudeHome,
+        }),
         Effect.orDie,
       );
       return { sync: Context.get(built, CliSessionSync.CliSessionSync), scope };
     });
     const write = (contents: string) =>
       fs.writeFileString(transcript, contents.replaceAll("__CWD__", repo)).pipe(Effect.orDie);
+    const writeSession = (sessionId: string, cwd: string, contents: string) =>
+      Effect.gen(function* () {
+        const dir = `${claudeHome}/projects/${cwd.replaceAll("/", "-")}`;
+        yield* fs.makeDirectory(dir, { recursive: true });
+        yield* fs.writeFileString(`${dir}/${sessionId}.jsonl`, contents.replaceAll("__CWD__", cwd));
+      }).pipe(Effect.orDie);
     const changed: FileSystem.WatchEvent = { _tag: "Update", path: transcript };
     const touch = PubSub.publish(fileEvents, changed).pipe(Effect.asVoid);
     return yield* body({
       stateDir: config.stateDir,
+      home: serverHome,
       repo,
       transcript,
       attachments,
       releases,
       start,
       write,
+      writeSession,
+      proc,
+      addProject: (id, workspaceRoot) => {
+        projectShells.push({ id, workspaceRoot } as unknown as OrchestrationProjectShell);
+      },
+      bootstraps,
       touch,
       wholeReads: () => wholeReads,
     });
@@ -473,7 +521,7 @@ it.effect("waits for a rucode run to end, then appends terminal records after it
         commandId: CommandId.make("send-from-rucode"),
         threadId: THREAD,
         messageId: MessageId.make("message:from-rucode"),
-        text: "From T3 Code",
+        text: "From RuCode",
         attachments: [],
         dispatchMode: { type: "start_immediately" },
         createdBy: "user",
@@ -484,7 +532,7 @@ it.effect("waits for a rucode run to end, then appends terminal records after it
       yield* attach(fixture);
       yield* awaitLive((sessions) => sessions.some((session) => session.threadId === THREAD));
       yield* sync.drain;
-      assert.deepEqual(yield* messages(THREAD), ["Fix the login bug", "Done.", "From T3 Code"]);
+      assert.deepEqual(yield* messages(THREAD), ["Fix the login bug", "Done.", "From RuCode"]);
 
       const [run] = (yield* orchestrator.getThreadRecords(THREAD, ["runs"])).runs;
       yield* sink.write({
@@ -511,7 +559,7 @@ it.effect("waits for a rucode run to end, then appends terminal records after it
       assert.deepEqual(ordered, [
         "Fix the login bug",
         "Done.",
-        "From T3 Code",
+        "From RuCode",
         "Now add a test",
         "Added.",
       ]);
@@ -671,5 +719,189 @@ it.effect("with sync off, adopts nothing but still refuses a turn on a held sess
         .pipe(Effect.flip);
       assert.equal(refused._tag, "OrchestratorSessionHeldExternallyError");
     }),
+  ),
+);
+
+const PARENT_SESSION = "5e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b";
+const CHILD_SESSION = "6f2a3b4c-5d6e-4f7a-9b8c-0d1e2f3a4b5c";
+const OTHER_SESSION = "7a3b4c5d-6e7f-4a8b-8c9d-1e2f3a4b5c6d";
+const sessionThread = (sessionId: string) => ThreadId.make(`import:claudeAgent:${sessionId}`);
+const conversation = (prompt: string) =>
+  record("user", `u-${prompt}`, prompt) + record("assistant", `a-${prompt}`, "Done.");
+
+/** Gives `pid` the environment a Claude Bash tool exports, and a parent chain up to the launcher. */
+const launchedBy = (
+  fixture: Fixture,
+  pid: number,
+  launcher: { readonly sessionId: string; readonly pid: number },
+  between: ReadonlyArray<number>,
+) => {
+  fixture.proc.set(
+    `${pid}/environ`,
+    `HOME=/home/acme\0CLAUDE_CODE_SESSION_ID=${launcher.sessionId}\0CLAUDE_PID=${launcher.pid}\0`,
+  );
+  const chain = [pid, ...between, launcher.pid];
+  for (let index = 0; index < chain.length - 1; index++) {
+    fixture.proc.set(
+      `${chain[index]}/stat`,
+      `${chain[index]} (claude) S ${chain[index + 1]} 0 0\n`,
+    );
+  }
+};
+
+const attachSessions = (
+  fixture: Fixture,
+  sessions: ReadonlyArray<{ readonly sessionId: string; readonly pid: number }>,
+) =>
+  SubscriptionRef.set(
+    fixture.attachments,
+    new Map(sessions.map(({ sessionId, pid }) => [sessionId, attachment({ sessionId, pid })])),
+  );
+
+const findThread = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    return yield* (yield* ProjectionStore.ProjectionStoreV2).findThread(threadId);
+  });
+
+const awaitThreadCreated = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    yield* orchestrator
+      .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "thread.created" })
+      .pipe(Stream.runHead);
+  });
+
+it.effect("nests a session another Claude session started under that session's thread", () =>
+  withFixture({ enabled: true }, (fixture) =>
+    Effect.gen(function* () {
+      const parentThread = sessionThread(PARENT_SESSION);
+      yield* fixture.writeSession(PARENT_SESSION, fixture.repo, conversation("Plan the release"));
+      yield* attachSessions(fixture, [{ sessionId: PARENT_SESSION, pid: 100 }]);
+      const { sync } = yield* fixture.start;
+      yield* sync.drain;
+      assert.deepEqual((yield* findThread(parentThread))?.lineage, {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: parentThread,
+      });
+
+      launchedBy(fixture, 200, { sessionId: PARENT_SESSION, pid: 100 }, [150]);
+      launchedBy(fixture, 300, { sessionId: CHILD_SESSION, pid: 200 }, []);
+      yield* fixture.writeSession(CHILD_SESSION, fixture.repo, conversation("Write the notes"));
+      yield* fixture.writeSession(
+        OTHER_SESSION,
+        `${fixture.home}/dev/checkout-retries`,
+        conversation("Retry the checkout"),
+      );
+      yield* attachSessions(fixture, [
+        { sessionId: PARENT_SESSION, pid: 100 },
+        { sessionId: CHILD_SESSION, pid: 200 },
+        { sessionId: OTHER_SESSION, pid: 300 },
+      ]);
+      yield* awaitThreadCreated(sessionThread(OTHER_SESSION));
+      yield* sync.drain;
+
+      const nested = {
+        parentThreadId: parentThread,
+        relationshipToParent: null,
+        rootThreadId: parentThread,
+      };
+      assert.deepEqual((yield* findThread(sessionThread(CHILD_SESSION)))?.lineage, nested);
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      assert.deepEqual(
+        (yield* store.getThreadShell(sessionThread(CHILD_SESSION)))?.lineage,
+        nested,
+      );
+      // A grandchild joins the family's root, not its direct parent's id.
+      assert.deepEqual((yield* findThread(sessionThread(OTHER_SESSION)))?.lineage, {
+        parentThreadId: sessionThread(CHILD_SESSION),
+        relationshipToParent: null,
+        rootThreadId: parentThread,
+      });
+    }),
+  ),
+);
+
+it.effect("holds a child back until its parent's thread exists", () =>
+  withFixture({ enabled: true }, (fixture) =>
+    Effect.gen(function* () {
+      const checkout = `${fixture.home}/dev/checkout-retries`;
+      launchedBy(fixture, 200, { sessionId: PARENT_SESSION, pid: 100 }, [150]);
+      launchedBy(fixture, 210, { sessionId: PARENT_SESSION, pid: 100 }, [150]);
+      yield* fixture.writeSession(CHILD_SESSION, checkout, conversation("Retry the checkout"));
+      yield* fixture.writeSession(OTHER_SESSION, checkout, conversation("Check the logs"));
+      yield* attachSessions(fixture, [
+        { sessionId: CHILD_SESSION, pid: 200 },
+        { sessionId: OTHER_SESSION, pid: 210 },
+      ]);
+      const { sync } = yield* fixture.start;
+      yield* sync.drain;
+      assert.isNull(yield* findThread(sessionThread(CHILD_SESSION)));
+      assert.isNull(yield* findThread(sessionThread(OTHER_SESSION)));
+      assert.deepEqual(fixture.bootstraps, []);
+
+      // The other child's process ends before its parent has a thread.
+      yield* fixture.writeSession(PARENT_SESSION, fixture.repo, conversation("Plan the release"));
+      yield* attachSessions(fixture, [
+        { sessionId: CHILD_SESSION, pid: 200 },
+        { sessionId: PARENT_SESSION, pid: 100 },
+      ]);
+      yield* awaitThreadCreated(sessionThread(CHILD_SESSION));
+      yield* sync.drain;
+
+      const parentThread = sessionThread(PARENT_SESSION);
+      assert.isNotNull(yield* findThread(parentThread));
+      assert.deepEqual((yield* findThread(sessionThread(CHILD_SESSION)))?.lineage, {
+        parentThreadId: parentThread,
+        relationshipToParent: null,
+        rootThreadId: parentThread,
+      });
+      assert.isNull(yield* findThread(sessionThread(OTHER_SESSION)));
+    }),
+  ),
+);
+
+it.effect("hides a session in a throwaway checkout without creating a project", () =>
+  withFixture({ enabled: true }, (fixture) =>
+    Effect.gen(function* () {
+      const spike = `${fixture.home}/dev/acme-spike.Qw3rTy`;
+      yield* fixture.writeSession(CHILD_SESSION, spike, conversation("Try the spike"));
+      yield* attachSessions(fixture, [{ sessionId: CHILD_SESSION, pid: 200 }]);
+      const first = yield* fixture.start;
+      yield* first.sync.drain;
+      assert.isNull(yield* findThread(sessionThread(CHILD_SESSION)));
+      assert.deepEqual(fixture.bootstraps, []);
+      yield* Scope.close(first.scope, Exit.void);
+
+      const spikeProject = ProjectId.make("project-spike");
+      fixture.addProject(spikeProject, spike);
+      yield* fixture.writeSession(OTHER_SESSION, spike, conversation("Keep the spike"));
+      yield* attachSessions(fixture, [{ sessionId: OTHER_SESSION, pid: 210 }]);
+      const second = yield* fixture.start;
+      yield* second.sync.drain;
+      const kept = yield* findThread(sessionThread(OTHER_SESSION));
+      assert.equal(kept?.projectId, spikeProject);
+      assert.isNull(kept?.lineage.parentThreadId);
+    }),
+  ),
+);
+
+it.effect("ignores the Claude session the server itself was started from", () =>
+  withFixture(
+    { enabled: true, environment: { CLAUDE_CODE_SESSION_ID: PARENT_SESSION } },
+    (fixture) =>
+      Effect.gen(function* () {
+        yield* writeRucodeThread(ThreadId.make("thread:server-parent"), false, PARENT_SESSION);
+        launchedBy(fixture, 200, { sessionId: PARENT_SESSION, pid: 100 }, [150]);
+        yield* fixture.writeSession(CHILD_SESSION, fixture.repo, conversation("Open a terminal"));
+        yield* attachSessions(fixture, [{ sessionId: CHILD_SESSION, pid: 200 }]);
+        const { sync } = yield* fixture.start;
+        yield* sync.drain;
+        assert.deepEqual((yield* findThread(sessionThread(CHILD_SESSION)))?.lineage, {
+          parentThreadId: null,
+          relationshipToParent: null,
+          rootThreadId: sessionThread(CHILD_SESSION),
+        });
+      }),
   ),
 );

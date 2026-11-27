@@ -114,7 +114,7 @@ function relayProtectedError(error: RelayProtectedError): ConnectionAttemptError
         reason: "endpoint-unavailable",
         detail,
         traceId,
-        // The tunnel carried the request when T3 Code is what failed to answer.
+        // The tunnel carried the request when RuCode is what failed to answer.
         hop:
           endpointFailure === "origin_unreachable" || endpointFailure === "invalid_response"
             ? "server"

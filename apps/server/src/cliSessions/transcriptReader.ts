@@ -1,6 +1,8 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { claudeTranscriptUserText } from "../provider/Drivers/ClaudeCommandTranscript.ts";
+
 export interface TranscriptEntry {
   /** The record's uuid; a record that yields both reasoning and text suffixes the second `:1`. */
   readonly uuid: string;
@@ -82,8 +84,10 @@ function entriesOf(record: TranscriptRecord): ReadonlyArray<TranscriptEntry> {
   if (record.type === "user") {
     const kind = record.origin?.kind;
     if (kind !== undefined && kind !== "human") return [];
-    const text = joinBlocks(content, "text");
-    return text === "" ? [] : [{ uuid: record.uuid, role: "user", text, createdAt }];
+    const text = claudeTranscriptUserText(joinBlocks(content, "text"));
+    return text === null || text === ""
+      ? []
+      : [{ uuid: record.uuid, role: "user", text, createdAt }];
   }
   if (record.type === "assistant") {
     const found: Array<TranscriptEntry> = [];

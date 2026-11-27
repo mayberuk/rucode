@@ -1,5 +1,4 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { ContextMenuSource } from "@t3tools/contracts";
 import { ChevronDownIcon, SquarePenIcon } from "lucide-react";
 import { memo } from "react";
@@ -7,26 +6,11 @@ import { memo } from "react";
 import { cn } from "~/lib/utils";
 import { contextMenuSourceOf } from "../../contextMenuSource";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
-import { useAnyThreadHasOpenDecision } from "../../pluginCards/live/liveAtoms";
-import { useUiStateStore } from "../../uiStateStore";
-import { resolveSidebarFolderDot, resolveThreadLastVisitedAt } from "../Sidebar.logic";
+import type { SidebarGroupStatus } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-
-export const FOLDER_DOT_CLASS_NAME = {
-  attention: "bg-warning",
-  failed: "bg-error",
-  unread: "bg-success",
-  working: "bg-info",
-} as const;
-
-export const FOLDER_DOT_LABEL = {
-  attention: ", needs you",
-  failed: ", failed",
-  unread: ", done",
-  working: ", working",
-} as const;
+import { SidebarGroupStatusText, useSidebarGroupStatusLabel } from "./SidebarGroupStatusText";
 
 /** The folder's sidebar tree row; its thread rows name it as their parent. */
 export function sidebarFolderRowId(projectKey: string) {
@@ -34,14 +18,16 @@ export function sidebarFolderRowId(projectKey: string) {
 }
 
 /**
- * A project folder in the boring sidebar. It reads like a shelf header: a trailing
- * count and chevron, with the count and a status dot only while it is closed, so a
- * closed folder still says when a hidden thread needs you.
+ * A project folder in the boring sidebar. It reads like a shelf header; while it is closed it
+ * says in words what its hidden threads need, so a closed folder still says when one needs you.
  */
 export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHeader(props: {
   group: SidebarProjectSnapshot;
   collapsed: boolean;
-  hiddenThreads: readonly EnvironmentThreadShell[];
+  /** Set while collapsed. */
+  status: SidebarGroupStatus | null;
+  /** The hidden thread whose age an idle folder shows. */
+  idleThread: EnvironmentThreadShell | null;
   onToggle: (group: SidebarProjectSnapshot) => void;
   onNewThread: (group: SidebarProjectSnapshot) => void;
   onContextMenu: (
@@ -50,26 +36,9 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
     source: ContextMenuSource,
   ) => void;
 }) {
-  const { group, collapsed, hiddenThreads } = props;
+  const { group, collapsed, status } = props;
   const rowId = sidebarFolderRowId(group.projectKey);
-  const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
-  const openDecision = useAnyThreadHasOpenDecision(
-    collapsed ? hiddenThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)) : [],
-  );
-  const dot = collapsed
-    ? resolveSidebarFolderDot(
-        hiddenThreads.map((thread) => ({
-          ...thread,
-          lastVisitedAt: resolveThreadLastVisitedAt(
-            thread.lastVisitedAt,
-            localLastVisitedAtById[
-              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))
-            ],
-          ),
-        })),
-        { openDecision },
-      )
-    : null;
+  const statusLabel = useSidebarGroupStatusLabel(collapsed ? status : null, props.idleThread);
   return (
     <li
       data-testid="sidebar-project-folder"
@@ -79,6 +48,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
         type="button"
         data-sidebar-row={rowId}
         aria-expanded={!collapsed}
+        aria-label={statusLabel === null ? undefined : `${group.displayName}, ${statusLabel}`}
         onClick={() => props.onToggle(group)}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -94,15 +64,12 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90">
           {group.displayName}
         </span>
-        {dot ? (
-          <span className={cn("size-1.5 shrink-0 rounded-full", FOLDER_DOT_CLASS_NAME[dot])}>
-            <span className="sr-only">{FOLDER_DOT_LABEL[dot]}</span>
-          </span>
-        ) : null}
-        {collapsed && hiddenThreads.length > 0 ? (
-          <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible group-has-[[data-sidebar-action-for]:focus]/project-folder:invisible pointer-coarse:invisible">
-            {hiddenThreads.length}
-          </span>
+        {status !== null && statusLabel !== null ? (
+          <SidebarGroupStatusText
+            status={status}
+            label={statusLabel}
+            className="group-hover/project-folder:invisible group-has-[[data-sidebar-action-for]:focus]/project-folder:invisible pointer-coarse:invisible"
+          />
         ) : null}
         <ChevronDownIcon
           aria-hidden
@@ -112,7 +79,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
           )}
         />
       </button>
-      {/* Sits over the count, which hides on hover or focus, and left of the chevron. */}
+      {/* Sits over the status, which hides on hover or focus, and left of the chevron. */}
       <span className="absolute inset-y-0 right-6 flex items-center opacity-0 focus-within:opacity-100 group-hover/project-folder:opacity-100 pointer-coarse:opacity-100">
         <Tooltip>
           <TooltipTrigger

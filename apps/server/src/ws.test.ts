@@ -17,6 +17,7 @@ import {
   EnvironmentId,
   EventId,
   GitManagerError,
+  PluginCardError,
   VcsProcessSpawnError,
   MessageId,
   ProjectId,
@@ -114,6 +115,7 @@ import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
+import * as ProjectActionSuggestions from "./projectActions/ProjectActionSuggestions.ts";
 import * as IssueService from "./issue/IssueService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -859,6 +861,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
   Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
   Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+  Layer.mock(ProjectActionSuggestions.ProjectActionSuggestions)({}),
   Layer.mock(PullRequestService.PullRequestService)({}),
   Layer.mock(IssueService.IssueService)({}),
   Layer.mock(IssueTrackerConnections.IssueTrackerConnections)({}),
@@ -2065,6 +2068,74 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
       ),
     ),
   ),
+);
+
+const initiativeBoardTags = [
+  WS_METHODS.pluginCardsSubscribeInitiative,
+  WS_METHODS.serverProbe,
+] as const;
+
+it.effect(
+  "an initiative board subscription fails as unavailable without the board layer and other methods keep serving",
+  () =>
+    Effect.gen(function* () {
+      const rpcs = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+            (typeof initiativeBoardTags)[number]
+          > => !(initiativeBoardTags as ReadonlyArray<string>).includes(tag),
+        ),
+      );
+      const services = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      );
+      const client = yield* RpcTest.makeClient(rpcs).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("initiative-test"),
+              subject: "initiative-test",
+              method: "browser-session-cookie",
+              scopes: [AuthOrchestrationReadScope],
+            },
+            {},
+            yield* ServerBrowser.ServerBrowser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(
+            Layer.provide(services),
+            Layer.merge(RpcAuthorization.layer([AuthOrchestrationReadScope])),
+          ),
+        ),
+      );
+
+      const failure = yield* client[WS_METHODS.pluginCardsSubscribeInitiative]({
+        slug: "acme-app",
+      }).pipe(Stream.runCollect, Effect.flip);
+      assert.instanceOf(failure, PluginCardError);
+      assert.equal(failure.reason, "unavailable");
+      assert.deepEqual(yield* client[WS_METHODS.serverProbe]({}), {});
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.fresh(layerConfigSources),
+          Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+          Layer.mock(ServerBrowser.ServerBrowser)({}),
+        ),
+      ),
+    ),
 );
 
 // Pruned history cannot be replayed: a cursor below the boundary must resync from a snapshot,

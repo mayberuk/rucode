@@ -3321,6 +3321,131 @@ describe("parseAgentSessionTranscript", () => {
     });
   });
 
+  const reviewCommand =
+    "<command-message>review-pr</command-message>\n<command-name>/review-pr</command-name>";
+  const modelCommand =
+    "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>opus</command-args>";
+
+  it.each<{
+    readonly content: string;
+    readonly expected: string;
+    readonly localOutput?: string;
+    readonly title?: string;
+  }>([
+    {
+      content: `${reviewCommand}\n<command-args>PR 12</command-args>`,
+      expected: "$review-pr PR 12",
+      title: "$review-pr PR 12",
+    },
+    {
+      content:
+        "<command-message>acme:plan</command-message>\n<command-name>/acme:plan</command-name>\n<command-args></command-args>",
+      expected: "$acme:plan",
+    },
+    {
+      content: `\n  ${reviewCommand}\n<command-args> first line\nsecond line \n</command-args>  \n`,
+      expected: "$review-pr first line\nsecond line",
+    },
+    {
+      content: "<command-message>review-pr</command-message><command-name>review-pr</command-name>",
+      expected: "$review-pr",
+    },
+    {
+      content: `${reviewCommand}\n<command-args> \t\n </command-args>`,
+      expected: "$review-pr",
+    },
+    {
+      content: modelCommand,
+      expected: "/model opus",
+    },
+    {
+      content:
+        "<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>",
+      expected: "/compact",
+    },
+    {
+      content: "<command-name>/model</command-name>",
+      expected: "/model",
+    },
+    {
+      content: `<command-args>PR 12</command-args>\n${reviewCommand}`,
+      expected: "/review-pr PR 12",
+    },
+    {
+      content:
+        "<command-message>review-pr</command-message>\n<command-name>//review-pr</command-name>",
+      expected: "//review-pr",
+    },
+    {
+      content:
+        "<command-message>review-pr</command-message>\n<command-name>/review-pr!</command-name>",
+      expected: "/review-pr!",
+    },
+    {
+      content:
+        "<command-message>review-pr</command-message>\n<command-name>/_review-pr</command-name>",
+      expected: "/_review-pr",
+    },
+    {
+      content: "<command-message>review-pr</command-message>\n<command-name></command-name>",
+      expected: "/",
+    },
+    {
+      content: modelCommand,
+      localOutput: "<local-command-stdout>Set model to opus</local-command-stdout>",
+      expected: "/model opus",
+    },
+    {
+      content: modelCommand,
+      localOutput: "\n<local-command-stderr>Could not set model\nto opus</local-command-stderr>\n",
+      expected: "/model opus",
+    },
+    ...[
+      "Why does <command-name> show up?",
+      `Explain this record: ${reviewCommand}`,
+      `${reviewCommand}\nExplain this record.`,
+      "<command-message>review-pr</command-message>\n<command-args>PR 12</command-args>",
+      "<command-message>review-pr</command-message>\n<command-name>/review-pr</command-args>",
+      `${reviewCommand}\n<command-message>review-pr</command-message>`,
+      `${reviewCommand}\n<command-name>/review-pr</command-name>`,
+      `${reviewCommand}\n<command-args>first line</command-args>\n<command-args>second line</command-args>`,
+      `${reviewCommand}\n<local-command-stdout>Set model to opus</local-command-stdout>`,
+      "<local-command-stdout>Set model to opus</local-command-stdout> is an example.",
+      "Explain <local-command-stderr>Could not set model</local-command-stderr>",
+    ].map((example) => ({ content: example, expected: example })),
+  ])(
+    "imports a Claude command record as $expected",
+    ({ content, localOutput, expected, title }) => {
+      const userTexts = localOutput === undefined ? [content] : [content, localOutput];
+      const thread = AgentSessionScanner.parseAgentSessionTranscript({
+        contents: [
+          ...userTexts.map((text) =>
+            JSON.stringify({
+              type: "user",
+              sessionId: "claude-session",
+              message: { role: "user", content: text },
+            }),
+          ),
+          JSON.stringify({
+            type: "assistant",
+            sessionId: "claude-session",
+            message: { role: "assistant", content: "Done." },
+          }),
+        ].join("\n"),
+        source: "claudeAgent",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        fallbackSessionId: "fallback",
+        lastActiveAtMs: Date.parse("2026-08-24T12:00:00.000Z"),
+      });
+
+      if (title !== undefined) expect.soft(thread?.title).toBe(title);
+      expect(thread?.messages.map(({ role, text }) => ({ role, text }))).toEqual([
+        { role: "user", text: expected },
+        { role: "assistant", text: "Done." },
+      ]);
+    },
+  );
+
   it.each([
     { customTitles: ["Refactor auth module"], expected: "Refactor auth module" },
     // Claude writes an empty customTitle when the user clears a rename.

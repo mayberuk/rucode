@@ -3,6 +3,7 @@ import {
   DesktopPreviewAnnotationThemeInputSchema,
   DesktopPreviewAnnotationVoiceStateSchema,
   DesktopPreviewPickElementInputSchema,
+  DesktopPreviewReviewPinsInputSchema,
   DesktopPreviewArtifactInputSchema,
   DesktopPreviewConfigInputSchema,
   DesktopPreviewFindInPageInputSchema,
@@ -402,13 +403,23 @@ const setAnnotationTheme = DesktopIpc.makeIpcMethod({
   }),
 });
 
-const pickElement = DesktopIpc.makeIpcMethod({
+export const pickElement = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL,
   payload: DesktopPreviewPickElementInputSchema,
   result: Schema.NullOr(PreviewAnnotationSubmissionResultSchema),
-  handler: Effect.fn("desktop.ipc.preview.pickElement")(function* ({ tabId, voice }) {
+  handler: Effect.fn("desktop.ipc.preview.pickElement")(function* ({ tabId, voice, mode }) {
     const manager = yield* PreviewManager.PreviewManager;
-    return yield* manager.pickElement(tabId, voice);
+    return yield* manager.pickElement(tabId, voice, mode);
+  }),
+});
+
+export const setReviewPins = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_REVIEW_PINS_CHANNEL,
+  payload: DesktopPreviewReviewPinsInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setReviewPins")(function* ({ tabId, pins }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.setReviewPins(tabId, pins);
   }),
 });
 
@@ -505,6 +516,7 @@ export const methods = [
   getPreviewConfig,
   setAnnotationTheme,
   setAnnotationSendEnabled,
+  setReviewPins,
   pickElement,
   cancelPickElement,
   captureScreenshot,

@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
+  PluginInitiativeBoard,
   PluginLiveCliSession,
   PluginLiveInitiative,
   PluginLiveState,
@@ -13,16 +14,19 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
-import { pluginLiveStateAtomFamily } from "~/rpc/pluginCards";
+import { pluginInitiativeBoardAtomFamily, pluginLiveStateAtomFamily } from "~/rpc/pluginCards";
 
 import {
   boardInitiatives,
   cliSessionForThread,
   hasOpenDecision,
   initiativeForThread,
+  initiativeNeedsYou,
   initiativeSidebarGroups,
+  liveInitiative,
   type BoardInitiative,
   type EnvironmentLiveState,
+  type InitiativeNeedsYouItem,
   type InitiativeSidebarGroup,
 } from "./liveStateIndex";
 
@@ -54,16 +58,19 @@ const environmentLiveAtom = Atom.family((environmentId: EnvironmentId) => {
 
 // Nested because a family needs a primitive key; the inner atom compares by value, so a row
 // re-renders only when its own answer changes.
-const threadAtom = <A>(select: (state: PluginLiveState | null, threadId: ThreadId) => A) =>
+const liveSelectorAtom = <Key extends string, A>(
+  select: (state: PluginLiveState | null, key: Key) => A,
+) =>
   Atom.family((environmentId: EnvironmentId) =>
-    Atom.family((threadId: ThreadId) =>
-      Atom.make((get): A => select(get(environmentLiveAtom(environmentId)).state, threadId)),
+    Atom.family((key: Key) =>
+      Atom.make((get): A => select(get(environmentLiveAtom(environmentId)).state, key)),
     ),
   );
 
-const threadHasOpenDecisionAtom = threadAtom(hasOpenDecision);
-const threadInitiativeAtom = threadAtom(initiativeForThread);
-const threadCliSessionAtom = threadAtom(cliSessionForThread);
+const threadHasOpenDecisionAtom = liveSelectorAtom(hasOpenDecision);
+const threadInitiativeAtom = liveSelectorAtom(initiativeForThread);
+const threadCliSessionAtom = liveSelectorAtom(cliSessionForThread);
+const liveInitiativeAtom = liveSelectorAtom(liveInitiative);
 
 const anyThreadHasOpenDecisionAtom = Atom.family((key: string) => {
   const threads: ReadonlyArray<ScopedThreadRef> = JSON.parse(key);
@@ -131,6 +138,38 @@ const boardAtom = Atom.family((key: string) => {
   });
 });
 
+export interface InitiativeBoardView {
+  readonly status: "loading" | "ready" | "unavailable";
+  readonly board: PluginInitiativeBoard | null;
+  readonly needsYou: ReadonlyArray<InitiativeNeedsYouItem>;
+}
+
+const initiativeBoardAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.family((slug: string) => {
+    const source = pluginInitiativeBoardAtomFamily({ environmentId, input: { slug } });
+    return Atom.make((get): InitiativeBoardView => {
+      const result = get(source);
+      const previous = Option.getOrUndefined(get.self<InitiativeBoardView>());
+      const latest = AsyncResult.getOrElse(result, () => previous?.board ?? null);
+      const board = previous && Equal.equals(previous.board, latest) ? previous.board : latest;
+      const status = AsyncResult.isFailure(result)
+        ? "unavailable"
+        : board === null
+          ? "loading"
+          : "ready";
+      const needsYou =
+        board !== null && board.needsYou.length > 0
+          ? initiativeNeedsYou(board, get(environmentLiveAtom(environmentId)).state)
+          : [];
+      return previous?.status === status &&
+        previous.board === board &&
+        Equal.equals(previous.needsYou, needsYou)
+        ? previous
+        : { status, board, needsYou };
+    });
+  }),
+);
+
 function environmentIdsKey(environmentIds: ReadonlyArray<EnvironmentId>): string {
   return JSON.stringify(environmentIds);
 }
@@ -184,6 +223,20 @@ export function useInitiativeSidebarGroups(
 
 export function useBoardInitiatives(environmentIds: ReadonlyArray<EnvironmentId>): BoardState {
   return useAtomValue(boardAtom(environmentIdsKey(environmentIds)));
+}
+
+export function useInitiativeBoard(
+  environmentId: EnvironmentId,
+  slug: string,
+): InitiativeBoardView {
+  return useAtomValue(initiativeBoardAtom(environmentId)(slug));
+}
+
+export function useLiveInitiative(
+  environmentId: EnvironmentId,
+  slug: string,
+): PluginLiveInitiative | null {
+  return useAtomValue(liveInitiativeAtom(environmentId)(slug));
 }
 
 export function readThreadHasOpenDecision(

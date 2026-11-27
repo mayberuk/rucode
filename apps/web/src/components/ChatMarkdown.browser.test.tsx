@@ -1,6 +1,6 @@
 import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { type ReactElement } from "react";
 import remarkGfm from "remark-gfm";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -10,7 +10,10 @@ import { act, render } from "../../test/render";
 import "../index.css";
 
 import { filesystemEnvironment } from "../state/filesystem";
+import { environmentThreadDetails } from "../state/threads";
+import { useConfirmBlockMode } from "./chat/confirmBlock/useConfirmBlockMode";
 import { useRightPanelStore } from "../rightPanelStore";
+import { useComposerDraftStore } from "../composerDraftStore";
 import {
   CHAT_USER_MARKDOWN_REMARK_PLUGINS,
   remarkEnableOrderedListNumbers,
@@ -1034,5 +1037,365 @@ describe("ChatMarkdown remote media", () => {
       "![shot](https://copy.example.test/a.png)",
     );
     expect(placeholder?.hasAttribute("data-thread-find-ignore")).toBe(true);
+  });
+});
+
+describe("confirm block", () => {
+  const confirmThread = {
+    environmentId: EnvironmentId.make("confirm-environment"),
+    threadId: ThreadId.make("confirm-thread"),
+  };
+  const BODY = "Here is the plan for the release.";
+  const MESSAGE = [
+    BODY,
+    "",
+    "**Just confirm — 1. Push the branch and open a draft PR?**",
+    "**Needs your call — 2. Which target should get the build?**",
+    "- Staging",
+    "- Production (my pick)",
+    "**Needs your call — 3. Pick any: Which checks should run?**",
+    "- Typecheck",
+    "- Unit tests",
+    "- Lint",
+  ].join("\n");
+  const OPEN_ONLY = [BODY, "", "**Needs your call — 1. Anything else I should know?**"].join("\n");
+
+  function setupConfirm() {
+    setup();
+    useComposerDraftStore.setState({ draftsByThreadKey: {} });
+  }
+
+  const draftPrompt = () =>
+    useComposerDraftStore.getState().getComposerDraft(confirmThread)?.prompt ?? "";
+  const rowOf = (screen: { container: HTMLElement }, number: number) =>
+    screen.container.querySelector<HTMLElement>(`[data-confirm-row="${number}"]`)!;
+  const pressKeyOn = (element: Element, init: KeyboardEventInit) =>
+    act(async () => {
+      element.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }),
+      );
+    });
+  const renderConfirm = (text: string, props: Partial<Parameters<typeof ChatMarkdown>[0]> = {}) =>
+    render(
+      <ChatMarkdown
+        cwd={undefined}
+        text={text}
+        threadRef={confirmThread}
+        confirmBlock="answerable"
+        {...props}
+      />,
+    );
+
+  it("sets the questions apart from the message and fills the composer from number keys", async () => {
+    setupConfirm();
+    useComposerDraftStore.getState().setPrompt(confirmThread, "Also check the docs");
+    await using screen = await renderConfirm(MESSAGE);
+
+    const block = screen.getByRole("group", { name: "Questions from the agent" });
+    await expect.element(block).toBeVisible();
+    const body = screen.getByText(BODY, { exact: true }).element();
+    expect(
+      body.compareDocumentPosition(block.element()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.container.querySelector("strong")).toBeNull();
+    expect(getComputedStyle(block.element()).borderTopWidth).toBe("1px");
+    expect(getComputedStyle(block.element()).borderLeftWidth).toBe("0px");
+    await expect.element(screen.getByText("0 of 3 answered")).toBeVisible();
+
+    await act(async () => rowOf(screen, 1).focus());
+    await userEvent.keyboard("1");
+    await expect
+      .element(screen.getByRole("button", { name: "Yes" }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(draftPrompt()).toBe("1. yes\n\nAlso check the docs");
+    await expect.element(rowOf(screen, 2)).toHaveFocus();
+    await expect.element(screen.getByText("1 of 3 answered")).toBeVisible();
+
+    await userEvent.keyboard("3");
+    expect(draftPrompt()).toBe("1. yes\n\nAlso check the docs");
+    await userEvent.keyboard("2");
+    expect(draftPrompt()).toBe("1. yes\n2. Production\n\nAlso check the docs");
+    await expect.element(rowOf(screen, 3)).toHaveFocus();
+
+    await userEvent.keyboard("1");
+    await userEvent.keyboard("2");
+    expect(draftPrompt()).toBe(
+      "1. yes\n2. Production\n3. Typecheck, Unit tests\n\nAlso check the docs",
+    );
+    await expect.element(rowOf(screen, 3)).toHaveFocus();
+
+    await userEvent.keyboard("{Control>}3{/Control}");
+    await userEvent.keyboard("{Meta>}3{/Meta}");
+    await userEvent.keyboard("{Alt>}3{/Alt}");
+    expect(draftPrompt()).toBe(
+      "1. yes\n2. Production\n3. Typecheck, Unit tests\n\nAlso check the docs",
+    );
+
+    await userEvent.keyboard("{ArrowDown}");
+    await expect.element(rowOf(screen, 3)).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect.element(rowOf(screen, 2)).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect.element(rowOf(screen, 1)).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect.element(rowOf(screen, 1)).toHaveFocus();
+
+    await userEvent.keyboard("1");
+    await expect
+      .element(screen.getByRole("button", { name: "Yes" }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(draftPrompt()).toBe("2. Production\n3. Typecheck, Unit tests\n\nAlso check the docs");
+    await expect.element(rowOf(screen, 1)).toHaveFocus();
+
+    await userEvent.keyboard("2");
+    expect(draftPrompt()).toBe(
+      "1. no\n2. Production\n3. Typecheck, Unit tests\n\nAlso check the docs",
+    );
+    await expect.element(rowOf(screen, 1)).toHaveFocus();
+
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    await userEvent.keyboard("1");
+    await userEvent.keyboard("2");
+    expect(draftPrompt()).toBe("1. no\n2. Production\n\nAlso check the docs");
+  });
+
+  it("clears the whole reply and keeps only what the user typed", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE);
+    await userEvent.click(screen.getByRole("button", { name: "Yes" }));
+    expect(draftPrompt()).toBe("1. yes");
+    await userEvent.click(screen.getByRole("button", { name: "Yes" }));
+    expect(draftPrompt()).toBe("");
+    await userEvent.click(screen.getByRole("button", { name: "Staging" }));
+    await userEvent.click(screen.getByRole("button", { name: "Production my pick" }));
+    expect(draftPrompt()).toBe("2. Production");
+    await userEvent.click(screen.getByRole("button", { name: "Lint" }));
+    await userEvent.click(screen.getByRole("button", { name: "Unit tests" }));
+    expect(draftPrompt()).toBe("2. Production\n3. Unit tests, Lint");
+  });
+
+  it("keeps answers across a remount without writing a second reply", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE);
+    await userEvent.click(screen.getByRole("button", { name: "Yes" }));
+    await screen.rerender(
+      <ChatMarkdown
+        key="remounted"
+        cwd={undefined}
+        text={MESSAGE}
+        threadRef={confirmThread}
+        confirmBlock="answerable"
+      />,
+    );
+    await expect
+      .element(screen.getByRole("button", { name: "Yes" }))
+      .toHaveAttribute("aria-pressed", "true");
+    await expect.element(screen.getByText("1 of 3 answered")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Staging" }));
+    expect(draftPrompt()).toBe("1. yes\n2. Staging");
+  });
+
+  it("lets only the latest finished message with a confirm section be answered", async () => {
+    setupConfirm();
+    const thread = { ...confirmThread, threadId: ThreadId.make("confirm-thread-latest") };
+    const assistant = (messageId: string, text: string, streaming = false) => ({
+      item: { type: "assistant_message", messageId, text, streaming },
+    });
+    using _items = vi
+      .spyOn(environmentThreadDetails, "timelineVisibleTurnItemsAtom")
+      .mockReturnValue(
+        Atom.make([
+          assistant("old", MESSAGE),
+          assistant("latest", MESSAGE),
+          assistant("plain", "Nothing to ask here."),
+          assistant("streaming", MESSAGE, true),
+        ]) as never,
+      );
+    function Message({ id }: { id: string }) {
+      const mode = useConfirmBlockMode(thread, id, true);
+      return (
+        <div data-message={id}>
+          <ChatMarkdown cwd={undefined} text={MESSAGE} threadRef={thread} confirmBlock={mode} />
+        </div>
+      );
+    }
+    const messages = (key = "first") => (
+      <div key={key}>
+        <Message id="old" />
+        <Message id="latest" />
+      </div>
+    );
+    const buttonIn = (screen: { container: HTMLElement }, id: string, name: string) =>
+      [
+        ...screen.container.querySelectorAll<HTMLButtonElement>(`[data-message="${id}"] button`),
+      ].find((button) => button.textContent?.includes(name))!;
+    await using screen = await render(messages());
+
+    expect(buttonIn(screen, "old", "Yes").disabled).toBe(true);
+    expect(buttonIn(screen, "latest", "Yes").disabled).toBe(false);
+    await userEvent.click(buttonIn(screen, "latest", "Yes"));
+    expect(useComposerDraftStore.getState().getComposerDraft(thread)?.prompt).toBe("1. yes");
+    expect(buttonIn(screen, "latest", "Yes").getAttribute("aria-pressed")).toBe("true");
+    expect(buttonIn(screen, "old", "Yes").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.container.querySelector('[data-message="old"]')?.textContent).not.toContain(
+      "answered",
+    );
+
+    await screen.rerender(messages("remounted"));
+    expect(buttonIn(screen, "latest", "Yes").getAttribute("aria-pressed")).toBe("true");
+    expect(buttonIn(screen, "old", "Yes").getAttribute("aria-pressed")).toBe("false");
+    expect(buttonIn(screen, "old", "Yes").disabled).toBe(true);
+  });
+
+  it("stacks options whose labels would overflow a narrow column", async () => {
+    setupConfirm();
+    const LONG = "Widen the rollout to the whole staging fleet in the first ten minutes";
+    await using screen = await render(
+      <div style={{ width: 280 }}>
+        <ChatMarkdown
+          cwd={undefined}
+          text={[
+            BODY,
+            "",
+            "**Needs your call — 1. Pick any: How should it roll out?**",
+            `- ${LONG} (my pick)`,
+            "- Run `pnpm build` first and then every other step by hand",
+            "- Wait",
+          ].join("\n")}
+          threadRef={confirmThread}
+          confirmBlock="answerable"
+        />
+      </div>,
+    );
+    const block = screen.getByRole("group", { name: "Questions from the agent" }).element();
+    const buttons = [...block.querySelectorAll("button")];
+    expect(buttons).toHaveLength(3);
+    const limit = block.getBoundingClientRect().right;
+    for (const button of buttons) {
+      expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(limit);
+      expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
+    }
+    await userEvent.click(screen.getByRole("button", { name: /Widen the rollout/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Run pnpm build first/ }));
+    expect(draftPrompt()).toBe(
+      `1. ${LONG}, Run \`pnpm build\` first and then every other step by hand`,
+    );
+  });
+
+  it("shows the number-key hints only while the block has focus", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE);
+    const hints = screen.getByText("Question", { exact: true }).element().parentElement!;
+    expect(getComputedStyle(hints).opacity).toBe("0");
+    expect(getComputedStyle(hints).transitionDuration).toBe("0.15s");
+
+    await act(async () => rowOf(screen, 1).focus());
+    await vi.waitFor(() => expect(getComputedStyle(hints).opacity).toBe("1"));
+    const keys = () => [...hints.querySelectorAll("kbd")].map((key) => key.textContent);
+    expect(keys()).toEqual(["1", "2", "↑", "↓"]);
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    await vi.waitFor(() => expect(keys()).toEqual(["1", "2", "3", "↑", "↓"]));
+
+    await act(async () => rowOf(screen, 3).blur());
+    await vi.waitFor(() => expect(getComputedStyle(hints).opacity).toBe("0"));
+  });
+
+  it("shows disabled answers and leaves the draft alone when the viewer cannot answer", async () => {
+    setupConfirm();
+    useComposerDraftStore.getState().setPrompt(confirmThread, "Mine");
+    await using screen = await renderConfirm(MESSAGE, { confirmBlock: "readonly" });
+    await expect
+      .element(screen.getByRole("group", { name: "Questions from the agent" }))
+      .toBeVisible();
+    for (const name of ["Yes", "No", "Staging", "Typecheck"]) {
+      await expect.element(screen.getByRole("button", { name, exact: true })).toBeDisabled();
+    }
+    const row = rowOf(screen, 1);
+    expect(row.hasAttribute("tabindex")).toBe(false);
+    await pressKeyOn(row, { key: "1" });
+    await pressKeyOn(row, { key: "ArrowDown" });
+    expect(draftPrompt()).toBe("Mine");
+    await expect
+      .element(screen.getByRole("button", { name: "Yes" }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(screen.container.textContent).not.toContain("answered");
+  });
+
+  it("settles on the read-only block when there is no thread to write the reply to", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE, { threadRef: undefined });
+    await expect.element(screen.getByRole("button", { name: "Yes" })).toBeDisabled();
+    expect(rowOf(screen, 1).hasAttribute("tabindex")).toBe(false);
+    expect(screen.container.textContent).not.toContain("answered");
+  });
+
+  it("renders the whole text as ordinary markdown while streaming and the block once it ends", async () => {
+    setupConfirm();
+    await using screen = await renderConfirm(MESSAGE, { isStreaming: true });
+    expect(screen.container.querySelector("[data-confirm-row]")).toBeNull();
+    expect(screen.container.querySelector("strong")?.textContent).toBe(
+      "Just confirm — 1. Push the branch and open a draft PR?",
+    );
+    await screen.rerender(
+      <ChatMarkdown
+        cwd={undefined}
+        text={MESSAGE}
+        threadRef={confirmThread}
+        confirmBlock="answerable"
+        isStreaming={false}
+      />,
+    );
+    await expect
+      .element(screen.getByRole("group", { name: "Questions from the agent" }))
+      .toBeVisible();
+    expect(screen.container.querySelector("strong")).toBeNull();
+  });
+
+  it("renders no block without the opt-in prop", async () => {
+    setupConfirm();
+    await using screen = await render(
+      <ChatMarkdown
+        cwd={undefined}
+        text={MESSAGE}
+        threadRef={confirmThread}
+        className="user-message-markdown"
+      />,
+    );
+    expect(screen.container.querySelector("[data-confirm-row]")).toBeNull();
+    expect(screen.container.querySelector("strong")?.textContent).toBe(
+      "Just confirm — 1. Push the branch and open a draft PR?",
+    );
+  });
+
+  it("shows open-only questions without answers, count or hints and never writes the draft", async () => {
+    setupConfirm();
+    useComposerDraftStore.getState().setPrompt(confirmThread, "Mine");
+    await using screen = await renderConfirm(OPEN_ONLY);
+    await expect.element(screen.getByText("Anything else I should know?")).toBeVisible();
+    expect(screen.container.querySelectorAll("button")).toHaveLength(0);
+    expect(screen.container.querySelectorAll("kbd")).toHaveLength(0);
+    expect(screen.container.textContent).not.toContain("answered");
+    const row = rowOf(screen, 1);
+    expect(row.hasAttribute("tabindex")).toBe(false);
+    await pressKeyOn(row, { key: "1" });
+    expect(draftPrompt()).toBe("Mine");
+  });
+
+  it("renders a sent reply as an ordered list that keeps the written numbers", async () => {
+    setupConfirm();
+    await using screen = await render(
+      <ChatMarkdown
+        cwd={undefined}
+        text={"1. yes\n3. Typecheck, Unit tests"}
+        className="user-message-markdown"
+        lineBreaks
+        parseRawHtml={false}
+        extraRemarkPlugins={SOURCE_NUMBER_PLUGINS}
+      />,
+    );
+    const items = [...screen.container.querySelectorAll("ol > li")];
+    expect(items.map((item) => item.textContent?.trim())).toEqual(["yes", "Typecheck, Unit tests"]);
+    expect(items.map((item) => item.getAttribute("value"))).toEqual([null, "3"]);
+    expect(getComputedStyle(items[0]!.parentElement!).listStyleType).toBe("decimal");
   });
 });

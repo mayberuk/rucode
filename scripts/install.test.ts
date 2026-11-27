@@ -263,7 +263,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("install.sh t3 
         NodePath.join(home, "runtime/versions/1.0.0/helper"),
       );
 
-      // An upgrade over an older version's link, written through a symlinked T3 home.
+      // An upgrade over an older version's link, written through a symlinked RuCode home.
       await NodeFSP.rm(link);
       await NodeFSP.symlink(NodePath.join(home, "runtime/versions/1.0.0/t3"), link);
       await NodeFSP.symlink(home, NodePath.join(root, "alias"));
@@ -346,7 +346,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("install.ps1 t3
       const shim = NodePath.join(binDir, "t3.cmd");
       await NodeFSP.mkdir(binDir, { recursive: true });
 
-      const desktopShim = '@echo off\r\n"C:\\Program Files\\T3 Code\\T3 Code.exe" "x" %*\r\n';
+      const desktopShim = '@echo off\r\n"C:\\Program Files\\RuCode\\RuCode.exe" "x" %*\r\n';
       await NodeFSP.writeFile(shim, desktopShim);
       const foreign = await installOver({ script: "install.ps1", home, binDir });
       expect(foreign.code).not.toBe(0);

@@ -418,9 +418,20 @@ import {
   PluginCardsThreadInput,
   PluginDecisionAnswerInput,
   PluginDecisionAnswerResult,
+  PluginInitiativeBoard,
+  PluginInitiativeBoardInput,
   PluginLiveState,
   PluginThreadCards,
 } from "./pluginCards.ts";
+import {
+  Iter8CreateNoteInput,
+  Iter8DeleteNoteInput,
+  Iter8ReviewError,
+  Iter8ReviewSnapshot,
+  Iter8SendRoundInput,
+  Iter8SendRoundResult,
+  Iter8UpdateNoteInput,
+} from "./iter8.ts";
 import {
   CliSessionContinueInput,
   CliSessionContinueResult,
@@ -454,6 +465,11 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import {
+  ProjectActionsSuggestError,
+  ProjectActionsSuggestInput,
+  ProjectActionsSuggestResult,
+} from "./projectActions.ts";
 
 export const WS_METHODS = {
   projectsListEntries: "projects.listEntries",
@@ -463,6 +479,7 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
   projectsMutate: "projects.mutate",
+  projectActionsSuggest: "projectActions.suggest",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
   projectsCreateFromThread: "projects.createFromThread",
@@ -602,9 +619,15 @@ export const WS_METHODS = {
   secretsAnswerRequest: "secrets.answerRequest",
   pluginCardsSubscribeThread: "pluginCards.subscribeThread",
   pluginCardsSubscribeLive: "pluginCards.subscribeLive",
+  pluginCardsSubscribeInitiative: "pluginCards.subscribeInitiative",
   pluginCardsAnswerDecision: "pluginCards.answerDecision",
   pluginCardsRunAction: "pluginCards.runAction",
   pluginCardsReadAsset: "pluginCards.readAsset",
+  iter8SubscribeReview: "iter8.subscribeReview",
+  iter8CreateNote: "iter8.createNote",
+  iter8UpdateNote: "iter8.updateNote",
+  iter8DeleteNote: "iter8.deleteNote",
+  iter8SendRound: "iter8.sendRound",
   cliSessionsTakeOver: "cliSessions.takeOver",
   cliSessionsContinueInTerminal: "cliSessions.continueInTerminal",
   guestShareCreate: "guestShare.create",
@@ -1573,6 +1596,12 @@ const WsProjectsMutateRpc = Rpc.make(WS_METHODS.projectsMutate, {
   error: Schema.Union([ProjectMutationError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectActionsSuggestRpc = Rpc.make(WS_METHODS.projectActionsSuggest, {
+  payload: ProjectActionsSuggestInput,
+  success: ProjectActionsSuggestResult,
+  error: Schema.Union([ProjectActionsSuggestError, EnvironmentAuthorizationError]),
+});
+
 const WsProjectsEnsureScratchRpc = Rpc.make(WS_METHODS.projectsEnsureScratch, {
   payload: Schema.Struct({}),
   success: ProjectEnsureScratchResult,
@@ -2248,6 +2277,13 @@ const WsPluginCardsSubscribeLiveRpc = Rpc.make(WS_METHODS.pluginCardsSubscribeLi
   stream: true,
 });
 
+const WsPluginCardsSubscribeInitiativeRpc = Rpc.make(WS_METHODS.pluginCardsSubscribeInitiative, {
+  payload: PluginInitiativeBoardInput,
+  success: PluginInitiativeBoard,
+  error: PluginCardsRpcError,
+  stream: true,
+});
+
 const WsPluginCardsAnswerDecisionRpc = Rpc.make(WS_METHODS.pluginCardsAnswerDecision, {
   payload: PluginDecisionAnswerInput,
   success: PluginDecisionAnswerResult,
@@ -2263,6 +2299,36 @@ const WsPluginCardsReadAssetRpc = Rpc.make(WS_METHODS.pluginCardsReadAsset, {
   payload: PluginCardAssetInput,
   success: PluginCardAsset,
   error: PluginCardsRpcError,
+});
+
+const Iter8ReviewRpcError = Schema.Union([Iter8ReviewError, EnvironmentAuthorizationError]);
+
+const WsIter8SubscribeReviewRpc = Rpc.make(WS_METHODS.iter8SubscribeReview, {
+  payload: Schema.Struct({}),
+  success: Iter8ReviewSnapshot,
+  error: Iter8ReviewRpcError,
+  stream: true,
+});
+
+const WsIter8CreateNoteRpc = Rpc.make(WS_METHODS.iter8CreateNote, {
+  payload: Iter8CreateNoteInput,
+  error: Iter8ReviewRpcError,
+});
+
+const WsIter8UpdateNoteRpc = Rpc.make(WS_METHODS.iter8UpdateNote, {
+  payload: Iter8UpdateNoteInput,
+  error: Iter8ReviewRpcError,
+});
+
+const WsIter8DeleteNoteRpc = Rpc.make(WS_METHODS.iter8DeleteNote, {
+  payload: Iter8DeleteNoteInput,
+  error: Iter8ReviewRpcError,
+});
+
+const WsIter8SendRoundRpc = Rpc.make(WS_METHODS.iter8SendRound, {
+  payload: Iter8SendRoundInput,
+  success: Iter8SendRoundResult,
+  error: Iter8ReviewRpcError,
 });
 
 const CliSessionsRpcError = Schema.Union([CliSessionError, EnvironmentAuthorizationError]);
@@ -2399,9 +2465,15 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsAnswerRequestRpc,
   WsPluginCardsSubscribeThreadRpc,
   WsPluginCardsSubscribeLiveRpc,
+  WsPluginCardsSubscribeInitiativeRpc,
   WsPluginCardsAnswerDecisionRpc,
   WsPluginCardsRunActionRpc,
   WsPluginCardsReadAssetRpc,
+  WsIter8SubscribeReviewRpc,
+  WsIter8CreateNoteRpc,
+  WsIter8UpdateNoteRpc,
+  WsIter8DeleteNoteRpc,
+  WsIter8SendRoundRpc,
   WsCliSessionsTakeOverRpc,
   WsCliSessionsContinueInTerminalRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
@@ -2467,6 +2539,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsCreateFromThreadRpc,
   WsProjectsWriteFileRpc,
   WsProjectsMutateRpc,
+  WsProjectActionsSuggestRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsFilesystemGetMetadataRpc,

@@ -677,8 +677,19 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   ::highlight(t3-assistant-citation-comment) {
     background-color: color-mix(in oklab, var(--primary) 45%, transparent);
   }
+  ::highlight(t3-assistant-citation-draft) {
+    background-color: var(--accent);
+  }
+  html:not(.dark) ::highlight(t3-assistant-citation-draft) {
+    text-decoration: underline;
+    text-decoration-color: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+    text-underline-offset: 3px;
+  }
+  ::highlight(t3-assistant-citation-hot) {
+    background-color: color-mix(in oklab, var(--accent), var(--foreground) 22%);
+  }
   :root {
-    /* Keep the original T3 Code artwork palettes as the defaults. Built-in
+    /* Keep the original RuCode artwork palettes as the defaults. Built-in
        themes override them with their own pigments in the components layer. */
     --stage-art-top: oklch(0.782169 0.123386 240.226);
     --stage-art-mid: oklch(0.616111 0.195824 259.735);

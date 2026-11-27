@@ -14,6 +14,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ProcessRunner from "../../processRunner.ts";
 import type { PluginLiveSource } from "../core/PluginCardSource.ts";
 import { PluginThreadIndex } from "../core/PluginThreadIndex.ts";
+import { readInitiativeState } from "../dispatch/initiativeState.ts";
 import { makeDispatchLiveSource } from "./dispatchLiveSource.ts";
 
 const NOW = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-21T12:00:00Z"));
@@ -43,7 +44,7 @@ const registryEntry = (slug: string, overrides: Record<string, unknown> = {}) =>
 const initiativeShow = (slug: string, overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
     initiative: { slug, title: `Title of ${slug}`, repos: null },
-    parts: [{ id: "core", title: "Core", repo: "rucode", zone: null, wave: 1, status: "merged" }],
+    parts: [{ id: "core", title: "Core", repo: "acme/app", zone: null, wave: 1, status: "merged" }],
     waves: [{ number: 1, opened: true, closed: false, parts: ["core"] }],
     closed: false,
     ...overrides,
@@ -154,6 +155,7 @@ const withSource = <A, E, R>(
     const runner: ProcessRunner.ProcessRunner["Service"] = {
       run: (input) => {
         const slug = input.args[2] ?? "";
+        assert.deepStrictEqual(input.args, ["initiative", "show", slug, "--json"]);
         fixture.dpCalls.push(slug);
         const show = fixture.shows.get(slug);
         return Effect.succeed(processOutput(show ?? "", show === undefined ? 1 : 0));
@@ -254,24 +256,132 @@ it.layer(NodeServices.layer)("dispatch live source", (it) => {
   );
 
   it.effect.each([
-    { name: "dp exits non-zero", dpInstalled: true },
-    { name: "dp is missing", dpInstalled: false },
-  ])("still reports the initiative when $name", ({ dpInstalled }) =>
+    { name: "dp exits non-zero", dpInstalled: true, totalWave: 3 },
+    { name: "dp is missing", dpInstalled: false, totalWave: 3 },
+    { name: "dp returns invalid JSON", dpInstalled: true, totalWave: 3, show: "{" },
+    { name: "dp is missing and the registry has no waves", dpInstalled: false, totalWave: 0 },
+  ])("still reports the initiative when $name", ({ dpInstalled, show, totalWave }) =>
     withSource(
       (fixture, source) =>
         Effect.gen(function* () {
-          yield* writeRegistry(fixture, "alpha.json", registryEntry("alpha", { totalWave: 3 }));
+          yield* writeRegistry(fixture, "alpha.json", registryEntry("alpha", { totalWave }));
+          if (show !== undefined) fixture.shows.set("alpha", show);
           const [initiative] = (yield* source.snapshot).initiatives;
           assert.strictEqual(initiative?.title, null);
           assert.deepStrictEqual(initiative?.parts, []);
           assert.deepStrictEqual(initiative?.wave, {
-            current: 3,
-            total: 3,
+            current: totalWave,
+            total: totalWave,
             partsSettled: 0,
             partsTotal: 0,
           });
         }),
       { dpInstalled },
+    ),
+  );
+
+  it.effect("reads each latest gate and recorded MR from the ledger", () =>
+    withSource((fixture) =>
+      Effect.gen(function* () {
+        fixture.shows.set(
+          "alpha",
+          initiativeShow("alpha", {
+            progress: [
+              {
+                part: "part-b",
+                lastEventAt: at(0),
+                gate: { passed: false, at: null, record: null },
+              },
+              {
+                part: "part-a",
+                lastEventAt: at(-HOUR),
+                gate: { passed: true, at: at(-2 * HOUR), record: "/work/part-a/gate.json" },
+              },
+              { part: "part-c", lastEventAt: null, gate: null },
+              { part: "part-d" },
+              { part: "part-e", gate: { passed: true } },
+            ],
+            deliveries: [
+              { part_id: "part-b", mr: "!24" },
+              { part_id: "part-a", mr: "!18" },
+              { part_id: "part-b", mr: "!26" },
+            ],
+          }),
+        );
+
+        const state = yield* readInitiativeState("alpha");
+        assert.deepStrictEqual(state?.progress, [
+          { part: "part-b", lastEventAt: at(0), gate: { passed: false, at: null, record: null } },
+          {
+            part: "part-a",
+            lastEventAt: at(-HOUR),
+            gate: { passed: true, at: at(-2 * HOUR), record: "/work/part-a/gate.json" },
+          },
+          { part: "part-c", lastEventAt: null, gate: null },
+          { part: "part-d", lastEventAt: null, gate: null },
+          { part: "part-e", lastEventAt: null, gate: { passed: true, at: null, record: null } },
+        ]);
+        assert.deepStrictEqual(state?.deliveries, [
+          { part: "part-b", mr: "!24" },
+          { part: "part-a", mr: "!18" },
+          { part: "part-b", mr: "!26" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect.each([
+    { name: "omitted", lists: {} },
+    { name: "null", lists: { progress: null, deliveries: null } },
+    { name: "empty", lists: { progress: [], deliveries: [] } },
+  ])("reads $name ledger lists as empty arrays", ({ lists }) =>
+    withSource((fixture) =>
+      Effect.gen(function* () {
+        fixture.shows.set("alpha", initiativeShow("alpha", lists));
+        const state = yield* readInitiativeState("alpha");
+        assert.deepStrictEqual(state?.progress, []);
+        assert.deepStrictEqual(state?.deliveries, []);
+      }),
+    ),
+  );
+
+  it.effect("reads each ledger list independently of the other", () =>
+    withSource((fixture) =>
+      Effect.gen(function* () {
+        fixture.shows.set(
+          "alpha",
+          initiativeShow("alpha", {
+            progress: null,
+            deliveries: [{ part_id: "part-a", mr: "!18" }],
+          }),
+        );
+        fixture.shows.set(
+          "beta",
+          initiativeShow("beta", {
+            progress: [{ part: "part-b", lastEventAt: at(0), gate: null }],
+          }),
+        );
+        const alpha = yield* readInitiativeState("alpha");
+        const beta = yield* readInitiativeState("beta");
+        assert.deepStrictEqual(alpha?.progress, []);
+        assert.deepStrictEqual(alpha?.deliveries, [{ part: "part-a", mr: "!18" }]);
+        assert.deepStrictEqual(beta?.progress, [
+          { part: "part-b", lastEventAt: at(0), gate: null },
+        ]);
+        assert.deepStrictEqual(beta?.deliveries, []);
+      }),
+    ),
+  );
+
+  it.effect.each([
+    { list: "progress", row: { part: "part-a", gate: { passed: "false" } } },
+    { list: "deliveries", row: { part: "part-a", mr: "!18" } },
+  ])("treats a malformed $list row as an unreadable ledger", ({ list, row }) =>
+    withSource((fixture) =>
+      Effect.gen(function* () {
+        fixture.shows.set("alpha", initiativeShow("alpha", { [list]: [row] }));
+        assert.strictEqual(yield* readInitiativeState("alpha"), null);
+      }),
     ),
   );
 

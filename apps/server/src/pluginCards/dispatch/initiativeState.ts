@@ -8,6 +8,7 @@ import * as ProcessRunner from "../../processRunner.ts";
 
 // dp is Go, so an empty list arrives as null.
 const nullableStrings = Schema.NullOr(Schema.Array(Schema.String));
+const optionalText = Schema.optionalKey(Schema.NullOr(Schema.String));
 
 const InitiativeShow = Schema.Struct({
   initiative: Schema.Struct({ slug: Schema.String, title: Schema.String, repos: nullableStrings }),
@@ -32,6 +33,24 @@ const InitiativeShow = Schema.Struct({
         parts: nullableStrings,
       }),
     ),
+  ),
+  progress: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          part: Schema.String,
+          lastEventAt: optionalText,
+          gate: Schema.optionalKey(
+            Schema.NullOr(
+              Schema.Struct({ passed: Schema.Boolean, at: optionalText, record: optionalText }),
+            ),
+          ),
+        }),
+      ),
+    ),
+  ),
+  deliveries: Schema.optionalKey(
+    Schema.NullOr(Schema.Array(Schema.Struct({ part_id: Schema.String, mr: Schema.String }))),
   ),
   closed: Schema.Boolean,
 });
@@ -58,6 +77,16 @@ export interface DispatchInitiativeState {
     readonly closed: boolean;
     readonly parts: ReadonlyArray<string>;
   }>;
+  readonly progress: ReadonlyArray<{
+    readonly part: string;
+    readonly lastEventAt: string | null;
+    readonly gate: {
+      readonly passed: boolean;
+      readonly at: string | null;
+      readonly record: string | null;
+    } | null;
+  }>;
+  readonly deliveries: ReadonlyArray<{ readonly part: string; readonly mr: string }>;
   readonly closed: boolean;
 }
 
@@ -86,6 +115,12 @@ export const readInitiativeState = Effect.fn("DispatchReader.readInitiativeState
     initiative: { ...state.initiative, repos: state.initiative.repos ?? [] },
     parts: (state.parts ?? []).map((part) => ({ ...part, zone: part.zone ?? [] })),
     waves: (state.waves ?? []).map((wave) => ({ ...wave, parts: wave.parts ?? [] })),
+    progress: (state.progress ?? []).map(({ part, lastEventAt, gate }) => ({
+      part,
+      lastEventAt: lastEventAt ?? null,
+      gate: gate ? { passed: gate.passed, at: gate.at ?? null, record: gate.record ?? null } : null,
+    })),
+    deliveries: (state.deliveries ?? []).map(({ part_id, mr }) => ({ part: part_id, mr })),
     closed: state.closed,
   } satisfies DispatchInitiativeState as DispatchInitiativeState;
 });

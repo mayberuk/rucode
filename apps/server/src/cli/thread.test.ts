@@ -181,7 +181,7 @@ it.effect("does not sign in to whatever took over a dead server's port", () =>
         assert.strictEqual(error[Runtime.errorExitCode], 3);
         assert.strictEqual(
           error.message,
-          `No running T3 Code server uses ${baseDir}. Start T3 Code, then retry.`,
+          `No running RuCode server uses ${baseDir}. Start RuCode, then retry.`,
         );
         assert.deepStrictEqual((yield* TestConsole.errorLines).slice(errorCount), [error.message]);
         assert.strictEqual(session.mock.calls.length, 0);
@@ -223,7 +223,7 @@ it.effect("does not sign in to whatever took over a dead server's port", () =>
       assert.strictEqual(Runtime.getErrorExitCode(error), 1);
       assert.strictEqual(
         error.message,
-        "Could not reach the T3 Code server at http://127.0.0.1:3773. connection refused",
+        "Could not reach the RuCode server at http://127.0.0.1:3773. connection refused",
       );
       assert.deepStrictEqual(
         calls,

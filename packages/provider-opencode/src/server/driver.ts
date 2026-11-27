@@ -200,6 +200,17 @@ function selectOpenCodeRuntimeTextGeneration(
   v1: ProviderTextGeneration,
   v2: ProviderTextGeneration,
 ): ProviderTextGeneration {
+  const { generateProjectActions: generateV1ProjectActions } = v1;
+  const { generateProjectActions: generateV2ProjectActions } = v2;
+  const generateProjectActions: ProviderTextGeneration["generateProjectActions"] =
+    generateV1ProjectActions && generateV2ProjectActions
+      ? (input) =>
+          byOpenCodeRuntime(resolve, {
+            v1: generateV1ProjectActions(input),
+            v2: generateV2ProjectActions(input),
+          })
+      : undefined;
+
   return {
     generateCommitMessage: (input) =>
       byOpenCodeRuntime(resolve, {
@@ -216,6 +227,7 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.generateBranchName(input),
         v2: v2.generateBranchName(input),
       }),
+    ...(generateProjectActions && { generateProjectActions }),
     generateThreadTitle: (input) =>
       byOpenCodeRuntime(resolve, {
         v1: v1.generateThreadTitle(input),

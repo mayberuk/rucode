@@ -11,7 +11,10 @@ import {
   PluginCardError,
   PluginCardErrorReason,
   PluginCardKind,
+  PluginInitiativeBoard,
+  PluginInitiativeHeadline,
   type PluginCard as PluginCardType,
+  type PluginInitiativeBoard as PluginInitiativeBoardType,
 } from "./pluginCards.ts";
 import { WS_METHODS, WsRpcGroup } from "./rpc.ts";
 
@@ -245,12 +248,140 @@ describe("PluginCard", () => {
   });
 });
 
+const boardPart = {
+  id: "p1",
+  title: "Contracts",
+  wave: 1,
+  status: "running",
+  phases: [
+    { id: "1", name: "Schema", state: "done", attempt: null },
+    { id: "2", name: "Handlers", state: "running", attempt: 2 },
+  ],
+  gate: {
+    state: "failed",
+    at: "2026-11-21T09:30:00Z",
+    checks: [{ id: "unit", state: "fail", summary: "2 failed" }],
+  },
+  branch: "acme/app-contracts",
+  mergeRequest: { ref: "!241", url: "https://example.test/mr/241", number: 241 },
+  cost: { usd: 1.25, state: "estimated" },
+  startedAt: "2026-11-21T09:00:00Z",
+  lastEventAt: "2026-11-21T09:45:00Z",
+} as const;
+
+const bareBoardPart = {
+  ...boardPart,
+  id: "p2",
+  status: "planned",
+  phases: [],
+  gate: null,
+  branch: null,
+  mergeRequest: null,
+  cost: { usd: null, state: "unknown" },
+  startedAt: null,
+  lastEventAt: null,
+} as const;
+
+const boardBase = {
+  slug: "acme-app",
+  title: "Acme app",
+  closed: false,
+  startedAt: "2026-11-21T08:00:00Z",
+  asOf: "2026-11-21T10:00:00Z",
+  headline: { kind: "done" },
+  parts: { settled: 0, total: 2 },
+  spend: { usd: 1.25, state: "estimated", ceilingUsd: null },
+  currentWave: 1,
+  waves: [
+    {
+      number: 1,
+      name: "Contracts and one more",
+      moreParts: 1,
+      state: "active",
+      partsSettled: 0,
+      partsTotal: 2,
+      parts: [boardPart, bareBoardPart],
+    },
+  ],
+  needsYou: [
+    {
+      cardId: "dispatch.decision:/repo#d1",
+      decisionId: "d1",
+      kind: "scope",
+      question: "Which way?",
+      part: "p1",
+      options: [{ key: "a", label: "Left", recommended: true }],
+      defaultKey: null,
+      applyAfter: null,
+      protection: null,
+      needsPerson: true,
+      raisedAt: "2026-11-21T09:00:00Z",
+    },
+  ],
+} as const;
+
+const headlineOfEachKind = [
+  { kind: "closed" },
+  { kind: "needs-you", decisions: 2, part: null },
+  { kind: "failing", part: "p1", failedChecks: 1 },
+  { kind: "gating", part: "p1" },
+  { kind: "running", part: "p1", phase: { index: 2, total: 3 }, nextPart: "p2" },
+  { kind: "running", part: "p1", phase: null, nextPart: null },
+  { kind: "waiting", nextPart: "p2" },
+  { kind: "done" },
+] as const;
+
+const decodeBoard = Schema.decodeUnknownSync(PluginInitiativeBoard);
+const decodeBoardExit = Schema.decodeUnknownExit(PluginInitiativeBoard);
+const encodeBoard = Schema.encodeSync(PluginInitiativeBoard);
+
 describe("PluginCardAsset", () => {
   it("carries bytes as base64 on the wire", () => {
     const asset = { mediaType: "image/png", bytes: new Uint8Array([0, 1, 254, 255]) };
     const encoded = encodeAsset(asset);
     expect(encoded).toEqual({ mediaType: "image/png", bytes: "AAH+/w==" });
     expect(decodeAsset(encoded)).toEqual(asset);
+  });
+});
+
+describe("PluginInitiativeBoard", () => {
+  it("fixtures cover every declared headline kind", () => {
+    expect(new Set(headlineOfEachKind.map(({ kind }) => kind))).toEqual(
+      new Set(PluginInitiativeHeadline.members.map((member) => member.fields.kind.literal)),
+    );
+  });
+
+  it.each(headlineOfEachKind.map((headline) => [headline.kind, headline] as const))(
+    "round-trips a board with a %s headline through JSON",
+    (_kind, headline) => {
+      const board: PluginInitiativeBoardType = { ...boardBase, headline };
+      expect(decodeBoard(wire(encodeBoard(board)))).toEqual(board);
+    },
+  );
+
+  it("round-trips a board with no waves and a ceiling", () => {
+    const board: PluginInitiativeBoardType = {
+      ...boardBase,
+      title: null,
+      startedAt: null,
+      currentWave: 0,
+      spend: { usd: null, state: "unknown", ceilingUsd: 50 },
+      waves: [],
+      needsYou: [],
+    };
+    expect(decodeBoard(wire(encodeBoard(board)))).toEqual(board);
+  });
+
+  it.each([
+    ["a part status outside the list", { ...boardPart, status: "paused" }],
+    [
+      "a phase state outside the list",
+      { ...boardPart, phases: [{ id: "1", name: "Schema", state: "paused", attempt: null }] },
+    ],
+  ])("rejects %s", (_name, part) => {
+    const wave = { ...boardBase.waves[0], parts: [part] };
+    expect(Exit.isFailure(decodeBoardExit(wire({ ...boardBase, waves: [wave] })))).toBe(true);
+    expect(Exit.isSuccess(decodeBoardExit(wire({ ...boardBase })))).toBe(true);
   });
 });
 
@@ -280,15 +411,17 @@ describe("plugin card RPC methods", () => {
   const readMethods = [
     WS_METHODS.pluginCardsSubscribeThread,
     WS_METHODS.pluginCardsSubscribeLive,
+    WS_METHODS.pluginCardsSubscribeInitiative,
     WS_METHODS.pluginCardsReadAsset,
   ];
   const operateMethods = [WS_METHODS.pluginCardsAnswerDecision, WS_METHODS.pluginCardsRunAction];
 
-  it("names the five methods on the wire", () => {
+  it("names the six methods on the wire", () => {
     expect([...readMethods, ...operateMethods].toSorted()).toEqual([
       "pluginCards.answerDecision",
       "pluginCards.readAsset",
       "pluginCards.runAction",
+      "pluginCards.subscribeInitiative",
       "pluginCards.subscribeLive",
       "pluginCards.subscribeThread",
     ]);

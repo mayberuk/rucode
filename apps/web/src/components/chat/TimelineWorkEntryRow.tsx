@@ -56,6 +56,7 @@ import {
   type TimelineRow,
   type TimelineWorkEntry,
 } from "./timelineRowContext";
+import { useCodexRun } from "./BackgroundWorkDetails";
 import { MESSAGE_HEADING_LEVEL, TimelineRowTimestamp } from "./TimelineRowParts";
 import {
   failedToolIconClassName,
@@ -213,6 +214,16 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const { threadRef, onImageExpand, timestampFormat } = ctx;
   const { retryableWorkspacePreparationRunIds, onRetryWorkspacePreparation } = ctx;
   const threadTarget = useThreadReadTarget(workEntry, ctx.activeThreadEnvironmentId);
+  const commandItem =
+    workEntry.projectedItem?.item.type === "command_execution"
+      ? workEntry.projectedItem.item
+      : undefined;
+  const codexChild = useCodexRun(
+    ctx.activeThreadEnvironmentId,
+    commandItem
+      ? { threadId: commandItem.threadId, itemId: commandItem.id, text: commandItem.input }
+      : null,
+  )?.child;
   const createdThread =
     workEntry.projectedItem?.item.type === "thread_created"
       ? workEntry.projectedItem.item
@@ -537,6 +548,18 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               onKeyDown={stopRowToggle}
             >
               Open subagent
+            </InlineButton>
+          ) : null}
+          {codexChild ? (
+            <InlineButton
+              aria-label={`Open agent: ${codexChild.title}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                ctx.onOpenThread(codexChild.threadId);
+              }}
+              onKeyDown={stopRowToggle}
+            >
+              Open agent
             </InlineButton>
           ) : null}
           {showFailedIndicator &&

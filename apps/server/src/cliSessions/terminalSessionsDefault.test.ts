@@ -27,7 +27,7 @@ it.effect.each([
   ["a main checkout", "directory", false, false],
   ["a plain directory", "none", false, false],
 ] as const)(
-  "a T3 home in %s with the setting %s runs terminal sessions: %s",
+  "a RuCode home in %s with the setting %s runs terminal sessions: %s",
   ([_name, git, setting, expected]) =>
     Effect.gen(function* () {
       const enabledByDefault = yield* claudeTerminalSessionsDefault(yield* homeIn(git));

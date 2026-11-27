@@ -62,6 +62,8 @@ import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as PullRequestReviewGuides from "./persistence/PullRequestReviewGuides.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
+import * as ProjectActionSuggestionLedger from "./projectActions/ProjectActionSuggestionLedger.ts";
+import * as ProjectActionSuggestions from "./projectActions/ProjectActionSuggestions.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as DelegatedTaskAnalytics from "./telemetry/DelegatedTaskAnalytics.ts";
@@ -107,9 +109,12 @@ import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as PluginCards from "./pluginCards/core/PluginCards.ts";
+import * as InitiativeBoard from "./pluginCards/live/InitiativeBoard.ts";
+import * as Iter8Review from "./iter8/Iter8Review.ts";
 import * as ClaudeSessionRegistry from "./cliSessions/ClaudeSessionRegistry.ts";
 import * as CliSessionHandOff from "./cliSessions/CliSessionHandOff.ts";
 import * as CliSessionSync from "./cliSessions/CliSessionSync.ts";
+import * as CodexSessionSync from "./codexSessions/CodexSessionSync.ts";
 import * as ProviderSessionRuntime from "./persistence/ProviderSessionRuntime.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as GitManager from "./git/GitManager.ts";
@@ -554,6 +559,8 @@ const layerPluginCards = PluginCards.layer.pipe(
   Layer.provide(ProjectionStoreV2.layer),
 );
 
+const layerInitiativeBoard = InitiativeBoard.layer.pipe(Layer.provide(ProcessRunner.layer));
+
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
 
 const layerWorkspaceFileSystem = WorkspaceFileSystem.layer.pipe(
@@ -722,10 +729,15 @@ const layerCliSessions = Layer.mergeAll(
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   layerCliSessions,
+  CodexSessionSync.layer.pipe(
+    Layer.provide(Layer.mergeAll(RuntimeLayer.layerEventSink, ProjectionStoreV2.layer)),
+  ),
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
   layerPluginCards,
+  layerInitiativeBoard,
+  Iter8Review.layer,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
@@ -891,7 +903,11 @@ const layerMakeRoutes = Layer.mergeAll(
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
-    Ws.layer,
+    Ws.layer.pipe(
+      HttpRouter.provideRequest(
+        ProjectActionSuggestions.layer.pipe(Layer.provide(ProjectActionSuggestionLedger.layer)),
+      ),
+    ),
     speechStreamRouteLayer,
   ),
   McpHttpServer.layer.pipe(
@@ -946,7 +962,7 @@ const layerMakeRoutes = Layer.mergeAll(
 const layerMakeServer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
-    // Before anything opens the database: one server per T3 home.
+    // Before anything opens the database: one server per RuCode home.
     const ownership = yield* ServerOwnership.acquireServerOwnership(config.serverRuntimeStatePath);
     const activation = yield* Deferred.make<void>();
     const awaitActivation = Deferred.await(activation);

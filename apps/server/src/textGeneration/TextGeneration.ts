@@ -29,6 +29,8 @@ export type {
   CommitMessageGenerationResult,
   PrContentGenerationInput,
   PrContentGenerationResult,
+  ProjectActionsGenerationInput,
+  ProjectActionsGenerationResult,
   ReviewGuideGenerationInput,
   ReviewGuideGenerationResult,
   ThreadTitleGenerationInput,
@@ -45,6 +47,7 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
+  | "generateProjectActions"
   | "generateThreadTitle"
   | "generateReviewGuide"
   | "generateTranscriptionPostProcessing";
@@ -182,6 +185,22 @@ export const make = Effect.gen(function* () {
         input.modelSelection,
         input.projectId,
         (service, modelSelection) => service.generateBranchName({ ...input, modelSelection }),
+      );
+    }),
+    generateProjectActions: Effect.fn("TextGeneration.generateProjectActions")(function (input) {
+      return generate(
+        "generateProjectActions",
+        input.modelSelection,
+        input.projectId,
+        (service, modelSelection) =>
+          service.generateProjectActions?.({ ...input, modelSelection }) ??
+          Effect.fail(
+            new TextGenerationError({
+              operation: "generateProjectActions",
+              detail:
+                "This model's provider cannot suggest project actions. Choose another model for generated text in Settings.",
+            }),
+          ),
       );
     }),
     generateReviewGuide: Effect.fn("TextGeneration.generateReviewGuide")(function (input) {

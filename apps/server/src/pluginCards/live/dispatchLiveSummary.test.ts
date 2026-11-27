@@ -81,6 +81,8 @@ const initiativeState = (
   initiative: { slug: "home", title: "Home base", repos: [] },
   parts: [],
   waves: [],
+  progress: [],
+  deliveries: [],
   closed: false,
   ...overrides,
 });
@@ -88,7 +90,7 @@ const initiativeState = (
 const part = (id: string, wave: number, status: string) => ({
   id,
   title: `Part ${id}`,
-  repo: "rucode",
+  repo: "acme/app",
   zone: [],
   wave,
   status,
@@ -232,32 +234,86 @@ describe("initiative summary", () => {
 
   it.each([
     {
-      name: "the highest opened wave that is not closed",
-      waves: [wave(1, true, true), wave(2, true, false), wave(3, false, false)],
-      parts: [part("a", 4, "planned")],
-      wave: { current: 2, total: 4 },
+      name: "the highest opened wave that is not closed, ranked from 1",
+      waves: [
+        wave(2, true, false),
+        wave(0, true, false),
+        wave(3, true, true),
+        wave(1, false, false),
+      ],
+      parts: [
+        part("a", 0, "planned"),
+        part("b", 1, "merged"),
+        part("c", 2, "mr-open"),
+        part("d", 3, "gate-pass"),
+      ],
+      registryTotal: 9,
+      liveWave: { current: 3, total: 4, partsSettled: 1, partsTotal: 1 },
+      partWaves: [1, 2, 3, 4],
     },
     {
-      name: "the highest closed wave when none is open",
+      name: "the first unsettled wave when none is opened and the registry total is 0",
+      waves: [
+        wave(3, false, false),
+        wave(2, false, false),
+        wave(1, false, false),
+        wave(0, false, false),
+      ],
+      parts: [part("b", 3, "specced"), part("a", 0, "planned")],
+      registryTotal: 0,
+      liveWave: { current: 1, total: 4, partsSettled: 0, partsTotal: 1 },
+      partWaves: [4, 1],
+    },
+    {
+      name: "an open dp wave 0 ahead of a later unsettled wave",
+      waves: [wave(0, true, false), wave(1, false, false)],
+      parts: [part("a", 0, "merged"), part("b", 1, "planned")],
+      registryTotal: 2,
+      liveWave: { current: 1, total: 2, partsSettled: 1, partsTotal: 1 },
+      partWaves: [1, 2],
+    },
+    {
+      name: "the first unsettled wave after a settled wave when none is opened",
+      waves: [wave(1, false, false), wave(3, false, false), wave(7, false, false)],
+      parts: [part("d", 7, "planned"), part("a", 1, "mr-open"), part("c", 3, "gate-fail")],
+      registryTotal: 0,
+      liveWave: { current: 2, total: 3, partsSettled: 0, partsTotal: 1 },
+      partWaves: [3, 1, 2],
+    },
+    {
+      name: "the last wave when every part is settled and none is open",
       waves: [wave(1, true, true), wave(2, true, true), wave(3, false, false)],
-      parts: [],
-      wave: { current: 2, total: 3 },
+      parts: [part("a", 1, "merged"), part("b", 2, "gate-pass"), part("c", 3, "mr-open")],
+      registryTotal: 8,
+      liveWave: { current: 3, total: 3, partsSettled: 1, partsTotal: 1 },
+      partWaves: [1, 2, 3],
     },
     {
-      name: "the registry's wave when dp names no waves",
+      name: "the open wave even when every part is settled",
+      waves: [wave(1, true, false), wave(2, false, false)],
+      parts: [part("a", 1, "gate-pass"), part("b", 2, "merged")],
+      registryTotal: 0,
+      liveWave: { current: 1, total: 2, partsSettled: 1, partsTotal: 1 },
+      partWaves: [1, 2],
+    },
+    {
+      name: "no wave when dp returns neither waves nor parts",
       waves: [],
       parts: [],
-      wave: { current: 2, total: 2 },
+      registryTotal: 2,
+      liveWave: { current: 0, total: 0, partsSettled: 0, partsTotal: 0 },
+      partWaves: [],
     },
   ])("takes the current wave from $name", (fixture) => {
     const summary = summarize(
-      entry({ totalWave: 2 }),
+      entry({ totalWave: fixture.registryTotal }),
       initiativeState({ waves: fixture.waves, parts: fixture.parts }),
     );
-    expect({ current: summary.wave.current, total: summary.wave.total }).toEqual(fixture.wave);
+    expect(summary.wave).toEqual(fixture.liveWave);
+    expect(summary.parts.map(({ wave }) => wave)).toEqual(fixture.partWaves);
   });
 
-  it("counts only merged and gate-pass parts of the current wave as settled", () => {
+  it("counts merged, gate-pass and mr-open parts of the current wave as settled", () => {
     const summary = summarize(
       entry(),
       initiativeState({
@@ -268,10 +324,19 @@ describe("initiative summary", () => {
           part("c", 2, "running"),
           part("d", 2, "gate-fail"),
           part("e", 1, "merged"),
+          part("f", 2, "mr-open"),
         ],
       }),
     );
-    expect(summary.wave).toEqual({ current: 2, total: 2, partsSettled: 2, partsTotal: 4 });
+    expect(summary.wave).toEqual({ current: 2, total: 2, partsSettled: 3, partsTotal: 5 });
+    expect(summary.parts.map(({ status }) => status)).toEqual([
+      "merged",
+      "gate-pass",
+      "running",
+      "gate-fail",
+      "merged",
+      "mr-open",
+    ]);
   });
 
   it("lists each part's distinct mapped chats from this initiative's children", () => {

@@ -69,6 +69,28 @@ describe("readTranscript", () => {
     ]);
   });
 
+  it("rewrites a Claude command record and drops its local command output", () => {
+    const read = readTranscript(
+      bytes(
+        lines(
+          human(
+            "u1",
+            "<command-message>review-pr</command-message>\n<command-name>/review-pr</command-name>\n<command-args>PR 12</command-args>",
+          ),
+          human(
+            "u2",
+            "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>opus</command-args>",
+          ),
+          human("u3", "<local-command-stdout>Set model to opus</local-command-stdout>"),
+        ),
+      ),
+      0,
+    );
+
+    expect.soft(read.title).toBe("$review-pr PR 12");
+    expect(read.entries.map(({ text }) => text)).toEqual(["$review-pr PR 12", "/model opus"]);
+  });
+
   it("reports the model of the last assistant record the terminal wrote", () => {
     const withModel = (uuid: string, model: string, fields: Record<string, unknown> = {}) =>
       assistantText(uuid, "reply", {

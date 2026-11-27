@@ -13,9 +13,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  appPath: "/Applications/RuCode.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+  resourcesPath: "/Applications/RuCode.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -72,4 +72,85 @@ describe("DesktopEnvironment", () => {
       assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
     }),
   );
+
+  describe("packaged Dev build", () => {
+    const devVersion = `0.0.22-dev.${"a".repeat(40)}`;
+    const packaged = { isPackaged: true, appVersion: devVersion };
+
+    it.effect("labels itself Dev with its own app id and home", () =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment(packaged);
+
+        assert.equal(environment.branding.stageLabel, "Dev");
+        assert.equal(environment.appUserModelId, "io.github.mayberuk.rucode.dev");
+        assert.equal(environment.baseDir, "/Users/alice/.t3-dev");
+        assert.equal(environment.stateDir, "/Users/alice/.t3-dev/userdata");
+      }),
+    );
+
+    it.effect("lets T3CODE_HOME override the home folder", () =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment(packaged, { T3CODE_HOME: "/data/t3" });
+
+        assert.equal(environment.baseDir, "/data/t3");
+        assert.equal(environment.stateDir, "/data/t3/userdata");
+      }),
+    );
+
+    it.effect("falls back to its own home when T3CODE_HOME is blank", () =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment(packaged, { T3CODE_HOME: "   " });
+
+        assert.equal(environment.baseDir, "/Users/alice/.t3-dev");
+      }),
+    );
+
+    it.effect("lets the app user model id override win", () =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment(packaged, {
+          T3CODE_DESKTOP_APP_USER_MODEL_ID: "example.override",
+        });
+
+        assert.equal(environment.appUserModelId, "example.override");
+      }),
+    );
+
+    it.effect("treats a version with an abbreviated commit as a release", () =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment({
+          isPackaged: true,
+          appVersion: "0.0.22-dev.abc1234",
+        });
+
+        assert.equal(environment.baseDir, "/Users/alice/.t3");
+        assert.equal(environment.appUserModelId, "io.github.mayberuk.rucode");
+        assert.notEqual(environment.branding.stageLabel, "Dev");
+      }),
+    );
+  });
+
+  describe("packaged release build", () => {
+    it.effect("keeps the release label, app id and home", () =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment({ isPackaged: true });
+
+        assert.equal(environment.branding.stageLabel, "Beta");
+        assert.equal(environment.appUserModelId, "io.github.mayberuk.rucode");
+        assert.equal(environment.baseDir, "/Users/alice/.t3");
+        assert.equal(environment.stateDir, "/Users/alice/.t3/userdata");
+      }),
+    );
+
+    it.effect("lets T3CODE_HOME override the home folder", () =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment(
+          { isPackaged: true },
+          { T3CODE_HOME: "/data/t3" },
+        );
+
+        assert.equal(environment.baseDir, "/data/t3");
+        assert.equal(environment.stateDir, "/data/t3/userdata");
+      }),
+    );
+  });
 });

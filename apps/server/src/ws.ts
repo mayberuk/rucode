@@ -128,6 +128,8 @@ import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import * as PluginCards from "./pluginCards/core/PluginCards.ts";
+import * as InitiativeBoard from "./pluginCards/live/InitiativeBoard.ts";
+import * as Iter8Review from "./iter8/Iter8Review.ts";
 import * as CliSessionHandOff from "./cliSessions/CliSessionHandOff.ts";
 import {
   bufferShellLiveStream,
@@ -254,6 +256,7 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as IssueService from "./issue/IssueService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
+import * as ProjectActionSuggestions from "./projectActions/ProjectActionSuggestions.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
 import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -1489,6 +1492,14 @@ export const layerWsRpc = (
         yield* Effect.serviceOption(PluginCards.PluginCards),
         () => PluginCards.unavailable,
       );
+      const initiativeBoard = Option.getOrElse(
+        yield* Effect.serviceOption(InitiativeBoard.InitiativeBoard),
+        () => InitiativeBoard.unavailable,
+      );
+      const iter8Review = Option.getOrElse(
+        yield* Effect.serviceOption(Iter8Review.Iter8Review),
+        () => Iter8Review.unavailable,
+      );
       const cliSessionHandOff = Option.getOrElse(
         yield* Effect.serviceOption(CliSessionHandOff.CliSessionHandOff),
         () => CliSessionHandOff.unavailable,
@@ -1497,6 +1508,7 @@ export const layerWsRpc = (
       const issues = yield* IssueService.IssueService;
       const issueTrackers = yield* IssueTrackerConnections.IssueTrackerConnections;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
+      const projectActionSuggestions = yield* ProjectActionSuggestions.ProjectActionSuggestions;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
       const deviceHostContext =
@@ -1707,7 +1719,8 @@ export const layerWsRpc = (
             if (importedThread !== null) {
               return yield* new AcpRegistryOperationError({
                 reason: "session_delete_failed",
-                message: "Delete the imported T3 thread before deleting its native ACP session.",
+                message:
+                  "Delete the imported RuCode thread before deleting its native ACP session.",
               });
             }
             yield* manager.deleteSession({
@@ -2365,9 +2378,16 @@ export const layerWsRpc = (
         [WS_METHODS.pluginCardsSubscribeThread]: (input) =>
           pluginCards.subscribeThread(input.threadId),
         [WS_METHODS.pluginCardsSubscribeLive]: (_input) => pluginCards.subscribeLive,
+        [WS_METHODS.pluginCardsSubscribeInitiative]: (input) =>
+          initiativeBoard.subscribe(input.slug),
         [WS_METHODS.pluginCardsAnswerDecision]: (input) => pluginCards.answerDecision(input),
         [WS_METHODS.pluginCardsRunAction]: (input) => pluginCards.runAction(input),
         [WS_METHODS.pluginCardsReadAsset]: (input) => pluginCards.readAsset(input),
+        [WS_METHODS.iter8SubscribeReview]: () => iter8Review.subscribe,
+        [WS_METHODS.iter8CreateNote]: (input) => iter8Review.createNote(input),
+        [WS_METHODS.iter8UpdateNote]: (input) => iter8Review.updateNote(input),
+        [WS_METHODS.iter8DeleteNote]: (input) => iter8Review.deleteNote(input),
+        [WS_METHODS.iter8SendRound]: (input) => iter8Review.sendRound(input),
         [WS_METHODS.cliSessionsTakeOver]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(cliSessionHandOff.takeOver(input)),
@@ -3048,6 +3068,7 @@ export const layerWsRpc = (
                 }),
             ),
           ),
+        [WS_METHODS.projectActionsSuggest]: (input) => projectActionSuggestions.suggest(input),
         [WS_METHODS.projectsMutate]: (mutation) =>
           startup.enqueueCommand(mutateProject(mutation)).pipe(
             Effect.mapError(

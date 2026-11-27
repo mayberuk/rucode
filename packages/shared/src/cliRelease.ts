@@ -3,10 +3,67 @@ import * as Schema from "effect/Schema";
 
 import { compareSemverVersions } from "./semver.ts";
 
-const CLI_RELEASE_REPOSITORY = "pingdotgg/t3code";
+export const CLI_RELEASE_REPOSITORY = "mayberuk/rucode";
+export const RELEASE_SOURCE_GIT_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}.git`;
 export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
+
+export function releaseTag(version: string): string {
+  return `v${version}`;
+}
+
+const DESKTOP_APP_ARTIFACT_PREFIX = "T3-Code";
+export const DESKTOP_APP_ARCHIVE_ARCH = "arm64";
+export const DESKTOP_APP_ARTIFACT_NAME_TEMPLATE = `${DESKTOP_APP_ARTIFACT_PREFIX}-\${version}-\${arch}.\${ext}`;
+export const DEV_DESKTOP_APP_ARTIFACT_NAME_TEMPLATE = `${DESKTOP_APP_ARTIFACT_PREFIX}-Dev-\${version}-\${arch}.\${ext}`;
+
+export function desktopAppArchiveFileName(version: string, arch: string): string {
+  return `${DESKTOP_APP_ARTIFACT_PREFIX}-${version}-${arch}.zip`;
+}
+
+const DEV_BUILD_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-dev\.([0-9a-f]{40})$/u;
+
+export function devBuildVersion(baseVersion: string, commit: string): string {
+  if (!/^[0-9a-f]{40}$/u.test(commit)) {
+    throw new Error("A Dev build requires a 40-character lowercase hexadecimal commit.");
+  }
+  return `${baseVersion}-dev.${commit}`;
+}
+
+export function devBuildCommitOf(version: string): string | undefined {
+  return DEV_BUILD_VERSION.exec(version)?.[1];
+}
+
+export function isDevBuildVersion(version: string): boolean {
+  return devBuildCommitOf(version) !== undefined;
+}
+
+export interface DesktopAppIdentity {
+  readonly appId: string;
+  readonly productName: string | undefined;
+  readonly t3HomeDirName: string;
+}
+
+export const DESKTOP_APP_IDENTITIES: {
+  readonly release: DesktopAppIdentity;
+  readonly dev: DesktopAppIdentity;
+} = {
+  release: {
+    appId: "io.github.mayberuk.rucode",
+    productName: undefined,
+    t3HomeDirName: ".t3",
+  },
+  dev: {
+    appId: "io.github.mayberuk.rucode.dev",
+    productName: "RuCode Dev",
+    t3HomeDirName: ".t3-dev",
+  },
+};
+
+export function desktopAppIdentityOf(version: string): DesktopAppIdentity {
+  return isDevBuildVersion(version) ? DESKTOP_APP_IDENTITIES.dev : DESKTOP_APP_IDENTITIES.release;
+}
 
 // Keep archive keys aligned with the Linux matrix, Windows ARM64 build, and cli_archive rows in release.yml,
 // and with the SSH runner's host check in packages/ssh/src/tunnel.ts.
@@ -42,13 +99,13 @@ export function cliArchiveFileName(version: string, platformKey: CliArchivePlatf
   return `t3-${version}-${platformKey}.${platformKey.startsWith("win32") ? "zip" : "tar.gz"}`;
 }
 
-const CLI_RELEASE_DEFAULT_BASE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases/download`;
+const CLI_RELEASE_DEFAULT_BASE_URL = `${CLI_RELEASES_PAGE_URL}/download`;
 
 export function cliReleaseDownloadBaseUrl(
   version: string,
   baseUrl: string | undefined = CLI_RELEASE_DEFAULT_BASE_URL,
 ): string {
-  return `${(baseUrl?.trim() || CLI_RELEASE_DEFAULT_BASE_URL).replace(/\/+$/, "")}/v${version}`;
+  return `${(baseUrl?.trim() || CLI_RELEASE_DEFAULT_BASE_URL).replace(/\/+$/, "")}/${releaseTag(version)}`;
 }
 
 /** `segments` added to `baseUrl`'s path, keeping its query, such as a signed mirror URL's token. */
@@ -64,7 +121,11 @@ export function cliReleaseAssetUrl(
   fileName: string,
   baseUrl: string | undefined = CLI_RELEASE_DEFAULT_BASE_URL,
 ): string {
-  return releaseAssetUrl(baseUrl?.trim() || CLI_RELEASE_DEFAULT_BASE_URL, `v${version}`, fileName);
+  return releaseAssetUrl(
+    baseUrl?.trim() || CLI_RELEASE_DEFAULT_BASE_URL,
+    releaseTag(version),
+    fileName,
+  );
 }
 
 export function parseChecksums(text: string): ReadonlyMap<string, string> {

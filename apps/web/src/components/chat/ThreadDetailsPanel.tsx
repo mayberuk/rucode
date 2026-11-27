@@ -20,6 +20,7 @@ import ProjectScriptsControl, {
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
 import { memo, useState, type ComponentProps } from "react";
+import type { ProjectActionSuggestionsController } from "../projectActionSuggestions.logic";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
@@ -91,6 +92,7 @@ interface ThreadDetailsPanelProps extends Pick<
     input: NewProjectScriptInput,
   ) => Promise<ProjectScriptActionResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
+  projectActionSuggestions?: ProjectActionSuggestionsController | undefined;
   usage: ThreadDetailsUsageInput;
 }
 
@@ -225,6 +227,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                         onAddScript={props.onAddProjectScript}
                         onUpdateScript={props.onUpdateProjectScript}
                         onDeleteScript={props.onDeleteProjectScript}
+                        suggestions={props.projectActionSuggestions}
                       />
                     ) : null}
                   </div>

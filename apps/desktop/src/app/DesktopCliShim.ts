@@ -19,7 +19,7 @@ const shellWord = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 const cmdText = (value: string) => value.replaceAll("%", "%%");
 const cmdWord = (value: string) => `"${cmdText(value)}"`;
 
-const MOVED = "T3 Code has moved or been removed. Open the app once to update this command.";
+const MOVED = "RuCode has moved or been removed. Open the app once to update this command.";
 
 export type CliShimTarget =
   | { readonly kind: "appimage"; readonly appImage: string; readonly executableName: string }
@@ -123,6 +123,13 @@ export const launcherPath = (environment: DesktopEnvironment.DesktopEnvironment[
     environment.platform === "win32" ? "t3.cmd" : "t3",
   );
 
+export const rucodeLauncherPath = (environment: DesktopEnvironment.DesktopEnvironment["Service"]) =>
+  environment.path.join(
+    environment.baseDir,
+    "bin",
+    environment.platform === "win32" ? "rucode.cmd" : "rucode",
+  );
+
 export const install = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   if (!environment.isPackaged) return Option.none<string>();
@@ -141,29 +148,43 @@ export const install = Effect.gen(function* () {
         }),
         onNone: () => ({ kind: "direct" as const, executable: process.execPath, entry }),
       });
+  // Both names hold the t3 launcher's content, so T3CODE_CLI_PATH stays the `t3` that services run.
   const content = renderCliShim({ target, shimPath, t3Home: environment.baseDir });
 
-  return yield* Effect.gen(function* () {
-    const existing = yield* fs.readFileString(shimPath).pipe(Effect.option);
-    if (Option.isSome(existing) && !existing.value.includes(MARKER)) {
-      yield* logWarning("leaving a t3 launcher the app did not write", { shimPath });
-      return Option.none<string>();
-    }
-    if (Option.getOrUndefined(existing) !== content) {
-      yield* fs.makeDirectory(path.dirname(shimPath), { recursive: true });
-      // Unique per call: backend startup and the first-launch command install can race here.
-      const staging = `${shimPath}.${process.pid}.${yield* Random.nextIntBetween(0, 0xffffff)}.tmp`;
-      yield* fs.writeFileString(staging, content, { mode: 0o755 });
-      yield* fs.rename(staging, shimPath);
-      yield* logInfo("installed t3 launcher", { shimPath });
-    }
-    return Option.some(shimPath);
-  }).pipe(
-    Effect.catchCause((cause) =>
-      logWarning("could not install t3 launcher", { shimPath, cause: Cause.pretty(cause) }).pipe(
-        Effect.as(Option.none<string>()),
+  const write = Effect.fn("DesktopCliShim.write")(
+    function* (name: string, launcher: string) {
+      const existing = yield* fs.readFileString(launcher).pipe(Effect.option);
+      if (Option.isSome(existing) && !existing.value.includes(MARKER)) {
+        yield* logWarning(`leaving a ${name} launcher the app did not write`, {
+          shimPath: launcher,
+        });
+        return Option.none<string>();
+      }
+      if (Option.getOrUndefined(existing) !== content) {
+        yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+        // Unique per call: backend startup and the first-launch command install can race here.
+        const staging = `${launcher}.${process.pid}.${yield* Random.nextIntBetween(0, 0xffffff)}.tmp`;
+        yield* fs.writeFileString(staging, content, { mode: 0o755 });
+        yield* fs.rename(staging, launcher);
+        yield* logInfo(`installed ${name} launcher`, { shimPath: launcher });
+      }
+      return Option.some(launcher);
+    },
+    (effect, name, launcher) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          logWarning(`could not install ${name} launcher`, {
+            shimPath: launcher,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(Option.none<string>())),
+        ),
       ),
-    ),
-    Effect.withSpan("desktop.cliShim.install"),
   );
+
+  return yield* Effect.gen(function* () {
+    const installed = yield* write("t3", shimPath);
+    // A foreign or unwritable `rucode` never affects `t3`, which services and the updater run.
+    if (Option.isSome(installed)) yield* write("rucode", rucodeLauncherPath(environment));
+    return installed;
+  }).pipe(Effect.withSpan("desktop.cliShim.install"));
 });

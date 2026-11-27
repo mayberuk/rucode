@@ -651,8 +651,12 @@ export default function ChatView(props: ChatViewProps) {
   const citeAssistantText = (
     citation: AssistantCitation,
     sourceAnchor: AssistantCitationSourceAnchor,
+    intent: "cite" | "comment",
   ) => {
-    const inserted = composerRef.current?.citeAssistantText(citation, sourceAnchor) ?? false;
+    const inserted =
+      composerRef.current?.citeAssistantText(citation, sourceAnchor, {
+        comment: intent === "comment",
+      }) ?? false;
     if (!inserted) {
       toastManager.add({
         type: "warning",
@@ -1960,6 +1964,7 @@ export default function ChatView(props: ChatViewProps) {
     saveProjectScript: saveProjectScriptStable,
     updateProjectScript: updateProjectScriptStable,
     deleteProjectScript: deleteProjectScriptStable,
+    projectActionSuggestions,
   } = useProjectScriptEditing({
     environmentId,
     project: activeProject,
@@ -2853,7 +2858,7 @@ export default function ChatView(props: ChatViewProps) {
         : serverConfig === null
           ? "Side chats are not ready yet. Try again in a moment."
           : serverConfig.environment.capabilities.sideChats !== true
-            ? "Update this environment's T3 Code server to use side chats."
+            ? "Update this environment's RuCode server to use side chats."
             : sideChatsOffered && !isServerThread
               ? "Side chats start after the first message."
               : sideChat.available &&
@@ -3964,6 +3969,7 @@ export default function ChatView(props: ChatViewProps) {
                   onAddProjectScript={saveProjectScriptStable}
                   onUpdateProjectScript={updateProjectScriptStable}
                   onDeleteProjectScript={deleteProjectScriptStable}
+                  projectActionSuggestions={projectActionSuggestions}
                   usage={{
                     providerInstanceId: activeProviderInstanceId,
                     providers: providerStatuses,

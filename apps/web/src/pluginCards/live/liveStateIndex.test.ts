@@ -1,7 +1,10 @@
 import {
   EnvironmentId,
   ThreadId,
+  type PluginInitiativeBoard,
+  type PluginInitiativeDecision,
   type PluginLiveChild,
+  type PluginLiveDecision,
   type PluginLiveInitiative,
   type PluginLiveState,
 } from "@t3tools/contracts";
@@ -14,7 +17,10 @@ import {
   hasOpenDecision,
   initiativeForThread,
   initiativeMetrics,
+  initiativeNeedsYou,
+  initiativeProgress,
   initiativeSidebarGroups,
+  liveInitiative,
 } from "./liveStateIndex";
 
 const t = (id: string) => ThreadId.make(id);
@@ -74,6 +80,131 @@ function part(id: string, threadIds: string[], wave = 1) {
 
 const spendValue = (usd: number | null, state: PluginLiveInitiative["spend"]["state"]) =>
   initiativeMetrics(initiative({ spend: { usd, state } })).find((m) => m.label === "Spend")!;
+
+it("liveInitiative finds the open initiative with the requested slug", () => {
+  const alpha = initiative();
+  const state = live({ initiatives: [initiative({ slug: "beta" }), alpha] });
+  expect(liveInitiative(state, "alpha")).toBe(alpha);
+});
+
+it.each([
+  ["a closed match", live({ initiatives: [initiative({ closed: true })] }), "alpha"],
+  ["an empty slug", live({ initiatives: [initiative()] }), ""],
+  ["missing live state", null, "alpha"],
+] as const)("liveInitiative returns null for %s", (_name, state, slug) => {
+  expect(liveInitiative(state, slug)).toBeNull();
+});
+
+it.each([
+  [1, 3, ["merged", "gate-pass", "planned"], { merged: 1, settled: 2, total: 3 }],
+  [3, 3, ["mr-open"], { merged: 0, settled: 1, total: 1 }],
+  [3, 3, ["merged", "merged", "gate-pass", "gate-pass"], { merged: 2, settled: 4, total: 4 }],
+  [2, 3, ["planned", "briefed", "specced", "gate-fail"], { merged: 0, settled: 0, total: 4 }],
+  [0, 0, [], { merged: 0, settled: 0, total: 0 }],
+] as const)(
+  "initiative progress for wave %i of %i with statuses %j",
+  (current, total, statuses, parts) => {
+    const result = initiativeProgress(
+      initiative({
+        wave: { current, total, partsSettled: 0, partsTotal: 0 },
+        parts: statuses.map((status, index) => ({ ...part(`part-${index}`, []), status })),
+      }),
+    );
+    expect(result).toStrictEqual({ wave: { current, total }, parts });
+  },
+);
+
+const openDecision: PluginInitiativeDecision = {
+  cardId: "dispatch.decision:alpha",
+  decisionId: "confirm-checkout",
+  kind: "dispatch.decision",
+  question: "Continue checkout?",
+  part: "part-a",
+  options: [{ key: "continue", label: "Continue", recommended: true }],
+  defaultKey: null,
+  applyAfter: null,
+  protection: null,
+  needsPerson: false,
+  raisedAt: at,
+};
+
+function board(needsYou: PluginInitiativeBoard["needsYou"]): PluginInitiativeBoard {
+  return {
+    slug: "alpha",
+    title: null,
+    closed: false,
+    startedAt: null,
+    asOf: at,
+    headline: { kind: "waiting", nextPart: null },
+    parts: { settled: 0, total: 0 },
+    spend: { usd: null, state: "unknown", ceilingUsd: null },
+    currentWave: 0,
+    waves: [],
+    needsYou,
+  };
+}
+
+function liveDecision(overrides: Partial<PluginLiveDecision> = {}): PluginLiveDecision {
+  return {
+    cardId: openDecision.cardId,
+    decisionId: "checkout-confirmation",
+    kind: "dispatch.decision",
+    question: "Continue checkout?",
+    part: "part-a",
+    needsPerson: false,
+    raisedAt: at,
+    applyAfter: null,
+    dir: "/acme/app",
+    initiative: "alpha",
+    threadId: t("checkout-chat"),
+    ...overrides,
+  };
+}
+
+it("joins board decisions by card ID in board order, even when live decisions arrive in a different order", () => {
+  const second = { ...openDecision, cardId: "dispatch.decision:beta" };
+  const state = live({
+    decisions: [
+      liveDecision({ cardId: second.cardId, threadId: t("review-chat") }),
+      liveDecision(),
+    ],
+  });
+  expect(initiativeNeedsYou(board([openDecision, second]), state)).toStrictEqual([
+    { ...openDecision, threadId: "checkout-chat", answerableInPlace: true },
+    { ...second, threadId: "review-chat", answerableInPlace: true },
+  ]);
+});
+
+it.each(["outward", "always-ask"] as const)(
+  "keeps the chat for a decision protected by %s",
+  (protection) => {
+    const decision = { ...openDecision, protection };
+    expect(
+      initiativeNeedsYou(board([decision]), live({ decisions: [liveDecision()] })),
+    ).toStrictEqual([{ ...decision, threadId: "checkout-chat", answerableInPlace: false }]);
+  },
+);
+
+it.each([
+  ["a matched card with no chat", live({ decisions: [liveDecision({ threadId: null })] })],
+  [
+    "an unrelated live card",
+    live({
+      decisions: [
+        liveDecision({ cardId: "dispatch.decision:beta", decisionId: openDecision.decisionId }),
+      ],
+    }),
+  ],
+  ["missing live state", null],
+] as const)("leaves the decision unanswered in place with %s", (_name, state) => {
+  expect(initiativeNeedsYou(board([openDecision]), state)).toStrictEqual([
+    { ...openDecision, threadId: null, answerableInPlace: false },
+  ]);
+});
+
+it("returns an empty needs-you list when the board has no open decisions", () => {
+  expect(initiativeNeedsYou(board([]), live({ decisions: [liveDecision()] }))).toStrictEqual([]);
+});
 
 it("hasOpenDecision is true only for a thread listed as waiting", () => {
   const state = live({ waitingThreadIds: [t("a")] });
@@ -203,6 +334,8 @@ it("sidebar groups use the title, else the slug, as the label and sort by it", (
 it.each([
   [{ current: 2, total: 3, partsSettled: 3, partsTotal: 5 }, "Wave 2 of 3 · 3 of 5 parts settled"],
   [{ current: 1, total: 1, partsSettled: 0, partsTotal: 0 }, "Wave 1 of 1"],
+  [{ current: 0, total: 0, partsSettled: 0, partsTotal: 0 }, ""],
+  [{ current: 0, total: 0, partsSettled: 1, partsTotal: 2 }, "1 of 2 parts settled"],
 ])("sidebar group end label for %j", (wave, expected) => {
   const state = live({ initiatives: [initiative({ wave, orchestratorThreadId: t("x") })] });
   expect(initiativeSidebarGroups([{ environmentId: envA, state }])[0]?.endLabel).toBe(expected);
@@ -230,6 +363,16 @@ it("metrics for zero parts have no bars and the stated wording", () => {
     { label: "Running", value: "0", fill: null, tone: null },
     { label: "Decisions", value: "None", fill: null, tone: null },
     { label: "Spend", value: "Unknown", fill: null, tone: null },
+  ]);
+});
+
+it("metrics omit the wave row for an initiative with no waves", () => {
+  const unsplit = initiative({ wave: { current: 0, total: 0, partsSettled: 0, partsTotal: 0 } });
+  expect(initiativeMetrics(unsplit).map((metric) => metric.label)).toStrictEqual([
+    "Runs settled",
+    "Running",
+    "Decisions",
+    "Spend",
   ]);
 });
 

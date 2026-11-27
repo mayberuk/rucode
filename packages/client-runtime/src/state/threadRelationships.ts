@@ -7,7 +7,24 @@ import * as DateTime from "effect/DateTime";
 
 import type { ThreadStructure } from "./models.ts";
 
-export type ThreadRelationshipKind = "parent" | "fork" | "subagent" | "transfer";
+export type ThreadRelationshipKind = "parent" | "fork" | "subagent" | "spawned" | "transfer";
+
+/** A session another session started on its own, rather than a fork, subagent or side chat. */
+export function isSpawnedChildLineage(lineage: OrchestrationV2ThreadShell["lineage"]): boolean {
+  return (
+    lineage.parentThreadId !== null &&
+    lineage.relationshipToParent === null &&
+    lineage.sideChat !== true
+  );
+}
+
+function lineageEdgeKind(
+  thread: Pick<OrchestrationV2ThreadShell, "lineage" | "forkedFrom">,
+): ThreadRelationshipKind {
+  if (thread.lineage.relationshipToParent === "subagent") return "subagent";
+  if (thread.forkedFrom?.type !== "run" && isSpawnedChildLineage(thread.lineage)) return "spawned";
+  return "fork";
+}
 
 export interface ThreadRelationshipNode {
   readonly threadId: ThreadId;
@@ -95,7 +112,7 @@ export function deriveThreadRelationshipGraph(input: {
     addEdge({
       sourceThreadId: parentThreadId,
       targetThreadId: thread.id,
-      kind: thread.lineage.relationshipToParent === "subagent" ? "subagent" : "fork",
+      kind: lineageEdgeKind(thread),
       status: thread.activityRunStatus ?? thread.status,
     });
   }

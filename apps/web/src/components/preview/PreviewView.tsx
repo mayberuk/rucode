@@ -65,6 +65,7 @@ import { effectiveShortcutsForCommand, shortcutLabelForCommand } from "~/keybind
 import { randomUUID } from "~/lib/utils";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { PreviewAnnotationSpeech } from "./PreviewAnnotationSpeech";
+import { Iter8ReviewFrame } from "~/iter8/Iter8ReviewFrame";
 import { previewBridge } from "./previewBridge";
 import { subscribePreviewAction } from "./previewActionBus";
 import { closePreviewSession } from "./closePreviewSession";
@@ -970,6 +971,8 @@ export function PreviewView({
     };
   }, [visible]);
 
+  const iter8Bridge = previewBridge && tabId && !isServerTab ? previewBridge : null;
+
   return (
     <div
       className="flex min-h-0 flex-1 flex-col bg-background"
@@ -1055,126 +1058,152 @@ export function PreviewView({
         }
       />
 
-      <div ref={serverBodyRef} className="relative min-h-0 flex-1 overflow-hidden">
-        {runtimeTabId && snapshot && isServerTab ? (
-          <>
-            {viewport._tag !== "fill" && !showEmptyState && !isUnreachable ? (
-              <div className="absolute inset-x-0 top-0 z-10">
-                <BrowserDeviceToolbar
-                  setting={viewport}
-                  width={serverToolbarWidth}
-                  aspectRatio={serverAspectRatioLocked ? viewport.width / viewport.height : null}
-                  onAspectRatioChange={(ratio) => setServerAspectRatioLocked(ratio !== null)}
-                  onChange={(setting) =>
-                    commitBrowserViewportChange(
-                      { threadRef, tabId: snapshot.tabId, runtimeTabId },
-                      setting,
-                    )
+      <Iter8ReviewFrame
+        environmentId={threadRef.environmentId}
+        url={url}
+        pickNote={
+          iter8Bridge && runtimeTabId
+            ? () => {
+                focusPreviewWebview(runtimeTabId);
+                return iter8Bridge.pickElement(runtimeTabId, undefined, { mode: "iter8" });
+              }
+            : null
+        }
+        cancelPickNote={
+          iter8Bridge && runtimeTabId
+            ? () => void iter8Bridge.cancelPickElement(runtimeTabId).catch(() => undefined)
+            : null
+        }
+        setPins={
+          iter8Bridge && runtimeTabId
+            ? (pins) => void iter8Bridge.setReviewPins(runtimeTabId, pins).catch(() => undefined)
+            : null
+        }
+        pinsTargetId={runtimeTabId}
+        navigate={(next) => void handleSubmitUrl(next)}
+        openExternally={handleOpenInBrowser}
+      >
+        <div ref={serverBodyRef} className="relative min-h-0 flex-1 overflow-hidden">
+          {runtimeTabId && snapshot && isServerTab ? (
+            <>
+              {viewport._tag !== "fill" && !showEmptyState && !isUnreachable ? (
+                <div className="absolute inset-x-0 top-0 z-10">
+                  <BrowserDeviceToolbar
+                    setting={viewport}
+                    width={serverToolbarWidth}
+                    aspectRatio={serverAspectRatioLocked ? viewport.width / viewport.height : null}
+                    onAspectRatioChange={(ratio) => setServerAspectRatioLocked(ratio !== null)}
+                    onChange={(setting) =>
+                      commitBrowserViewportChange(
+                        { threadRef, tabId: snapshot.tabId, runtimeTabId },
+                        setting,
+                      )
+                    }
+                  />
+                </div>
+              ) : null}
+              <div
+                ref={serverSurfaceBoxRef}
+                className={cn(
+                  "absolute inset-x-0 bottom-0",
+                  (showEmptyState || isUnreachable) && "invisible",
+                )}
+                style={{ top: viewport._tag !== "fill" ? BROWSER_DEVICE_TOOLBAR_HEIGHT : 0 }}
+              >
+                <ServerBrowserSurface
+                  key={runtimeTabId}
+                  ref={serverSurfaceRef}
+                  environmentId={threadRef.environmentId}
+                  threadId={threadRef.threadId}
+                  tabId={snapshot.tabId}
+                  pdfUrl={
+                    navStatus._tag === "Success"
+                      ? previewPdfAssetUrl(url, environmentHttpBaseUrl)
+                      : null
                   }
+                  visible={visible}
+                  onFirstFrame={() => setServerFrameTabId(runtimeTabId)}
+                  onControl={(control) =>
+                    setServerControlledTabId(control?.controller === "you" ? runtimeTabId : null)
+                  }
+                  onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "panel")}
+                  // Stays connected under the empty state so a URL picked there reaches the page.
+                  className="absolute inset-0 h-full w-full"
                 />
               </div>
-            ) : null}
-            <div
-              ref={serverSurfaceBoxRef}
-              className={cn(
-                "absolute inset-x-0 bottom-0",
-                (showEmptyState || isUnreachable) && "invisible",
-              )}
-              style={{ top: viewport._tag !== "fill" ? BROWSER_DEVICE_TOOLBAR_HEIGHT : 0 }}
-            >
-              <ServerBrowserSurface
+            </>
+          ) : runtimeTabId && snapshot && !showEmptyState ? (
+            previewBridge ? (
+              <BrowserSurfaceSlot
                 key={runtimeTabId}
-                ref={serverSurfaceRef}
-                environmentId={threadRef.environmentId}
-                threadId={threadRef.threadId}
-                tabId={snapshot.tabId}
-                pdfUrl={
-                  navStatus._tag === "Success"
-                    ? previewPdfAssetUrl(url, environmentHttpBaseUrl)
-                    : null
-                }
-                visible={visible}
-                onFirstFrame={() => setServerFrameTabId(runtimeTabId)}
-                onControl={(control) =>
-                  setServerControlledTabId(control?.controller === "you" ? runtimeTabId : null)
-                }
-                onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "panel")}
-                // Stays connected under the empty state so a URL picked there reaches the page.
+                tabId={runtimeTabId}
+                visible={visible && !isUnreachable}
                 className="absolute inset-0 h-full w-full"
               />
-            </div>
-          </>
-        ) : runtimeTabId && snapshot && !showEmptyState ? (
-          previewBridge ? (
-            <BrowserSurfaceSlot
-              key={runtimeTabId}
-              tabId={runtimeTabId}
-              visible={visible && !isUnreachable}
-              className="absolute inset-0 h-full w-full"
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center p-8 text-center">
-              <p className="max-w-sm text-sm text-muted-foreground">
-                This tab is open in the T3 Code desktop app.
-              </p>
-            </div>
-          )
-        ) : null}
-        {showEmptyState ? (
-          <PreviewEmptyState
-            threadRef={threadRef}
-            environmentId={threadRef.environmentId}
-            configuredUrls={configuredUrls}
-            recentEntries={recentHistoryEntries}
-            onRemoveRecent={(url) => removeUrlForThread(threadRef, url)}
-            onOpenUrl={(next) => void handleOpenServerUrl(next)}
-          />
-        ) : null}
-        {snapshot && desktopOverlay ? (
-          <ZoomIndicator zoomFactor={desktopOverlay.zoomFactor} />
-        ) : null}
-        {runtimeTabId &&
-        desktopOverlay &&
-        !showEmptyState &&
-        !isUnreachable &&
-        !activeRecordingTabIds.has(runtimeTabId) ? (
-          <AgentBrowserCursor
-            tabId={runtimeTabId}
-            zoomFactor={layoutZoomFactor}
-            controller={controller}
-          />
-        ) : null}
-        {find && canFindInPage && find.tabId === runtimeTabId ? (
-          <PreviewFindBar
-            key={find.tabId}
-            tabId={find.tabId}
-            focusRequestId={find.requestId}
-            onClose={closeFind}
-          />
-        ) : null}
-        {navStatus._tag === "LoadFailed" && navStatus.download ? (
-          <div className="absolute inset-0 z-10 bg-background">
-            <ServerTabFileNotShown
+            ) : (
+              <div className="flex h-full items-center justify-center p-8 text-center">
+                <p className="max-w-sm text-sm text-muted-foreground">
+                  This tab is open in the RuCode desktop app.
+                </p>
+              </div>
+            )
+          ) : null}
+          {showEmptyState ? (
+            <PreviewEmptyState
               threadRef={threadRef}
-              tabId={snapshot?.tabId ?? ""}
-              url={navStatus.url}
-              download={navStatus.download}
+              environmentId={threadRef.environmentId}
+              configuredUrls={configuredUrls}
+              recentEntries={recentHistoryEntries}
+              onRemoveRecent={(url) => removeUrlForThread(threadRef, url)}
+              onOpenUrl={(next) => void handleOpenServerUrl(next)}
             />
-          </div>
-        ) : navStatus._tag === "LoadFailed" ? (
-          <div className="absolute inset-0 z-10 bg-background">
-            <PreviewUnreachable
-              url={navStatus.url}
-              code={navStatus.code}
-              description={navStatus.description}
-              onReload={handleRefresh}
-              {...(moveTarget === "server"
-                ? { move: { label: moveLabel, onMove: () => void handleMoveTab() } }
-                : {})}
+          ) : null}
+          {snapshot && desktopOverlay ? (
+            <ZoomIndicator zoomFactor={desktopOverlay.zoomFactor} />
+          ) : null}
+          {runtimeTabId &&
+          desktopOverlay &&
+          !showEmptyState &&
+          !isUnreachable &&
+          !activeRecordingTabIds.has(runtimeTabId) ? (
+            <AgentBrowserCursor
+              tabId={runtimeTabId}
+              zoomFactor={layoutZoomFactor}
+              controller={controller}
             />
-          </div>
-        ) : null}
-      </div>
+          ) : null}
+          {find && canFindInPage && find.tabId === runtimeTabId ? (
+            <PreviewFindBar
+              key={find.tabId}
+              tabId={find.tabId}
+              focusRequestId={find.requestId}
+              onClose={closeFind}
+            />
+          ) : null}
+          {navStatus._tag === "LoadFailed" && navStatus.download ? (
+            <div className="absolute inset-0 z-10 bg-background">
+              <ServerTabFileNotShown
+                threadRef={threadRef}
+                tabId={snapshot?.tabId ?? ""}
+                url={navStatus.url}
+                download={navStatus.download}
+              />
+            </div>
+          ) : navStatus._tag === "LoadFailed" ? (
+            <div className="absolute inset-0 z-10 bg-background">
+              <PreviewUnreachable
+                url={navStatus.url}
+                code={navStatus.code}
+                description={navStatus.description}
+                onReload={handleRefresh}
+                {...(moveTarget === "server"
+                  ? { move: { label: moveLabel, onMove: () => void handleMoveTab() } }
+                  : {})}
+              />
+            </div>
+          ) : null}
+        </div>
+      </Iter8ReviewFrame>
     </div>
   );
 }

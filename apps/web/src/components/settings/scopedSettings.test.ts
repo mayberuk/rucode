@@ -283,7 +283,7 @@ describe("scoped settings writes", () => {
     const unsupported = [
       {
         label: server.label,
-        message: "This environment does not support this setting. Update T3 Code on it.",
+        message: "This environment does not support this setting. Update RuCode on it.",
       },
     ];
 
@@ -759,6 +759,36 @@ describe("scoped settings mixed values", () => {
     writes = [{ save, environmentId: waiting.environmentId, patch }];
     settle(waiting.environmentId);
     expect(writes).toEqual([]);
+  });
+});
+
+describe("queued saves to one environment", () => {
+  it("shows the newest save once a later ack matches the stored copy, however late the earlier ack was", () => {
+    const stored = environment("Laptop", { settings: { suggestProjectActions: true } });
+    const settings = stored.serverConfig!.settings;
+    const off = { suggestProjectActions: false };
+    const on = { suggestProjectActions: true };
+    const first = {};
+    const second = {};
+    let writes: readonly PendingScopedWrite[] = [
+      { save: first, environmentId: stored.environmentId, patch: off },
+      { save: second, environmentId: stored.environmentId, patch: on },
+    ];
+    const settle = (save: object, result: ServerSettings) => {
+      writes = settlePendingScopedWrites(
+        writes,
+        { save, environmentId: stored.environmentId },
+        () => settings,
+        result,
+      );
+    };
+    const shown = () =>
+      applyPendingScopedWrites([stored], writes)[0]!.serverConfig!.settings.suggestProjectActions;
+
+    settle(first, applyServerSettingsPatch(settings, off));
+    expect(shown()).toBe(true);
+    settle(second, { ...settings });
+    expect(shown()).toBe(true);
   });
 });
 

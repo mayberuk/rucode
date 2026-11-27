@@ -3,7 +3,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 /**
- * What a null `claudeTerminalSessions` means here. A T3 home inside a linked git worktree is a
+ * What a null `claudeTerminalSessions` means here. A RuCode home inside a linked git worktree is a
  * dev server, which defaults off so it does not adopt the developer's own sessions.
  */
 export const claudeTerminalSessionsDefault = Effect.fn("CliSessions.terminalSessionsDefault")(

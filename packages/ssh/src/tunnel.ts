@@ -7,7 +7,11 @@ import type {
   DesktopSshEnvironmentTarget,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
-import { cliReleaseDownloadBaseUrl } from "@t3tools/shared/cliRelease";
+import {
+  RELEASE_SOURCE_GIT_URL,
+  cliReleaseDownloadBaseUrl,
+  devBuildCommitOf,
+} from "@t3tools/shared/cliRelease";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as NetService from "@t3tools/shared/Net";
 import { extractJsonObject, fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -104,6 +108,9 @@ const REMOTE_LAUNCH_TIMEOUT_MS =
   REMOTE_UPDATE_WAIT_MS +
   REMOTE_OWNER_WAIT_MS +
   REMOTE_LAUNCH_BASE_TIMEOUT_MS;
+// A cold Dev build launch fetches and installs, or waits on the build lock, as long as an
+// archive install may, then launches the checkout the way a node-script runner does.
+const REMOTE_SOURCE_LAUNCH_TIMEOUT_MS = REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS + REMOTE_LAUNCH_TIMEOUT_MS;
 
 export interface RemoteT3RunnerOptions {
   readonly nodeScriptPath?: string | null;
@@ -148,16 +155,16 @@ type SshEnvironmentEffectError =
   | SshPasswordPromptError
   | NetService.NetError;
 
-function isNodeScriptRunner(runner: RemoteT3RunnerOptions | undefined): boolean {
-  return Boolean(runner?.nodeScriptPath?.trim());
-}
-
 function sshRunnerLogFields(runner: RemoteT3RunnerOptions | undefined) {
   if (runner?.nodeScriptPath?.trim()) {
     return { runner: "node-script", nodeScriptPath: runner.nodeScriptPath.trim() };
   }
   if (runner?.archiveVersion?.trim()) {
-    return { runner: "archive", archiveVersion: runner.archiveVersion.trim() };
+    const archiveVersion = runner.archiveVersion.trim();
+    const commit = devBuildCommitOf(archiveVersion);
+    return commit === undefined
+      ? { runner: "archive", archiveVersion }
+      : { runner: "source", archiveVersion, commit };
   }
   return { runner: "archive" };
 }
@@ -229,12 +236,16 @@ const decodeRemoteLaunchOutput = (stdout: string) =>
 const decodeRemotePairingOutput = (stdout: string) =>
   decodeRemoteJsonOutput(stdout, decodeRemotePairingResult);
 
-const remoteNodeEngineCheckMain = function remoteNodeEngineCheckMain() {
+// The checker arrives as an argument because a bundler or test transform may rename the
+// module binding this file imports it under, and the serialized script cannot follow.
+const remoteNodeEngineCheckMain = function remoteNodeEngineCheckMain(
+  satisfies: typeof satisfiesSemverRange,
+) {
   const range = process.argv[2] || "";
   const rawVersion =
     process.versions && process.versions.node ? process.versions.node : process.version;
 
-  if (!satisfiesSemverRange(rawVersion, range)) {
+  if (!satisfies(rawVersion, range)) {
     process.stderr.write(
       "Remote node " + rawVersion + " does not satisfy required range " + range + ".\n",
     );
@@ -243,8 +254,7 @@ const remoteNodeEngineCheckMain = function remoteNodeEngineCheckMain() {
 };
 
 function buildRemoteNodeEngineCheckScript(): string {
-  return `${satisfiesSemverRange.toString()}
-(${remoteNodeEngineCheckMain.toString()})();`;
+  return `(${remoteNodeEngineCheckMain.toString()})(${satisfiesSemverRange.toString()});`;
 }
 
 function normalizeSshErrorMessage(stderr: string, fallbackMessage: string): string {
@@ -376,14 +386,47 @@ const REMOTE_NODE_ENV_SCRIPT = `prepend_path_if_dir() {
   fi
 }
 
+T3_NODE_ENGINE_RANGE=@@T3_NODE_ENGINE_RANGE@@
 remote_node_satisfies_engine() {
-  T3_NODE_ENGINE_RANGE=@@T3_NODE_ENGINE_RANGE@@
   if [ -z "$T3_NODE_ENGINE_RANGE" ]; then
     return 0
   fi
-  node - "$T3_NODE_ENGINE_RANGE" <<'NODE'
+  "\${1:-node}" - "$T3_NODE_ENGINE_RANGE" <<'NODE'
 @@T3_NODE_ENGINE_CHECK_SCRIPT@@
 NODE
+}
+
+select_mise_node_version() {
+  T3_MISE_NODE_UNMATCHED=""
+  T3_MISE_NODE_NOTE=""
+  T3_MISE_BIN="$HOME/.local/bin/mise"
+  if [ ! -x "$T3_MISE_BIN" ]; then
+    T3_MISE_BIN="$(command -v mise || true)"
+  fi
+  [ -n "$T3_MISE_BIN" ] || return 0
+  T3_MISE_LISTING="$("$T3_MISE_BIN" ls --installed --no-header node 2>&1 || true)"
+  T3_MISE_NODE_CANDIDATES="$(printf '%s\\n' "$T3_MISE_LISTING" | sed -n 's/^node[[:space:]][[:space:]]*\\([^[:space:]][^[:space:]]*\\).*/\\1/p')"
+  T3_MISE_NODE_PICK=""
+  T3_MISE_NODE_PICK_DIR=""
+  for T3_MISE_NODE_CANDIDATE in $T3_MISE_NODE_CANDIDATES; do
+    T3_MISE_NODE_DIR="$("$T3_MISE_BIN" where "node@$T3_MISE_NODE_CANDIDATE" 2>/dev/null || true)"
+    if [ -n "$T3_MISE_NODE_DIR" ] && [ -x "$T3_MISE_NODE_DIR/bin/node" ] && remote_node_satisfies_engine "$T3_MISE_NODE_DIR/bin/node" >/dev/null 2>&1; then
+      T3_MISE_NODE_PICK="$T3_MISE_NODE_CANDIDATE"
+      T3_MISE_NODE_PICK_DIR="$T3_MISE_NODE_DIR"
+    fi
+  done
+  if [ -n "$T3_MISE_NODE_PICK" ]; then
+    MISE_NODE_VERSION="$T3_MISE_NODE_PICK"
+    export MISE_NODE_VERSION
+    PATH="$T3_MISE_NODE_PICK_DIR/bin:$PATH"
+    export PATH
+  else
+    unset MISE_NODE_VERSION
+    T3_MISE_NODE_UNMATCHED=1
+    if [ -z "$T3_MISE_NODE_CANDIDATES" ]; then
+      T3_MISE_NODE_NOTE="$(printf '%s\\n' "$T3_MISE_LISTING" | sed -n '1p')"
+    fi
+  fi
 }
 
 ensure_remote_node_path() {
@@ -457,17 +500,124 @@ ensure_remote_node_path() {
     done
   fi
 
+  # nvm.sh moves its default Node ahead of the mise shims, and that default may be too old.
+  if ! { command -v node >/dev/null 2>&1 && remote_node_satisfies_engine >/dev/null 2>&1; }; then
+    for T3_MISE_SHIMS in "$HOME/.mise/shims" "$HOME/.local/share/mise/shims"; do
+      if [ -x "$T3_MISE_SHIMS/node" ]; then
+        PATH="$T3_MISE_SHIMS:$PATH"
+      fi
+    done
+    export PATH
+    select_mise_node_version
+  fi
+
   command -v node >/dev/null 2>&1 && remote_node_satisfies_engine
 }
 `;
 
+const REMOTE_INSTALL_LOCK_SCRIPT = `# uutils mkdir can report success on EEXIST, so use shell noclobber.
+# An empty lock gets a short grace period for its owner to publish a PID.
+t3_take_install_lock() {
+  T3_LOCK="$1"
+  T3_LOCK_WAITED=0
+  T3_LOCK_UNOWNED=0
+  while ! (set -C; printf '%s\\n' "$$" > "$T3_LOCK") 2>/dev/null; do
+    T3_LOCK_OWNER="$(cat "$T3_LOCK" 2>/dev/null || true)"
+    if [ -n "$T3_LOCK_OWNER" ]; then
+      T3_LOCK_UNOWNED=0
+      if ! kill -0 "$T3_LOCK_OWNER" 2>/dev/null; then
+        rm -rf "$T3_LOCK"
+        continue
+      fi
+    else
+      T3_LOCK_UNOWNED=$((T3_LOCK_UNOWNED + 1))
+      if [ "$T3_LOCK_UNOWNED" -ge 5 ]; then
+        rm -rf "$T3_LOCK"
+        continue
+      fi
+    fi
+    if [ "$T3_LOCK_WAITED" -ge @@T3_ARCHIVE_LOCK_WAIT_SECONDS@@ ]; then
+      printf 'Another %s has held %s for too long.\\n' "$2" "$T3_LOCK" >&2
+      exit 1
+    fi
+    sleep 1
+    T3_LOCK_WAITED=$((T3_LOCK_WAITED + 1))
+  done
+  trap 'rm -rf "$T3_LOCK"' EXIT
+}`;
+
+// The self-contained archive is not built here: it needs Rust and patchelf on the remote.
+// pnpm runs through npx because Node 26 ships no corepack.
+const REMOTE_SOURCE_BUILD_SCRIPT = `T3_SOURCE_COMMIT=@@T3_SOURCE_COMMIT@@
+T3_SOURCE_GIT_URL=@@T3_SOURCE_GIT_URL@@
+T3_SOURCE_ROOT="$HOME/.t3/runtime/source"
+T3_SOURCE_DIR="$T3_SOURCE_ROOT/$T3_SOURCE_COMMIT"
+t3_source_ready() {
+  [ "$(cat "$T3_SOURCE_DIR/.build-complete" 2>/dev/null)" = "$T3_SOURCE_COMMIT" ]
+}
+t3_source_require_node() {
+  T3_NODE_ENGINE_RANGE="$(sed -n '/"engines"/,/}/s/^[[:space:]]*"node":[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$1/package.json" | head -n 1)"
+  if ! ensure_remote_node_path; then
+    printf 'Running commit %s on this host needs git and Node %s. Install them, or configure a Node version manager for non-interactive shells.\\n' "$T3_SOURCE_COMMIT" "$T3_NODE_ENGINE_RANGE" >&2
+    if [ -n "\${T3_MISE_NODE_UNMATCHED:-}" ]; then
+      printf 'mise has no installed Node matching %s.\\n' "$T3_NODE_ENGINE_RANGE" >&2
+      if [ -n "\${T3_MISE_NODE_NOTE:-}" ]; then
+        printf 'mise reported: %s\\n' "$T3_MISE_NODE_NOTE" >&2
+      fi
+    fi
+    exit 1
+  fi
+}
+if ! t3_source_ready; then
+  mkdir -p "$T3_SOURCE_ROOT"
+  t3_take_install_lock "$T3_SOURCE_ROOT/.$T3_SOURCE_COMMIT.build.lock" "build of commit $T3_SOURCE_COMMIT"
+fi
+if ! t3_source_ready; then
+  if ! command -v git >/dev/null 2>&1; then
+    printf 'Building commit %s on this host needs git and Node. Install git and try again.\\n' "$T3_SOURCE_COMMIT" >&2
+    exit 1
+  fi
+  T3_SOURCE_STAGING="$(mktemp -d "$T3_SOURCE_ROOT/.staging-XXXXXX")"
+  trap 'rm -rf "$T3_SOURCE_STAGING" "$T3_LOCK"' EXIT
+  (cd "$T3_SOURCE_STAGING" && git init -q) >&2
+  # GitHub serves a fetch by object name only for a full SHA of a pushed commit.
+  if ! (cd "$T3_SOURCE_STAGING" && GIT_TERMINAL_PROMPT=0 git fetch --depth 1 "$T3_SOURCE_GIT_URL" "$T3_SOURCE_COMMIT") >&2; then
+    printf 'Could not fetch commit %s from %s. It must be pushed there before this Dev build can run on a remote host.\\n' "$T3_SOURCE_COMMIT" "$T3_SOURCE_GIT_URL" >&2
+    exit 1
+  fi
+  (cd "$T3_SOURCE_STAGING" && git checkout -q FETCH_HEAD) >&2
+  t3_source_require_node "$T3_SOURCE_STAGING"
+  T3_PACKAGE_MANAGER="$(sed -n 's/^[[:space:]]*"packageManager":[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$T3_SOURCE_STAGING/package.json" | head -n 1)"
+  if [ -z "$T3_PACKAGE_MANAGER" ]; then
+    printf 'Commit %s names no packageManager in its package.json.\\n' "$T3_SOURCE_COMMIT" >&2
+    exit 1
+  fi
+  if ! (cd "$T3_SOURCE_STAGING" && npx --yes "$T3_PACKAGE_MANAGER" install --frozen-lockfile --filter 't3...') >"$T3_SOURCE_STAGING/.install.log" 2>&1; then
+    printf 'Installing the dependencies of commit %s failed:\\n' "$T3_SOURCE_COMMIT" >&2
+    tail -n 40 "$T3_SOURCE_STAGING/.install.log" >&2 || true
+    exit 1
+  fi
+  printf '%s\\n' "$T3_SOURCE_COMMIT" > "$T3_SOURCE_STAGING/.build-complete"
+  rm -rf "$T3_SOURCE_DIR"
+  mv "$T3_SOURCE_STAGING" "$T3_SOURCE_DIR"
+fi
+if [ -n "\${T3_LOCK:-}" ]; then
+  rm -rf "$T3_LOCK"
+  trap - EXIT
+  unset T3_LOCK
+fi
+t3_source_require_node "$T3_SOURCE_DIR"
+T3_NODE_SCRIPT_PATH="$T3_SOURCE_DIR/apps/server/src/bin.ts"`;
+
 const REMOTE_RUNNER_SCRIPT = `#!/bin/sh
 set -eu
 @@T3_NODE_ENV_SCRIPT@@
+@@T3_INSTALL_LOCK_SCRIPT@@
 T3_NODE_SCRIPT_PATH=@@T3_NODE_SCRIPT_PATH@@
+@@T3_SOURCE_BUILD_SCRIPT@@
 if [ -n "$T3_NODE_SCRIPT_PATH" ]; then
-  # Dev mode: a source checkout on the remote. This is the only path that
-  # needs Node, so Node discovery runs here and nowhere else.
+  # A source checkout on the remote. Archive runners need no Node, so only
+  # source runners discover it.
   ensure_remote_node_path || true
   if ! command -v node >/dev/null 2>&1; then
     printf 'Remote host is missing node on PATH. Install Node or configure a supported version manager for non-interactive shells.\\n' >&2
@@ -489,34 +639,7 @@ t3_runtime_ready() {
 }
 if ! t3_runtime_ready; then
   mkdir -p "$HOME/.t3/runtime/versions"
-  T3_LOCK="$HOME/.t3/runtime/versions/.$T3_ARCHIVE_VERSION.install.lock"
-  # uutils mkdir can report success on EEXIST, so use shell noclobber.
-  # An empty lock gets a short grace period for its owner to publish a PID.
-  T3_LOCK_WAITED=0
-  T3_LOCK_UNOWNED=0
-  while ! (set -C; printf '%s\\n' "$$" > "$T3_LOCK") 2>/dev/null; do
-    T3_LOCK_OWNER="$(cat "$T3_LOCK" 2>/dev/null || true)"
-    if [ -n "$T3_LOCK_OWNER" ]; then
-      T3_LOCK_UNOWNED=0
-      if ! kill -0 "$T3_LOCK_OWNER" 2>/dev/null; then
-        rm -rf "$T3_LOCK"
-        continue
-      fi
-    else
-      T3_LOCK_UNOWNED=$((T3_LOCK_UNOWNED + 1))
-      if [ "$T3_LOCK_UNOWNED" -ge 5 ]; then
-        rm -rf "$T3_LOCK"
-        continue
-      fi
-    fi
-    if [ "$T3_LOCK_WAITED" -ge @@T3_ARCHIVE_LOCK_WAIT_SECONDS@@ ]; then
-      printf 'Another t3 %s installation has held %s for too long.\\n' "$T3_ARCHIVE_VERSION" "$T3_LOCK" >&2
-      exit 1
-    fi
-    sleep 1
-    T3_LOCK_WAITED=$((T3_LOCK_WAITED + 1))
-  done
-  trap 'rm -rf "$T3_LOCK"' EXIT
+  t3_take_install_lock "$HOME/.t3/runtime/versions/.$T3_ARCHIVE_VERSION.install.lock" "t3 $T3_ARCHIVE_VERSION installation"
 fi
 if ! t3_runtime_ready; then
   # Keep aligned with CLI_ARCHIVE_PLATFORM_KEYS in packages/shared/src/cliRelease.ts.
@@ -589,6 +712,7 @@ const REMOTE_MANAGED_SERVER_RUNNING_SCRIPT = `managed_server_running() {
 
 const REMOTE_LAUNCH_SCRIPT = `set -eu
 @@T3_NODE_ENV_SCRIPT@@
+@@T3_SOURCE_BUILD_SCRIPT@@
 STATE_KEY="$1"
 LAUNCHER_ID="\${2:-}"
 STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"
@@ -664,9 +788,9 @@ while ! (set -C; printf '%s\\n' "$$" >"$LAUNCH_LOCK") 2>/dev/null; do
   fi
   if [ "$LAUNCH_LOCK_WAITED" -ge @@T3_LAUNCH_LOCK_WAIT_SECONDS@@ ]; then
     if [ -e "$LAUNCH_BREAK_LOCK" ]; then
-      printf 'A T3 server launch stopped while recovering %s. If no launch is running, delete %s.\\n' "$LAUNCH_LOCK" "$LAUNCH_BREAK_LOCK" >&2
+      printf 'A RuCode server launch stopped while recovering %s. If no launch is running, delete %s.\\n' "$LAUNCH_LOCK" "$LAUNCH_BREAK_LOCK" >&2
     else
-      printf 'Another T3 server launch has held %s for too long.\\n' "$LAUNCH_LOCK" >&2
+      printf 'Another RuCode server launch has held %s for too long.\\n' "$LAUNCH_LOCK" >&2
     fi
     exit 1
   fi
@@ -891,7 +1015,7 @@ elif [ -n "$REMOTE_PORT" ] && managed_server_running "$REMOTE_PID"; then
     REMOTE_PORT=""
     REMOTE_MANAGED=""
   elif ! wait_ready "@@T3_READY_TIMEOUT_MS@@"; then
-    printf 'Remote T3 server is still running but did not become ready. Retry the connection; the server was left running.\\n' >&2
+    printf 'Remote RuCode server is still running but did not become ready. Retry the connection; the server was left running.\\n' >&2
     exit 1
   fi
 else
@@ -955,7 +1079,7 @@ while [ -z "$REMOTE_PORT" ] && ! managed_server_running "$(cat "$PID_FILE" 2>/de
   REMOTE_PORT=""
   REMOTE_MANAGED=""
   if [ "$OWNER_WAITED" -ge @@T3_READY_TIMEOUT_SECONDS@@ ] || [ "$(date +%s)" -ge "$OWNER_DEADLINE" ]; then
-    printf 'A T3 server or boot service holds %s but did not become ready, so no second server was started. Retry once it has started.\\n' "$DEFAULT_SERVER_HOME" >&2
+    printf 'A RuCode server or boot service holds %s but did not become ready, so no second server was started. Retry once it has started.\\n' "$DEFAULT_SERVER_HOME" >&2
     exit 1
   fi
   sleep 1
@@ -984,7 +1108,7 @@ if [ -z "$REMOTE_PORT" ]; then
     rm -f "$STATE_DIR/launcher"
   fi
   if ! wait_ready "@@T3_READY_TIMEOUT_MS@@"; then
-    printf 'Remote T3 server did not become ready on 127.0.0.1:%s.\\n' "$REMOTE_PORT" >&2
+    printf 'Remote RuCode server did not become ready on 127.0.0.1:%s.\\n' "$REMOTE_PORT" >&2
     if [ -s "$LOG_FILE" ]; then
       tail -n 80 "$LOG_FILE" >&2 2>/dev/null || true
     else
@@ -1036,7 +1160,7 @@ if [ "$REMOTE_MANAGED" != "external" ] && managed_server_running "$REMOTE_PID"; 
     sleep 0.1
   done
   if kill -0 "$REMOTE_PID" 2>/dev/null; then
-    printf 'Remote T3 server with PID %s did not stop within 2 seconds. Its ownership files were kept.\\n' "$REMOTE_PID" >&2
+    printf 'Remote RuCode server with PID %s did not stop within 2 seconds. Its ownership files were kept.\\n' "$REMOTE_PID" >&2
     exit 1
   fi
 fi
@@ -1076,27 +1200,67 @@ export class SshMissingRunnerError extends Schema.TaggedError<SshMissingRunnerEr
   }
 }
 
-export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string {
-  const nodeScriptPath = input?.nodeScriptPath?.trim() || "";
-  const archiveVersion = input?.archiveVersion?.trim() || "";
-  if (nodeScriptPath === "" && archiveVersion === "") {
+export type RemoteRunnerMode =
+  | { readonly kind: "archive"; readonly version: string; readonly releaseBaseUrl: string }
+  | { readonly kind: "source"; readonly commit: string; readonly gitUrl: string }
+  | { readonly kind: "node-script"; readonly nodeScriptPath: string };
+
+function releaseDownloadRoot(releaseBaseUrl: string | null | undefined): string {
+  return cliReleaseDownloadBaseUrl("", releaseBaseUrl ?? undefined).replace(/\/v$/u, "");
+}
+
+/** A Dev build version runs from its commit's source; any other version from its release archive. */
+export function resolveRemoteRunnerMode(options: RemoteT3RunnerOptions): RemoteRunnerMode {
+  const nodeScriptPath = options.nodeScriptPath?.trim() || "";
+  const version = options.archiveVersion?.trim() || "";
+  if (nodeScriptPath === "" && version === "") {
     throw new SshMissingRunnerError();
   }
-  if (archiveVersion !== "" && !EXACT_ARCHIVE_VERSION.test(archiveVersion)) {
-    throw new SshInvalidArchiveVersionError({ archiveVersion });
+  if (version !== "" && !EXACT_ARCHIVE_VERSION.test(version)) {
+    throw new SshInvalidArchiveVersionError({ archiveVersion: version });
   }
-  const releaseBaseUrl = cliReleaseDownloadBaseUrl("", input?.releaseBaseUrl ?? undefined).replace(
-    /\/v$/u,
-    "",
-  );
+  if (nodeScriptPath !== "") return { kind: "node-script", nodeScriptPath };
+  const commit = devBuildCommitOf(version);
+  if (commit !== undefined) return { kind: "source", commit, gitUrl: RELEASE_SOURCE_GIT_URL };
+  return { kind: "archive", version, releaseBaseUrl: releaseDownloadRoot(options.releaseBaseUrl) };
+}
+
+function remoteLaunchTimeoutMs(mode: RemoteRunnerMode): number {
+  switch (mode.kind) {
+    case "node-script":
+      return REMOTE_LAUNCH_TIMEOUT_MS;
+    case "archive":
+      return REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS;
+    case "source":
+      return REMOTE_SOURCE_LAUNCH_TIMEOUT_MS;
+  }
+}
+
+function buildRemoteInstallLockScript(): string {
+  return applyScriptPlaceholders(REMOTE_INSTALL_LOCK_SCRIPT, {
+    T3_ARCHIVE_LOCK_WAIT_SECONDS: String(REMOTE_ARCHIVE_LOCK_WAIT_SECONDS),
+  });
+}
+
+function buildRemoteSourceBuildScript(mode: RemoteRunnerMode): string {
+  if (mode.kind !== "source") return "";
+  return applyScriptPlaceholders(REMOTE_SOURCE_BUILD_SCRIPT, {
+    T3_SOURCE_COMMIT: shellSingleQuote(mode.commit),
+    T3_SOURCE_GIT_URL: shellSingleQuote(mode.gitUrl),
+  });
+}
+
+export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string {
+  const mode = resolveRemoteRunnerMode(input ?? {});
   return stripTrailingNewlines(
     applyScriptPlaceholders(REMOTE_RUNNER_SCRIPT, {
-      T3_NODE_SCRIPT_PATH: shellSingleQuote(nodeScriptPath),
-      T3_ARCHIVE_VERSION: shellSingleQuote(archiveVersion),
-      T3_RELEASE_BASE_URL: shellSingleQuote(releaseBaseUrl),
-      T3_ARCHIVE_LOCK_WAIT_SECONDS: String(REMOTE_ARCHIVE_LOCK_WAIT_SECONDS),
+      T3_NODE_SCRIPT_PATH: shellSingleQuote(mode.kind === "node-script" ? mode.nodeScriptPath : ""),
+      T3_ARCHIVE_VERSION: shellSingleQuote(input?.archiveVersion?.trim() || ""),
+      T3_RELEASE_BASE_URL: shellSingleQuote(releaseDownloadRoot(input?.releaseBaseUrl)),
       T3_ARCHIVE_DOWNLOAD_SECONDS: String(REMOTE_ARCHIVE_DOWNLOAD_SECONDS),
       T3_ARCHIVE_CHECKSUMS_SECONDS: String(REMOTE_ARCHIVE_CHECKSUMS_SECONDS),
+      T3_INSTALL_LOCK_SCRIPT: buildRemoteInstallLockScript(),
+      T3_SOURCE_BUILD_SCRIPT: buildRemoteSourceBuildScript(mode),
       T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
     }),
   );
@@ -1112,12 +1276,20 @@ export function buildRemoteNodeEnvScript(input?: RemoteT3RunnerOptions): string 
 }
 
 export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
+  const mode = resolveRemoteRunnerMode(input ?? {});
   return applyScriptPlaceholders(REMOTE_LAUNCH_SCRIPT, {
     T3_UPDATE_MARKER_FILE: DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
     T3_UPDATE_TTL_MS: String(DESKTOP_UPDATE_IN_PROGRESS_TTL_MS),
     T3_UPDATE_TTL_SECONDS: String(DESKTOP_UPDATE_IN_PROGRESS_TTL_MS / 1000),
-    T3_ARCHIVE_MODE: isNodeScriptRunner(input) ? "0" : "1",
+    // A source build runs on Node, so the launch uses the node helpers, and the archive
+    // keep-server rule never spares a running server that a changed runner would replace.
+    T3_ARCHIVE_MODE: mode.kind === "archive" ? "1" : "0",
     T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
+    // Building before the port and readiness probes also settles which Node they run on.
+    T3_SOURCE_BUILD_SCRIPT:
+      mode.kind === "source"
+        ? `${buildRemoteInstallLockScript()}\n${buildRemoteSourceBuildScript(mode)}`
+        : "",
     T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
     T3_PICK_PORT_SCRIPT: stripTrailingNewlines(REMOTE_PICK_PORT_SCRIPT),
     T3_WAIT_READY_SCRIPT: stripTrailingNewlines(REMOTE_WAIT_READY_SCRIPT),
@@ -1187,9 +1359,7 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
         ),
       ],
       stdin: buildRemoteLaunchScript(runner),
-      timeoutMs: isNodeScriptRunner(runner)
-        ? REMOTE_LAUNCH_TIMEOUT_MS
-        : REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS,
+      timeoutMs: remoteLaunchTimeoutMs(resolveRemoteRunnerMode(runner ?? {})),
       ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
       ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
       ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
@@ -1245,10 +1415,11 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
     ...sshTargetLogFields(target),
     stateKey,
   });
+  const runnerMode = resolveRemoteRunnerMode(runner ?? {});
   const result = yield* runSshCommand(target, {
     remoteCommandArgs: ["sh", "-s"],
     stdin: buildRemotePairingScript(stateKey, runner),
-    ...(isNodeScriptRunner(runner) ? {} : { timeoutMs: REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS }),
+    ...(runnerMode.kind === "node-script" ? {} : { timeoutMs: remoteLaunchTimeoutMs(runnerMode) }),
     ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
     ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
     ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),

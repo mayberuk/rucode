@@ -12,6 +12,7 @@ import type {
 import { AuthAccessTokenResult, AuthSessionState } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { Iter8PickedTarget } from "./iter8.ts";
 import { type ClientSettings, type QuitConfirmationMode, SnapShotShortcut } from "./settings.ts";
 import type { EditorId } from "./editor.ts";
 import { KeybindingShortcut, type PreviewForwardedShortcut } from "./keybindings.ts";
@@ -920,6 +921,7 @@ export interface PreviewAnnotationPayload {
   styleChanges: ReadonlyArray<PreviewAnnotationStyleChange>;
   screenshot: PreviewAnnotationScreenshot | null;
   createdAt: string;
+  iter8?: Iter8PickedTarget;
 }
 
 export const PreviewAnnotationPayloadSchema: Schema.Codec<PreviewAnnotationPayload> = Schema.Struct(
@@ -934,6 +936,7 @@ export const PreviewAnnotationPayloadSchema: Schema.Codec<PreviewAnnotationPaylo
     styleChanges: Schema.Array(PreviewAnnotationStyleChangeSchema),
     screenshot: Schema.NullOr(PreviewAnnotationScreenshotSchema),
     createdAt: Schema.String,
+    iter8: Schema.optionalKey(Iter8PickedTarget),
   },
 );
 
@@ -1036,6 +1039,28 @@ export const DesktopPreviewAnnotationSendEnabledInputSchema = Schema.Struct({
   enabled: Schema.Boolean,
 });
 
+export interface DesktopPreviewReviewPin {
+  label: string;
+  selector: ReadonlyArray<string>;
+  resolved: boolean;
+}
+
+const DesktopPreviewReviewPinSchema: Schema.Codec<DesktopPreviewReviewPin> = Schema.Struct({
+  label: Schema.String,
+  selector: Schema.Array(Schema.String),
+  resolved: Schema.Boolean,
+});
+
+export const DesktopPreviewReviewPinsInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  pins: Schema.NullOr(
+    Schema.Struct({
+      pins: Schema.Array(DesktopPreviewReviewPinSchema),
+      focusLabel: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+
 export const DesktopPreviewArtifactInputSchema = Schema.Struct({
   path: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
 });
@@ -1086,7 +1111,7 @@ export interface DesktopBridge {
   getLocalEnvironmentBootstraps: () => readonly DesktopEnvironmentBootstrap[];
   getLocalEnvironmentEnabled: () => boolean;
   setLocalEnvironmentEnabled: (enabled: boolean) => Promise<void>;
-  /** The environment ID recorded in this app's T3 home, such as its own machine's background service. */
+  /** The environment ID recorded in this app's RuCode home, such as its own machine's background service. */
   getHostEnvironmentId?: () => Promise<string | null>;
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
@@ -1269,6 +1294,7 @@ export type DesktopPreviewAnnotationVoiceState =
 export const DesktopPreviewPickElementInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   voice: Schema.optional(DesktopPreviewAnnotationVoiceConfigSchema),
+  mode: Schema.optionalKey(Schema.Literals(["chat", "iter8"])),
 });
 
 export interface DesktopPreviewBridge {
@@ -1314,6 +1340,10 @@ export interface DesktopPreviewBridge {
   }) => Promise<BrowserImportResult>;
   setAnnotationTheme: (theme: DesktopPreviewAnnotationTheme) => Promise<void>;
   setAnnotationSendEnabled: (tabId: string, enabled: boolean) => Promise<void>;
+  setReviewPins: (
+    tabId: string,
+    pins: { pins: ReadonlyArray<DesktopPreviewReviewPin>; focusLabel: string | null } | null,
+  ) => Promise<void>;
   annotationVoice: {
     onEvent: (
       listener: (tabId: string, event: DesktopPreviewAnnotationVoiceEvent) => void,
@@ -1324,6 +1354,7 @@ export interface DesktopPreviewBridge {
   pickElement: (
     tabId: string,
     voice?: DesktopPreviewAnnotationVoiceConfig,
+    options?: { mode?: "chat" | "iter8" },
   ) => Promise<PreviewAnnotationSubmissionResult | null>;
   cancelPickElement: (tabId: string) => Promise<void>;
   captureScreenshot: (

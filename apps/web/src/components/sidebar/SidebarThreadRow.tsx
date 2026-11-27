@@ -41,7 +41,9 @@ import {
   AlarmClockIcon,
   AlarmClockOffIcon,
   ArrowRightLeftIcon,
+  BotIcon,
   CheckIcon,
+  ChevronDownIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDashedIcon,
@@ -85,11 +87,14 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { useSidebarGroupStatusLabel } from "./SidebarGroupStatusText";
 import {
   animateSidebarLayoutChanges,
   hasUnseenCompletion,
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
+  type SidebarGroupStatus,
+  type SidebarThreadStatus,
   resolveSidebarRowStatus,
   resolveSidebarTerminalStatus,
   resolveThreadLastVisitedAt,
@@ -121,7 +126,7 @@ import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { getTriggerDisplayModelName } from "../chat/providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
 import { useThreadRunningTerminalIds } from "../../state/terminalSessions";
-import { InlineButton } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -154,7 +159,7 @@ function compactSidebarTimeLabel(label: string): string {
 
 // Subscribes to the minute tick itself, so only the label re-renders each
 // minute. The minute is passed as the clock so it is the formatter's input.
-function RelativeTimeLabel(props: { timestamp: string | null }) {
+export function RelativeTimeLabel(props: { timestamp: string | null }) {
   const nowMinute = useNowMinute();
   return props.timestamp === null
     ? null
@@ -163,7 +168,7 @@ function RelativeTimeLabel(props: { timestamp: string | null }) {
       );
 }
 
-function JumpHintBadge(props: { label: string }) {
+export function JumpHintBadge(props: { label: string }) {
   return (
     <Kbd aria-hidden data-jump-hint>
       {props.label}
@@ -171,7 +176,7 @@ function JumpHintBadge(props: { label: string }) {
   );
 }
 
-const JUMP_HINT_SLOT_CLASS_NAME =
+export const JUMP_HINT_SLOT_CLASS_NAME =
   "[&>:not([data-jump-hint])]:invisible [&>:not([data-jump-hint])]:absolute";
 
 function WorkingDuration(props: { environmentId: EnvironmentId; startedAt: string | null }) {
@@ -195,7 +200,7 @@ function terminalProcessLabel(count: number): string {
   return `${count} terminal ${count === 1 ? "process" : "processes"} running`;
 }
 
-function SidebarProviderStack(props: {
+export function SidebarProviderStack(props: {
   thread: SidebarThreadSummary;
   providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>;
 }) {
@@ -581,9 +586,126 @@ const TOP_STATUS_ICONS = {
   woke: AlarmClockIcon,
 } as const;
 
-function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: string }) {
+export function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: string }) {
   const Icon = TOP_STATUS_ICONS[props.icon];
   return <Icon aria-hidden className={cn("shrink-0", props.className)} />;
+}
+
+export interface SidebarTopStatus {
+  readonly label: string;
+  readonly icon: keyof typeof TOP_STATUS_ICONS;
+  readonly className: string;
+}
+
+/** The status a row shows in its time slot, or null when its age shows there instead. */
+export function resolveSidebarTopStatus(input: {
+  readonly status: SidebarThreadStatus;
+  readonly goalActive: boolean;
+  readonly isWoke: boolean;
+  readonly isUnread: boolean;
+}): SidebarTopStatus | null {
+  switch (input.status) {
+    case "preparing":
+      return { label: "Setting up", icon: "working", className: "text-info-foreground" };
+    case "working":
+      return {
+        label: input.goalActive ? "Goal" : "Working",
+        icon: "working",
+        className: "text-info-foreground",
+      };
+    case "waiting":
+      return { label: "Waiting", icon: "waiting", className: "text-muted-foreground" };
+    case "approval":
+      return { label: "Approval", icon: "approval", className: "text-warning-foreground" };
+    case "decision":
+      return { label: "Decision", icon: "decision", className: "text-warning-foreground" };
+    case "input":
+      return {
+        label: "Input",
+        icon: "input",
+        className: "text-indigo-600 dark:text-indigo-300",
+      };
+    case "request":
+      return { label: "Request", icon: "request", className: "text-guest-foreground" };
+    case "limited":
+      return { label: "Limited", icon: "failed", className: "text-warning-foreground" };
+    case "failed":
+      return { label: "Failed", icon: "failed", className: "text-error-foreground" };
+  }
+  if (input.isWoke) return { label: "Woke", icon: "woke", className: "text-warning-foreground" };
+  if (input.isUnread) return { label: "Done", icon: "done", className: "text-success-foreground" };
+  return null;
+}
+
+const IDLE_GROUP_STATUS: SidebarGroupStatus = { kind: "idle" };
+
+const SPAWNED_STATUS_ICON = {
+  "needs-you": { icon: "decision", className: "text-warning-foreground" },
+  failed: { icon: "failed", className: "text-error-foreground" },
+  working: { icon: "working", className: "text-info-foreground" },
+} as const;
+
+function SpawnedSessionsButton(props: {
+  threadKey: string;
+  count: number;
+  status: SidebarGroupStatus;
+  expanded: boolean;
+  onToggle: (threadKey: string) => void;
+}) {
+  const gt = useGT();
+  const statusLabel = useSidebarGroupStatusLabel(
+    props.status.kind === "idle" ? null : props.status,
+    null,
+  );
+  const sessions = props.expanded
+    ? gt(
+        "{count, plural, one {Hide # session this thread started} other {Hide # sessions this thread started}}",
+        { count: props.count },
+      )
+    : gt(
+        "{count, plural, one {Show # session this thread started} other {Show # sessions this thread started}}",
+        { count: props.count },
+      );
+  const label =
+    statusLabel === null ? sessions : gt("{sessions}, {status}", { sessions, status: statusLabel });
+  const statusIcon = props.status.kind === "idle" ? null : SPAWNED_STATUS_ICON[props.status.kind];
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="micro"
+            aria-expanded={props.expanded}
+            aria-label={label}
+            data-sidebar-action-for={props.threadKey}
+            data-testid="sidebar-spawned-toggle"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              props.onToggle(props.threadKey);
+            }}
+          />
+        }
+      >
+        <BotIcon aria-hidden />
+        <span className="tabular-nums text-secondary-label">{props.count}</span>
+        {statusIcon === null ? null : (
+          <TopStatusIcon icon={statusIcon.icon} className={statusIcon.className} />
+        )}
+        <ChevronDownIcon
+          aria-hidden
+          className={cn(
+            "transition-transform duration-150 ease-out motion-reduce:transition-none",
+            !props.expanded && "-rotate-90",
+          )}
+        />
+      </TooltipTrigger>
+      <TooltipPopup side="top">{label}</TooltipPopup>
+    </Tooltip>
+  );
 }
 
 type SidebarThreadRowProps = {
@@ -645,6 +767,11 @@ type SidebarThreadRowProps = {
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
+  /** Sessions this thread spawned that render under it. */
+  spawnedCount?: number | undefined;
+  spawnedStatus?: SidebarGroupStatus | undefined;
+  spawnedExpanded?: boolean | undefined;
+  onToggleSpawned?: ((threadKey: string) => void) | undefined;
 };
 
 // Mounted only while renaming, so each rename starts uncommitted.
@@ -795,80 +922,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isActive: props.isActive,
     isSelected,
   });
-  const topStatus =
+  const topStatus: SidebarTopStatus | null =
     cliStatus !== null
       ? {
           label: gt("In terminal"),
-          icon: cliStatus === "terminal-busy" ? ("working" as const) : ("terminal" as const),
+          icon: cliStatus === "terminal-busy" ? "working" : "terminal",
           className:
             cliStatus === "terminal-busy" ? "text-info-foreground" : "text-muted-foreground",
         }
-      : status === "preparing" || status === "working"
-        ? {
-            label:
-              status === "preparing"
-                ? "Setting up"
-                : thread.goal?.status === "active"
-                  ? "Goal"
-                  : "Working",
-            icon: "working" as const,
-            className: "text-info-foreground",
-          }
-        : status === "waiting"
-          ? {
-              label: "Waiting",
-              icon: "waiting" as const,
-              className: "text-muted-foreground",
-            }
-          : status === "approval"
-            ? {
-                label: "Approval",
-                icon: "approval" as const,
-                className: "text-warning-foreground",
-              }
-            : status === "decision"
-              ? {
-                  label: "Decision",
-                  icon: "decision" as const,
-                  className: "text-warning-foreground",
-                }
-              : status === "input"
-                ? {
-                    label: "Input",
-                    icon: "input" as const,
-                    className: "text-indigo-600 dark:text-indigo-300",
-                  }
-                : status === "request"
-                  ? {
-                      label: "Request",
-                      icon: "request" as const,
-                      className: "text-guest-foreground",
-                    }
-                  : status === "limited"
-                    ? {
-                        label: "Limited",
-                        icon: "failed" as const,
-                        className: "text-warning-foreground",
-                      }
-                    : status === "failed"
-                      ? {
-                          label: "Failed",
-                          icon: "failed" as const,
-                          className: "text-error-foreground",
-                        }
-                      : isWoke
-                        ? {
-                            label: "Woke",
-                            icon: "woke" as const,
-                            className: "text-warning-foreground",
-                          }
-                        : isUnread
-                          ? {
-                              label: "Done",
-                              icon: "done" as const,
-                              className: "text-success-foreground",
-                            }
-                          : null;
+      : resolveSidebarTopStatus({
+          status,
+          goalActive: thread.goal?.status === "active",
+          isWoke,
+          isUnread,
+        });
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1141,6 +1208,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     </span>
   );
 
+  const spawnedButton =
+    (props.spawnedCount ?? 0) > 0 && props.onToggleSpawned !== undefined ? (
+      <SpawnedSessionsButton
+        threadKey={threadKey}
+        count={props.spawnedCount ?? 0}
+        status={props.spawnedStatus ?? IDLE_GROUP_STATUS}
+        expanded={props.spawnedExpanded === true}
+        onToggle={props.onToggleSpawned}
+      />
+    ) : null;
+
   const prBadgeShape = supportsMultiplePullRequests
     ? resolveThreadPullRequestBadge(thread.pullRequests)
     : null;
@@ -1344,6 +1422,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {draftIndicator}
               {title}
+              {spawnedButton}
               {multiline ? titleLineIcons : null}
               {pinIndicator}
               {multiline ? null : terminalStatusIcon}
@@ -1677,6 +1756,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
+              {spawnedButton}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   Regenerating title

@@ -4,9 +4,22 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { type CliShimTarget, renderCliShim } from "./DesktopCliShim.ts";
+import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import {
+  type CliShimTarget,
+  MARKER,
+  install,
+  launcherPath,
+  renderCliShim,
+  rucodeLauncherPath,
+} from "./DesktopCliShim.ts";
 
 const directories: Array<string> = [];
 afterEach(() => {
@@ -45,7 +58,7 @@ const fakeAppImage = (canMount = true, app = REPORTER) => {
   const root = tempRoot();
   const image = NodePath.join(root, "image");
   writeExecutable(NodePath.join(image, "t3code"), app);
-  const appImage = NodePath.join(root, "T3 Code.AppImage");
+  const appImage = NodePath.join(root, "RuCode (Beta).AppImage");
   writeExecutable(
     appImage,
     [
@@ -158,7 +171,7 @@ describe("renderCliShim", () => {
     expect(result.stdout).toContain(`appimage=${appImage}`);
   });
 
-  it("keeps the install's T3 home under sudo, unless one is set", () => {
+  it("keeps the install's RuCode home under sudo, unless one is set", () => {
     const root = tempRoot();
     writeExecutable(NodePath.join(root, "app"), REPORTER);
     const shim = writeShim(root, {
@@ -174,7 +187,7 @@ describe("renderCliShim", () => {
 
   it("runs an installed app's server directly", () => {
     const root = tempRoot();
-    const executable = NodePath.join(root, "opt", "T3 Code", "t3code");
+    const executable = NodePath.join(root, "opt", "RuCode", "t3code");
     writeExecutable(executable, REPORTER);
     const shim = writeShim(root, {
       kind: "direct",
@@ -190,7 +203,7 @@ describe("renderCliShim", () => {
   });
 
   it("writes a Windows launcher that keeps cmd from reinterpreting paths", () => {
-    const executable = "C:\\Apps\\R&whoami&X 100%\\!CHANNEL!\\T3 Code.exe";
+    const executable = "C:\\Apps\\R&whoami&X 100%\\!CHANNEL!\\RuCode.exe";
     const script = renderCliShim({
       target: { kind: "windows", executable, entry: "C:\\Apps\\server.asar\\bin.mjs" },
       shimPath: "C:\\Users\\José\\.t3\\bin\\t3.cmd",
@@ -200,7 +213,7 @@ describe("renderCliShim", () => {
     expect(lines).toContain("setlocal EnableExtensions DisableDelayedExpansion");
     expect(lines).toContain("chcp 65001 >nul");
     expect(lines).toContain(
-      'if exist "C:\\Apps\\R&whoami&X 100%%\\!CHANNEL!\\T3 Code.exe" goto run',
+      'if exist "C:\\Apps\\R&whoami&X 100%%\\!CHANNEL!\\RuCode.exe" goto run',
     );
     const bare = lines.filter(
       (line) => line.includes("whoami") && !/"[^"]*whoami[^"]*"/.test(line),
@@ -209,3 +222,48 @@ describe("renderCliShim", () => {
     expect(lines).toContain('set "T3CODE_CLI_PATH=C:\\Users\\José\\.t3\\bin\\t3.cmd"');
   });
 });
+
+effectIt.effect.each([
+  { platform: "linux", t3: "t3", rucode: "rucode" },
+  { platform: "win32", t3: "t3.cmd", rucode: "rucode.cmd" },
+] as const)("installs a $rucode launcher beside $t3 on $platform", ({ platform, t3, rucode }) =>
+  Effect.gen(function* () {
+    const root = tempRoot();
+    const environment = DesktopEnvironment.DesktopEnvironment.of({
+      path: yield* Path.Path,
+      platform,
+      isPackaged: true,
+      baseDir: root,
+      serverRoot: "/opt/RuCode/resources/app.asar",
+      appImagePath: Option.none(),
+    } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
+    const installIn = () =>
+      install.pipe(Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment));
+    const t3Path = NodePath.join(root, "bin", t3);
+    const rucodePath = NodePath.join(root, "bin", rucode);
+    expect(launcherPath(environment)).toBe(t3Path);
+    expect(rucodeLauncherPath(environment)).toBe(rucodePath);
+
+    expect(yield* installIn()).toEqual(Option.some(t3Path));
+    const written = NodeFS.readFileSync(t3Path, "utf8");
+    expect(written).toContain(MARKER);
+    expect(NodeFS.readFileSync(rucodePath, "utf8")).toBe(written);
+    // Both names run the `t3` launcher's own path, which services and the updater invoke.
+    expect(written).toContain(t3Path);
+
+    // A stale launcher of ours is rewritten; one the app did not write is left alone, and `t3`
+    // is still managed.
+    NodeFS.writeFileSync(t3Path, `# ${MARKER}\nstale\n`);
+    NodeFS.writeFileSync(rucodePath, "someone else's rucode\n");
+    expect(yield* installIn()).toEqual(Option.some(t3Path));
+    expect(NodeFS.readFileSync(t3Path, "utf8")).toBe(written);
+    expect(NodeFS.readFileSync(rucodePath, "utf8")).toBe("someone else's rucode\n");
+
+    // No `rucode` where the app does not own `t3`.
+    NodeFS.rmSync(rucodePath);
+    NodeFS.writeFileSync(t3Path, "someone else's t3\n");
+    expect(yield* installIn()).toEqual(Option.none());
+    expect(NodeFS.existsSync(rucodePath)).toBe(false);
+    expect(NodeFS.readFileSync(t3Path, "utf8")).toBe("someone else's t3\n");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
