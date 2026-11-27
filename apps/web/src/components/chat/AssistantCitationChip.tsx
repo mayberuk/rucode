@@ -11,9 +11,11 @@ import {
   useEffectEvent,
   useRef,
   useState,
+  type FocusEvent as ReactFocusEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import { assistantCitationHighlights } from "~/lib/assistantCitationHighlights";
 import {
   findAssistantCitationSourceAnchor,
   type AssistantCitationSourceAnchor,
@@ -200,6 +202,12 @@ export function AssistantCitationChip({
   const [unavailableSourceAnchor, setUnavailableSourceAnchor] =
     useState<AssistantCitationSourceAnchor | null>(null);
   const commentOpen = commentEditor?.open ?? false;
+  const inComposer = commentEditor !== undefined;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the cited passage painted in the transcript for as long as this composer chip is mounted
+  useEffect(() => {
+    if (!inComposer) return;
+    return assistantCitationHighlights.retain(citation);
+  }, [citation, inComposer]);
   const sourceAnchor = commentEditor?.sourceAnchor;
   const activeSourceAnchor = sourceAnchor === unavailableSourceAnchor ? undefined : sourceAnchor;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- drops the uncommitted comment draft held in a ref once the parent closes the comment editor
@@ -270,6 +278,18 @@ export function AssistantCitationChip({
       contentEditable={false}
       data-assistant-citation-chip="true"
       data-markdown-copy={serializeAssistantCitation(citation)}
+      {...(inComposer
+        ? {
+            onPointerEnter: () => assistantCitationHighlights.setHot(citation),
+            onPointerLeave: () => assistantCitationHighlights.setHot(null),
+            onFocus: () => assistantCitationHighlights.setHot(citation),
+            onBlur: (event: ReactFocusEvent<HTMLElement>) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) {
+                assistantCitationHighlights.setHot(null);
+              }
+            },
+          }
+        : {})}
     >
       {composerSourceLink}
       {commentEditor ? (

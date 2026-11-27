@@ -14,12 +14,22 @@ normalization is only for locating it. Repeated text needs an unambiguous contex
 match, even if one occurrence still sits at the saved offsets. Guessing could
 highlight the wrong claim.
 
-Navigation owns the highlight's lifetime across virtual-row remounts. The source
+Navigation owns its highlight's lifetime across virtual-row remounts. The source
 row must be fetched, unfolded, mounted, and measured before quote positioning
 takes over from normal timeline scrolling. Remounting must not revive a dismissed
 highlight. The [navigation hash](../../apps/web/src/lib/assistantCitationNavigation.ts)
 uses base64url because router normalization otherwise decodes whitespace and
 source IDs inside the citation URI.
+
+A composer chip owns its passage highlight for as long as it is mounted.
+Removal, undo, sending, and draft restore need no separate bookkeeping. The
+[shared highlight module](../../apps/web/src/lib/assistantCitationHighlights.ts)
+keys highlights by the quote without its comment so comment edits keep the same
+identity. Priority puts the hot highlight above the comment editor’s highlight,
+with the draft highlight underneath both. A single observer re-anchors passages
+at most once per animation frame and runs only while a composer chip is mounted.
+Highlights appear immediately because fading them would repaint every highlight
+in the document on each frame.
 
 Expand citations with the [shared formatter](../../packages/shared/src/assistantCitations.ts)
 before dispatch to a provider adapter. Send the saved excerpt without looking up

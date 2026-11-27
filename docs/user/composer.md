@@ -126,17 +126,20 @@ returns to the remembered selection.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
 
-## Quote an assistant response
+## Quote a response
 
-On web and desktop, select text within one assistant response and choose
-**Cite in composer**. You can add a comment about the quote and write instructions
-around it.
+On web and desktop, select text within one assistant response. Choose **Cite**
+to add the quote to your draft or **Comment** to add the quote and write a comment.
+
+The quoted passage stays highlighted while its chip is in the composer. Hover
+over the chip or focus it with the keyboard to make its passage stand out. Use
+the pencil button to add or change the comment.
 
 Select the quote in a draft or sent message to return to its source. If the source
 is unavailable or has changed, the saved quote remains readable.
 
-The chip shows your comment when it has one, or a short quote preview otherwise. Use the pencil
-button to add or change the comment. To remove the citation, place the caret beside its chip and
+The chip shows your comment when it has one, or a short quote preview otherwise.
+To remove the citation, place the caret beside its chip and
 delete it like other inline context. Copying, reloading, and restoring a
 [stashed prompt](#prompt-stash) keep each comment
 with its quote, and sending tells the agent which words were quoted and which comment you wrote.
