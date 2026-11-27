@@ -12,8 +12,16 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { projectScriptMenuLabel } from "@t3tools/shared/projectScripts";
-import { ChevronDownIcon, DownloadIcon, PlusIcon, SettingsIcon, WrenchIcon } from "lucide-react";
-import React, { useState } from "react";
+import { useGT, useLocale } from "gt-react";
+import {
+  ChevronDownIcon,
+  DownloadIcon,
+  LightbulbIcon,
+  PlusIcon,
+  SettingsIcon,
+  WrenchIcon,
+} from "lucide-react";
+import React, { useEffect, useState } from "react";
 
 import { commandForProjectScript, primaryProjectScript } from "~/projectScripts";
 import { shortcutLabelForCommand } from "~/keybindings";
@@ -29,6 +37,12 @@ import {
   type ProjectScriptEditorRequest,
 } from "./projectScriptEditor";
 import { Button } from "./ui/button";
+import {
+  shouldAutoSuggest,
+  suggestionNoticeFor,
+  type ProjectActionSuggestionsController,
+  type SuggestTrigger,
+} from "./projectActionSuggestions.logic";
 import { Group, GroupSeparator } from "./ui/group";
 import {
   Menu,
@@ -44,12 +58,16 @@ import {
   MenuSubTrigger,
   MenuSubPopup,
 } from "./ui/menu";
+import { useStableCallback } from "~/hooks/useStableCallback";
+import { Skeleton } from "./ui/skeleton";
+import { anchoredToastManager, stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { cn } from "~/lib/utils";
 import {
   THREAD_DETAILS_PANEL_CHEVRON_CLASS,
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_LABEL_CLASS,
+  THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./chat/threadDetailsPanelStyles";
@@ -73,7 +91,10 @@ interface ProjectScriptsControlProps {
     input: NewProjectScriptInput,
   ) => Promise<ProjectScriptActionResult>;
   onDeleteScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
+  suggestions?: ProjectActionSuggestionsController | undefined;
 }
+
+const ADDED_TOAST_TIMEOUT_MS = 10_000;
 
 export default function ProjectScriptsControl({
   displayMode = "toolbar",
@@ -87,8 +108,13 @@ export default function ProjectScriptsControl({
   onAddScript,
   onUpdateScript,
   onDeleteScript,
+  suggestions: suggestionsProp,
 }: ProjectScriptsControlProps) {
+  const gt = useGT();
+  const locale = useLocale();
   const isPanel = displayMode === "panel";
+  // The placeholder, the Suggest button and the Undo notice are panel surfaces; the toolbar and menu keep today's behavior.
+  const suggestions = isPanel && presentation === "toolbar" ? suggestionsProp : undefined;
   const ActionGroup = isPanel ? "div" : Group;
   const panelAnchorRef = React.useRef<HTMLDivElement | null>(null);
   const keybindings =
@@ -103,6 +129,8 @@ export default function ProjectScriptsControl({
     setActionsMenuOpen({ presentation, scripts: false, imports: false });
   }
   const [editorRequest, setEditorRequest] = useState<ProjectScriptEditorRequest | null>(null);
+  const [addedNotice, setAddedNotice] = useState<ReadonlyArray<ProjectScript> | null>(null);
+  const shownNoticeRef = React.useRef<ReadonlyArray<ProjectScript> | null>(null);
 
   const primaryScript =
     (preferredScriptId ? scripts.find((script) => script.id === preferredScriptId) : undefined) ??
@@ -152,6 +180,92 @@ export default function ProjectScriptsControl({
       });
     }
   };
+
+  const projectLabel = suggestions?.projectName ?? gt("this project");
+  const suggesting = suggestions?.suggesting === true;
+  const canSuggest = suggestions?.available === true && !suggesting;
+
+  const runSuggest = async (trigger: SuggestTrigger) => {
+    if (!suggestions) return;
+    const notice = suggestionNoticeFor(trigger, await suggestions.suggest(trigger));
+    if (notice === null) return;
+    if (notice.kind === "added") {
+      setAddedNotice(notice.scripts);
+    } else if (notice.kind === "none-found") {
+      toastManager.add({
+        type: "info",
+        title: gt("No actions found"),
+        description: gt("Nothing in {project} looked like a command to suggest.", {
+          project: projectLabel,
+        }),
+      });
+    } else {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Could not suggest actions"),
+          description: notice.message,
+        }),
+      );
+    }
+  };
+
+  const undoAdded = async (added: ReadonlyArray<ProjectScript>) => {
+    if (!suggestions) return;
+    const result = await suggestions.undo(added);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Could not undo"),
+          description: error instanceof Error ? error.message : gt("An unexpected error occurred."),
+        }),
+      );
+    }
+  };
+
+  const autoSuggestDue =
+    suggestions !== undefined &&
+    shouldAutoSuggest({
+      available: suggestions.available,
+      scriptCount: scripts.length,
+      autoAttempted: suggestions.autoAttempted,
+      suggesting: suggestions.suggesting,
+    });
+  const runSuggestStable = useStableCallback(runSuggest);
+  const undoAddedStable = useStableCallback(undoAdded);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- asks the server, outside React, to suggest actions once for a project that has none
+  useEffect(() => {
+    if (autoSuggestDue) void runSuggestStable("auto");
+  }, [autoSuggestDue, runSuggestStable]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the Undo notice anchors to the actions row, which exists only after the new scripts arrive through settings sync
+  useEffect(() => {
+    const anchor = panelAnchorRef.current;
+    if (addedNotice === null || suggesting || scripts.length === 0 || anchor === null) return;
+    if (shownNoticeRef.current === addedNotice) return;
+    shownNoticeRef.current = addedNotice;
+    const names = new Intl.ListFormat(locale, { style: "long", type: "conjunction" }).format(
+      addedNotice.map((script) => script.name),
+    );
+    const toastId = anchoredToastManager.add({
+      type: "success",
+      timeout: ADDED_TOAST_TIMEOUT_MS,
+      positionerProps: { anchor },
+      title: gt("Added {count, plural, one {# action} other {# actions}}", {
+        count: addedNotice.length,
+      }),
+      description: names,
+      actionProps: {
+        children: gt("Undo"),
+        onClick: () => {
+          anchoredToastManager.close(toastId);
+          void undoAddedStable(addedNotice);
+        },
+      },
+    });
+  }, [addedNotice, suggesting, scripts.length, gt, locale, undoAddedStable]);
 
   const importMenuItems = importableScripts.length > 0 && (
     <>
@@ -228,11 +342,47 @@ export default function ProjectScriptsControl({
         );
       })}
       {importMenuItems}
+      {canSuggest && (
+        <MenuItem density="default" onClick={() => void runSuggest("manual")}>
+          <LightbulbIcon className="size-4" />
+          <MenuItemLabel>{gt("Suggest more actions")}</MenuItemLabel>
+        </MenuItem>
+      )}
       <MenuItem density={presentation === "menu" ? "touch" : "default"} onClick={openAddDialog}>
         <PlusIcon className="size-4" />
         <MenuItemLabel>{isPanel ? "Add project script" : "Add action"}</MenuItemLabel>
       </MenuItem>
     </>
+  );
+
+  const addRow = (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <ThreadDetailsControl
+            size="xs"
+            variant={isPanel ? "ghost" : "outline"}
+            part="row"
+            panel={isPanel}
+            className={isPanel ? undefined : "w-7 sm:w-6 @3xl/header-actions:w-auto!"}
+            aria-label={isPanel ? "Add project script" : "Add action"}
+            data-toolbar-control=""
+            onClick={openAddDialog}
+          />
+        }
+      >
+        <PlusIcon className="size-3.5" />
+        <span
+          className={cn(
+            "sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5",
+            isPanel && cn("not-sr-only ml-0.5", THREAD_DETAILS_PANEL_LABEL_CLASS),
+          )}
+        >
+          {isPanel ? "Add project script" : "Add action"}
+        </span>
+      </TooltipTrigger>
+      <TooltipPopup side="top">{isPanel ? "Add project script" : "Add action"}</TooltipPopup>
+    </Tooltip>
   );
 
   return (
@@ -275,6 +425,19 @@ export default function ProjectScriptsControl({
             </MenuItem>
           )}
         </>
+      ) : suggesting ? (
+        <div
+          role="status"
+          className={cn(
+            "flex items-center text-muted-foreground",
+            THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
+          )}
+        >
+          <Skeleton className="size-4 shrink-0" />
+          <span className={cn("min-w-0 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
+            {gt("Finding actions in {project}", { project: projectLabel })}
+          </span>
+        </div>
       ) : primaryScript ? (
         <ActionGroup
           role="group"
@@ -427,34 +590,32 @@ export default function ProjectScriptsControl({
             <MenuPopup align="end">{scriptItems}</MenuPopup>
           </Menu>
         )
+      ) : canSuggest ? (
+        <div className="group relative flex h-8 items-center rounded-lg">
+          {addRow}
+          <div className="absolute right-1 top-1/2 -translate-y-1/2">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <ThreadDetailsControl
+                    part="meta"
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => void runSuggest("manual")}
+                  />
+                }
+              >
+                <LightbulbIcon className="size-3.5" />
+                {gt("Suggest")}
+              </TooltipTrigger>
+              <TooltipPopup side="left">
+                {gt("Read {project} and suggest actions", { project: projectLabel })}
+              </TooltipPopup>
+            </Tooltip>
+          </div>
+        </div>
       ) : (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <ThreadDetailsControl
-                size="xs"
-                variant={isPanel ? "ghost" : "outline"}
-                part="row"
-                panel={isPanel}
-                className={isPanel ? undefined : "w-7 sm:w-6 @3xl/header-actions:w-auto!"}
-                aria-label={isPanel ? "Add project script" : "Add action"}
-                data-toolbar-control=""
-                onClick={openAddDialog}
-              />
-            }
-          >
-            <PlusIcon className="size-3.5" />
-            <span
-              className={cn(
-                "sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5",
-                isPanel && cn("not-sr-only ml-0.5", THREAD_DETAILS_PANEL_LABEL_CLASS),
-              )}
-            >
-              {isPanel ? "Add project script" : "Add action"}
-            </span>
-          </TooltipTrigger>
-          <TooltipPopup side="top">{isPanel ? "Add project script" : "Add action"}</TooltipPopup>
-        </Tooltip>
+        addRow
       )}
 
       <ProjectScriptEditorDialog

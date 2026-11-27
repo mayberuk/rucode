@@ -1960,6 +1960,7 @@ export default function ChatView(props: ChatViewProps) {
     saveProjectScript: saveProjectScriptStable,
     updateProjectScript: updateProjectScriptStable,
     deleteProjectScript: deleteProjectScriptStable,
+    projectActionSuggestions,
   } = useProjectScriptEditing({
     environmentId,
     project: activeProject,
@@ -3964,6 +3965,7 @@ export default function ChatView(props: ChatViewProps) {
                   onAddProjectScript={saveProjectScriptStable}
                   onUpdateProjectScript={updateProjectScriptStable}
                   onDeleteProjectScript={deleteProjectScriptStable}
+                  projectActionSuggestions={projectActionSuggestions}
                   usage={{
                     providerInstanceId: activeProviderInstanceId,
                     providers: providerStatuses,
