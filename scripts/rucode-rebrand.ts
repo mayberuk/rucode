@@ -12,7 +12,7 @@ type Pin = { path: string; anchor: RegExp; target: string };
 const REPLACEMENTS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
   { pattern: /(?:\b|(?<=\\[fnrtv]))T3(?: |%20|\+)Code\b/g, replacement: "RuCode" },
   {
-    pattern: /(?:\b|(?<=\\[fnrtv]))T3 (home|server|thread|environment)\b/g,
+    pattern: /(?:\b|(?<=\\[fnrtv]))T3 (homes?|servers?|threads?|environments?)\b/g,
     replacement: "RuCode $1",
   },
 ];

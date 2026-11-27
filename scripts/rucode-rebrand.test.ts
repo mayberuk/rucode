@@ -73,6 +73,18 @@ describe("rebrandText", () => {
   });
 
   it.each([
+    ["home", "homes"],
+    ["server", "servers"],
+    ["thread", "threads"],
+    ["environment", "environments"],
+  ])("renames the compound T3 %s and its plural %s", (singular, plural) => {
+    assert.strictEqual(
+      rebrandText("docs/user/start.md", `One T3 ${singular}, many T3 ${plural}.`).text,
+      `One RuCode ${singular}, many RuCode ${plural}.`,
+    );
+  });
+
+  it.each([
     {
       path: "apps/desktop/package.json",
       input: '"productName": "T3 Code (Beta)"',
@@ -156,7 +168,7 @@ describe("rebrandText", () => {
       "run `t3 pair` and edit t3.json",
       "T3 Connect, T3 Chat, T3 Tools and your T3 Account",
       "T3-Code-1.0.0.dmg",
-      "T3 servers, T3 Server, T3 homes and the T3 Environment",
+      "the T3 Server and the T3 Environment, T3 Homes",
     ].join("\n");
     for (const file of ["docs/user/start.md", "apps/web/src/App.tsx", "en.json"]) {
       assert.deepStrictEqual(rebrandText(file, identifiers), { text: identifiers, hits: [] });

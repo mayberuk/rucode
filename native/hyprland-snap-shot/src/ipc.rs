@@ -235,16 +235,22 @@ mod tests {
     }
     #[test]
     fn destination_requires_unique_process_and_title() {
-        assert!(destination(vec![window(2, "T3")], 1, "T3")
-            .unwrap()
-            .is_none());
-        assert!(destination(vec![window(1, "other")], 1, "T3")
-            .unwrap()
-            .is_none());
+        assert!(
+            destination(vec![window(2, "T3")], 1, "T3")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            destination(vec![window(1, "other")], 1, "T3")
+                .unwrap()
+                .is_none()
+        );
         assert!(destination(vec![window(1, "T3"), window(1, "T3")], 1, "T3").is_err());
-        assert!(destination(vec![window(2, "T3"), window(1, "T3")], 1, "T3")
-            .unwrap()
-            .is_some());
+        assert!(
+            destination(vec![window(2, "T3"), window(1, "T3")], 1, "T3")
+                .unwrap()
+                .is_some()
+        );
     }
     #[test]
     fn event_wait_explains_an_activation_timeout() {
@@ -268,19 +274,23 @@ mod tests {
     #[test]
     fn rectangles_accept_negative_origins_not_invalid_sizes() {
         assert!(window(1, "t").bounds().valid());
-        assert!(!Rect {
-            x: 0.,
-            y: 0.,
-            width: f64::NAN,
-            height: 10.
-        }
-        .valid());
-        assert!(!Rect {
-            x: 0.,
-            y: 0.,
-            width: 0.,
-            height: 10.
-        }
-        .valid());
+        assert!(
+            !Rect {
+                x: 0.,
+                y: 0.,
+                width: f64::NAN,
+                height: 10.
+            }
+            .valid()
+        );
+        assert!(
+            !Rect {
+                x: 0.,
+                y: 0.,
+                width: 0.,
+                height: 10.
+            }
+            .valid()
+        );
     }
 }

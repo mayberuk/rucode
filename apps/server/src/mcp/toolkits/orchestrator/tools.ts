@@ -230,7 +230,7 @@ const CreateThreadsTool = Tool.make("create_threads", {
   failureMode: "return",
   dependencies,
 })
-  .annotate(Tool.Title, "Create T3 threads")
+  .annotate(Tool.Title, "Create RuCode threads")
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
@@ -244,7 +244,7 @@ const ThreadListTool = Tool.make("t3_thread_list", {
   failureMode: "return",
   dependencies,
 })
-  .annotate(Tool.Title, "List T3 threads")
+  .annotate(Tool.Title, "List RuCode threads")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
