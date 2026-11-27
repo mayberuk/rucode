@@ -204,11 +204,14 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.tapError(() => fs.remove(staging).pipe(Effect.ignore)));
   });
 
-  // `rucode` sits beside a `t3` link and follows its ownership rules. Best effort: a foreign
-  // `rucode` stays as it is and never fails the `t3` install.
+  // `rucode` sits beside a `t3` link and follows its ownership rules, and only leads to a launcher
+  // this app wrote. Best effort: a foreign `rucode` stays as it is and never fails the `t3` install.
   const linkRucode = Effect.fn("DesktopCliCommand.linkRucode")(
     function* (directory: string) {
       if (!userCandidates(environment.homeDirectory).includes(directory)) return;
+      const info = yield* fs.stat(rucodeLauncher);
+      if (info.type !== "File" || Number(info.size) > 16_384) return;
+      if (!(yield* fs.readFileString(rucodeLauncher)).includes(DesktopCliShim.MARKER)) return;
       const link = path.join(directory, "rucode");
       if (!(yield* isOurLink(link))) {
         yield* fs.symlink(rucodeLauncher, link);

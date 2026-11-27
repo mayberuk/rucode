@@ -225,6 +225,17 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
         }
       }
 
+      // A `rucode` launcher the app did not write is never linked, while `t3` still is.
+      const unownedHome = yield* fs.makeTempDirectoryScoped();
+      const unowned = path.join(unownedHome, ".t3", "bin", "rucode");
+      yield* fs.makeDirectory(path.dirname(unowned), { recursive: true });
+      yield* fs.writeFileString(unowned, "someone's rucode launcher\n");
+      const unownedInstall = yield* (yield* commandIn({ home: unownedHome })).install;
+      expect(unownedInstall.installedPath).toBe(path.join(unownedHome, ".local", "bin", "t3"));
+      expect(yield* fs.readFileString(unowned)).toBe("someone's rucode launcher\n");
+      const unownedLink = path.join(unownedHome, ".local", "bin", "rucode");
+      expect(Option.isSome(yield* fs.readLink(unownedLink).pipe(Effect.option))).toBe(false);
+
       const launcher = path.join(home, ".t3", "bin", "t3");
       yield* fs.writeFileString(launcher, "npm's t3\n");
       env.PATH = path.dirname(launcher);
