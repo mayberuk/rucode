@@ -26,7 +26,12 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
-import { useProjects, useServerConfigs, useQuietThreadShells } from "../state/entities";
+import {
+  useProjects,
+  useServerConfigs,
+  useQuietThreadShells,
+  useThreadShell,
+} from "../state/entities";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
@@ -701,5 +706,253 @@ describe("sidebar initiative groups", () => {
     await deliverLive(liveInitiative());
     await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Wave 2 of 3/));
     expect(waveRow.element().textContent).not.toContain("Open the board");
+  });
+});
+
+describe("sidebar spawned sessions", () => {
+  const environmentId = EnvironmentId.make("local");
+  const appProject = project("acme-app");
+  const apiProject = project("acme-api");
+  const shell = (id: string, title: string, overrides: Partial<EnvironmentThreadShell> = {}) =>
+    makeThreadFixture({
+      environmentId,
+      projectId: appProject.id,
+      id: ThreadId.make(id),
+      title,
+      ...overrides,
+    });
+  const spawnedBy = (parentId: string) => ({
+    lineage: {
+      rootThreadId: ThreadId.make(parentId),
+      parentThreadId: ThreadId.make(parentId),
+      relationshipToParent: null,
+    },
+  });
+  const parent = shell("parent", "Parent chat");
+  const firstChild = shell("first-child", "First session", {
+    ...spawnedBy("parent"),
+    createdAt: "2026-01-02T00:00:00.000Z",
+    latestUserMessageAt: "2026-01-02T12:00:00.000Z",
+  });
+  const secondChild = shell("second-child", "Second session", {
+    ...spawnedBy("parent"),
+    projectId: apiProject.id,
+    createdAt: "2026-01-02T06:00:00.000Z",
+  });
+  const runningSecondChild = {
+    ...secondChild,
+    runtime: {
+      status: "running" as const,
+      activeRunId: null,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerName: "Codex",
+      lastError: null,
+      updatedAt: "2026-01-02T06:00:00.000Z",
+    },
+  };
+  const other = shell("other", "Other chat");
+  const parentKey = scopedThreadKey(scopeThreadRef(environmentId, parent.id));
+  const tree = () => (
+    <SidebarProvider>
+      <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+    </SidebarProvider>
+  );
+  const follows = (earlier: Element, later: Element) =>
+    (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  function setup(
+    stack: DisposableStack,
+    options: {
+      readonly boringSidebarEnabled: boolean;
+      readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+      readonly routeThreadId?: string;
+    },
+  ) {
+    const previousSettings = getClientSettings();
+    stack.defer(() => __setClientSettingsForTests(previousSettings));
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      boringSidebarEnabled: options.boringSidebarEnabled,
+    });
+    stack.defer(() => window.localStorage.removeItem("t3code:sidebar:spawned-expanded"));
+    stack.defer(() => useUiStateStore.setState({ projectExpandedById: {} }));
+    stack.use(vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([]));
+    stack.use(vi.spyOn(liveAtoms, "useOpenDecisionThreadKeys").mockReturnValue([]));
+    // The live shell is missing, so rows render from the snapshot alone.
+    stack.use(vi.mocked(useThreadShell).mockReturnValue(null));
+    stack.use(vi.mocked(useNowMinute).mockReturnValue("2026-01-03T00:00"));
+    const routeThreadRef = {
+      environmentId,
+      threadId: ThreadId.make(options.routeThreadId ?? "other"),
+    };
+    vi.mocked(useProjects).mockReturnValue([appProject, apiProject]);
+    vi.mocked(useQuietThreadShells).mockReturnValue([...options.threads]);
+    vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef: routeThreadRef });
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: null,
+      defaultProjectRef: { environmentId, projectId: appProject.id },
+      defaultProjectFallbackReady: true,
+      handleNewThread: vi.fn().mockResolvedValue(null),
+      routeDraftId: null,
+      routeThreadRef,
+    });
+  }
+
+  it("keeps sessions under their parent behind a count, opens them in place and navigates into them", async () => {
+    using stack = new DisposableStack();
+    setup(stack, {
+      boringSidebarEnabled: false,
+      threads: [parent, firstChild, runningSecondChild, other],
+    });
+    {
+      await using first = await render(tree());
+      // The name flips between Show and Hide, so the test id follows the one button.
+      const toggle = first.getByTestId("sidebar-spawned-toggle");
+      await expect
+        .element(toggle)
+        .toHaveAccessibleName("Show 2 sessions this thread started, 1 working");
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(toggle.element().textContent).toBe("2");
+      expect(toggle.element().querySelector(".text-info-foreground")?.textContent).toBe("2");
+      await expect.element(first.getByText("Other chat", { exact: true })).toBeInTheDocument();
+      expect(first.getByText("First session", { exact: true }).query()).toBeNull();
+      expect(first.getByText("Second session", { exact: true }).query()).toBeNull();
+
+      toggle.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect
+        .element(toggle)
+        .toHaveAccessibleName("Hide 2 sessions this thread started, 1 working");
+      expect(first.router!.state.location.pathname).toBe("/");
+      expect(JSON.parse(window.localStorage.getItem("t3code:sidebar:spawned-expanded")!)).toEqual({
+        [parentKey]: true,
+      });
+      const parentRow = first.container.querySelector<HTMLElement>(
+        `[data-sidebar-row="${CSS.escape(parentKey)}"]`,
+      )!;
+      const firstRow = first.getByRole("button", {
+        name: "First session, session started by Parent chat",
+      });
+      const secondRow = first.getByRole("button", {
+        name: "Second session, session started by Parent chat",
+      });
+      await expect.element(firstRow).toBeInTheDocument();
+      await expect.element(secondRow).toBeInTheDocument();
+      expect(follows(parentRow, firstRow.element())).toBe(true);
+      expect(follows(firstRow.element(), secondRow.element())).toBe(true);
+      // Neither child is also a top-level row.
+      expect(first.container.querySelectorAll('[data-sidebar-row$=":first-child"]')).toHaveLength(
+        1,
+      );
+      expect(firstRow.element().textContent).toContain("First session");
+      expect(firstRow.element().textContent).toContain("12h");
+      expect(secondRow.element().textContent).toContain("Working");
+
+      parentRow.focus();
+      await userEvent.keyboard("{ArrowRight}");
+      await expect.element(firstRow).toHaveFocus();
+      await userEvent.keyboard("{ArrowLeft}");
+      expect(document.activeElement).toBe(parentRow);
+    }
+    await using screen = await render(tree());
+    const reloaded = screen.getByTestId("sidebar-spawned-toggle");
+    await expect
+      .element(reloaded)
+      .toHaveAccessibleName("Hide 2 sessions this thread started, 1 working");
+    await expect.element(reloaded).toHaveAttribute("aria-expanded", "true");
+    const child = screen.getByRole("button", {
+      name: "First session, session started by Parent chat",
+    });
+    child.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() =>
+      expect(screen.router!.state.location.pathname).toBe(`/${environmentId}/first-child`),
+    );
+
+    reloaded.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(reloaded).toHaveAttribute("aria-expanded", "false");
+    await expect.element(screen.getByTestId("sidebar-row-spawned")).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem("t3code:sidebar:spawned-expanded")!)).toEqual({});
+  });
+
+  it("follows the snapshot: nothing while loading, hidden without the parent, nested with it, gone with the children", async () => {
+    using stack = new DisposableStack();
+    setup(stack, { boringSidebarEnabled: false, threads: [] });
+    await using screen = await render(tree());
+    const toggles = () =>
+      screen.container.querySelectorAll('[data-testid="sidebar-spawned-toggle"]');
+    expect(toggles()).toHaveLength(0);
+    expect(screen.container.querySelectorAll('[data-testid="sidebar-row-spawned"]')).toHaveLength(
+      0,
+    );
+
+    // The parent is archived, so it is absent from the shells.
+    vi.mocked(useQuietThreadShells).mockReturnValue([firstChild, secondChild, other]);
+    await screen.rerender(tree());
+    await expect.element(screen.getByText("Other chat", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("First session", { exact: true }).query()).toBeNull();
+    expect(screen.getByText("Second session", { exact: true }).query()).toBeNull();
+    expect(toggles()).toHaveLength(0);
+
+    vi.mocked(useQuietThreadShells).mockReturnValue([parent, firstChild, secondChild, other]);
+    await screen.rerender(tree());
+    const toggle = screen.getByRole("button", { name: "Show 2 sessions this thread started" });
+    await expect.element(toggle).toBeInTheDocument();
+    expect(toggle.element().querySelector(".text-secondary-label")?.textContent).toBe("2");
+    expect(screen.getByText("First session", { exact: true }).query()).toBeNull();
+    toggle.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect
+      .element(
+        screen.getByRole("button", { name: "First session, session started by Parent chat" }),
+      )
+      .toBeInTheDocument();
+
+    vi.mocked(useQuietThreadShells).mockReturnValue([parent, other]);
+    await screen.rerender(tree());
+    await vi.waitFor(() => expect(toggles()).toHaveLength(0));
+    // A removed row fades out as a clone without its test id, so match the live rows only.
+    await expect.element(screen.getByTestId("sidebar-row-spawned")).not.toBeInTheDocument();
+    await expect
+      .element(screen.getByText("Parent chat", { exact: true }).first())
+      .toBeInTheDocument();
+  });
+
+  it("gives no folder to a project whose only thread is nested, and keeps an open child with its parent in a closed folder", async () => {
+    using stack = new DisposableStack();
+    setup(stack, {
+      boringSidebarEnabled: true,
+      threads: [parent, firstChild, secondChild, other],
+      routeThreadId: "second-child",
+    });
+    await using screen = await render(tree());
+    const folders = () =>
+      [...screen.container.querySelectorAll('[data-testid="sidebar-project-folder"]')].map(
+        (folder) => folder.textContent ?? "",
+      );
+    await vi.waitFor(() => expect(folders()).toHaveLength(1));
+    expect(folders()[0]).toContain("acme-app");
+    expect(folders()[0]).not.toContain("acme-api");
+
+    // Collapsed by default, the list still shows the open child under its parent.
+    const secondRow = screen.getByRole("button", {
+      name: "Second session, session started by Parent chat",
+    });
+    await expect.element(secondRow).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("First session", { exact: true }).query()).toBeNull();
+
+    const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
+    folder.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+    await expect.element(screen.getByText("Other chat", { exact: true })).not.toBeInTheDocument();
+    await expect.element(screen.getByText("Parent chat", { exact: true })).toBeInTheDocument();
+    await expect.element(secondRow).toBeInTheDocument();
+    expect(
+      follows(screen.getByText("Parent chat", { exact: true }).element(), secondRow.element()),
+    ).toBe(true);
   });
 });

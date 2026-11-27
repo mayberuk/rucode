@@ -706,6 +706,52 @@ export function nestSpawnedThreads<
   };
 }
 
+/** The list without the spawned children that nest elsewhere or are hidden; the same list when none are. */
+export function withoutSpawnedThreads<
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "id">,
+>(list: readonly TThread[], nesting: SpawnedThreadNesting<unknown>): readonly TThread[] {
+  if (nesting.nestedKeys.size === 0 && nesting.hiddenKeys.size === 0) return list;
+  const kept = list.filter((thread) => {
+    const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+    return !nesting.nestedKeys.has(key) && !nesting.hiddenKeys.has(key);
+  });
+  return kept.length === list.length ? list : kept;
+}
+
+/** The nested rows to draw under an anchor: all while expanded, else only the open thread. */
+export function visibleSpawnedChildren<
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "id">,
+>(
+  children: ReadonlyArray<TThread>,
+  expanded: boolean,
+  routeThreadKey: string | null,
+): ReadonlyArray<TThread> {
+  if (expanded) return children;
+  return children.filter(
+    (child) => scopedThreadKey(scopeThreadRef(child.environmentId, child.id)) === routeThreadKey,
+  );
+}
+
+/** How many of the threads a row would show as working or setting up. */
+export function countWorkingThreads(
+  threads: ReadonlyArray<
+    ThreadStatusInput &
+      SidebarThreadStatusInput &
+      Pick<SidebarThreadSummary, "environmentId" | "id">
+  >,
+  openDecisionThreadKeys: ReadonlySet<string>,
+): number {
+  let working = 0;
+  for (const thread of threads) {
+    const openDecision = openDecisionThreadKeys.has(
+      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+    );
+    const status = resolveSidebarRowStatus(thread, { openDecision });
+    if (status === "working" || status === "preparing") working++;
+  }
+  return working;
+}
+
 export function buildBulkTitleRegenerationContextMenuItem(input: {
   supportedCount: number;
   actionableCount: number;

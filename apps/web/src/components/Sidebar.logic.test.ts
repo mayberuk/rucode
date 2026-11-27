@@ -34,9 +34,12 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  countWorkingThreads,
   groupSidebarFolders,
   groupSidebarThreadsByProject,
   nestSpawnedThreads,
+  visibleSpawnedChildren,
+  withoutSpawnedThreads,
   partitionInitiativeThreads,
   resolveSidebarGroupStatus,
   resolveInboxShelf,
@@ -1926,6 +1929,42 @@ describe("nestSpawnedThreads", () => {
     expect(unspawned.hiddenKeys).toBe(empty.hiddenKeys);
     expect(unspawned.childrenByAnchorKey).toBe(empty.childrenByAnchorKey);
   });
+
+  it("drops nested and hidden children from a list and keeps the list itself when none are in it", () => {
+    const root = lineageThread("root", null);
+    const fork = lineageThread("fork", "root", { relationship: "fork" });
+    const child = lineageThread("child", "root");
+    const orphan = lineageThread("orphan", "missing");
+    const nesting = nestSpawnedThreads([root, fork, child, orphan]);
+
+    expect(
+      withoutSpawnedThreads([child, root, orphan, fork], nesting).map((row) => row.id),
+    ).toEqual(["root", "fork"]);
+    const untouched = [root, fork];
+    expect(withoutSpawnedThreads(untouched, nesting)).toBe(untouched);
+    expect(withoutSpawnedThreads([child, orphan], nesting)).toEqual([]);
+    const unnested = [child, orphan];
+    expect(withoutSpawnedThreads(unnested, nestSpawnedThreads([root]))).toBe(unnested);
+  });
+
+  it("shows every child while expanded and only the open one while collapsed", () => {
+    const children = [lineageThread("first", "root"), lineageThread("second", "root")];
+    const ids = (rows: ReadonlyArray<{ readonly id: string }>) => rows.map((row) => row.id);
+
+    expect(ids(visibleSpawnedChildren(children, true, null))).toEqual(["first", "second"]);
+    expect(ids(visibleSpawnedChildren(children, true, lineageKey("second")))).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(ids(visibleSpawnedChildren(children, false, lineageKey("second")))).toEqual(["second"]);
+    expect(ids(visibleSpawnedChildren(children, false, lineageKey("root")))).toEqual([]);
+    expect(ids(visibleSpawnedChildren(children, false, null))).toEqual([]);
+    expect(
+      ids(
+        visibleSpawnedChildren(children, false, lineageKey("second", EnvironmentId.make("other"))),
+      ),
+    ).toEqual([]);
+  });
 });
 
 describe("groupSidebarFolders", () => {
@@ -2385,6 +2424,18 @@ describe("resolveSidebarGroupStatus", () => {
     expect(resolveSidebarGroupStatus([idle(), waiting, openedFailure], noDecisions)).toEqual({
       kind: "idle",
     });
+  });
+
+  it("counts working and setting-up threads, but not one a decision holds or one that waits", () => {
+    const decided = working();
+    const waiting = statusThread({ runtime: { ...runtime, status: "idle" as const } });
+    const decisionKeys = new Set([
+      scopedThreadKey(scopeThreadRef(decided.environmentId, decided.id)),
+    ]);
+    expect(countWorkingThreads([], noDecisions)).toBe(0);
+    expect(countWorkingThreads([idle(), waiting, failed()], noDecisions)).toBe(0);
+    expect(countWorkingThreads([working(), idle(), preparing(), decided], decisionKeys)).toBe(2);
+    expect(countWorkingThreads([decided], noDecisions)).toBe(1);
   });
 });
 
