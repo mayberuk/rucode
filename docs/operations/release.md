@@ -34,7 +34,7 @@ The Dev app installs alongside the release app and uses `~/.t3-dev` for its data
 
 For a published version, the SSH remote downloads the matching server archive from the fork's GitHub releases and checks it against `SHA256SUMS`. The fork ships a Linux x64 server archive. To use a mirror, set `T3CODE_RELEASE_BASE_URL` in the desktop app's environment. The mirror must serve the archive and checksum file under `v<version>/` relative to that base URL.
 
-For a Dev version, the SSH remote fetches and builds the exact commit in the app version. The commit must be pushed to the fork. The remote needs Git, Node matching the checkout's `engines.node` in `package.json` (the runner can find Node through nvm or mise), and network access to the fork and the package registry. The runner installs dependencies, caches the build under `~/.t3/runtime/source/<commit>`, and runs the server from that checkout.
+For a Dev version, the SSH remote fetches and builds the exact commit in the app version. The commit must be pushed to the fork. The remote needs Git, Node matching the checkout's `engines.node` in `package.json` (the runner can find Node through nvm or mise; with mise, a matching Node must already be installed, because the runner picks an installed version and never downloads one), and network access to the fork and the package registry. The runner installs dependencies, caches the build under `~/.t3/runtime/source/<commit>`, and runs the server from that checkout.
 
 ## Upstream steps the fork skips
 

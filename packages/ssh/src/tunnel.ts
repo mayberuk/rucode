@@ -396,6 +396,29 @@ remote_node_satisfies_engine() {
 NODE
 }
 
+select_mise_node_version() {
+  T3_MISE_NODE_UNMATCHED=""
+  T3_MISE_BIN="$HOME/.local/bin/mise"
+  if [ ! -x "$T3_MISE_BIN" ]; then
+    T3_MISE_BIN="$(command -v mise || true)"
+  fi
+  [ -n "$T3_MISE_BIN" ] || return 0
+  T3_MISE_NODE_PICK=""
+  for T3_MISE_NODE_CANDIDATE in $("$T3_MISE_BIN" ls --installed --no-header node 2>/dev/null | sed -n 's/^node[[:space:]][[:space:]]*\\([^[:space:]][^[:space:]]*\\).*/\\1/p'); do
+    MISE_NODE_VERSION="$T3_MISE_NODE_CANDIDATE"
+    export MISE_NODE_VERSION
+    if remote_node_satisfies_engine >/dev/null 2>&1; then
+      T3_MISE_NODE_PICK="$T3_MISE_NODE_CANDIDATE"
+    fi
+  done
+  if [ -n "$T3_MISE_NODE_PICK" ]; then
+    MISE_NODE_VERSION="$T3_MISE_NODE_PICK"
+  else
+    unset MISE_NODE_VERSION
+    T3_MISE_NODE_UNMATCHED=1
+  fi
+}
+
 ensure_remote_node_path() {
   if command -v node >/dev/null 2>&1 && remote_node_satisfies_engine >/dev/null 2>&1; then
     return 0
@@ -475,6 +498,7 @@ ensure_remote_node_path() {
       fi
     done
     export PATH
+    select_mise_node_version
   fi
 
   command -v node >/dev/null 2>&1 && remote_node_satisfies_engine
@@ -525,6 +549,9 @@ t3_source_require_node() {
   T3_NODE_ENGINE_RANGE="$(sed -n '/"engines"/,/}/s/^[[:space:]]*"node":[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$1/package.json" | head -n 1)"
   if ! ensure_remote_node_path; then
     printf 'Running commit %s on this host needs git and Node %s. Install them, or configure a Node version manager for non-interactive shells.\\n' "$T3_SOURCE_COMMIT" "$T3_NODE_ENGINE_RANGE" >&2
+    if [ -n "\${T3_MISE_NODE_UNMATCHED:-}" ]; then
+      printf 'mise has no installed Node matching %s.\\n' "$T3_NODE_ENGINE_RANGE" >&2
+    fi
     exit 1
   fi
 }
