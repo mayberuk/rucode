@@ -75,6 +75,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeProjectClones
   | typeof WS_METHODS.pluginCardsSubscribeThread
   | typeof WS_METHODS.pluginCardsSubscribeLive
+  | typeof WS_METHODS.iter8SubscribeReview
   | typeof WS_METHODS.terminalAttach
   | typeof WS_METHODS.terminalObserve;
 
