@@ -184,8 +184,9 @@ import {
 import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
-  groupSidebarThreadsByProject,
+  groupSidebarFolders,
   partitionInitiativeThreads,
+  resolveSidebarGroupStatus,
   sidebarFolderExpansionKeys,
   skipFixedSortableItems,
   buildBulkTitleRegenerationContextMenuItem,
@@ -280,8 +281,8 @@ import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
 } from "./sidebar/SidebarProjectFolderHeader";
+import { SidebarInitiativeWaveRow } from "./sidebar/SidebarInitiativeWaveRow";
 import {
-  InitiativeGroupEnd,
   InitiativeGroupHeader,
   initiativeGroupEndId,
   initiativeGroupHeaderId,
@@ -295,7 +296,6 @@ import {
   useInitiativeSidebarGroups,
   useOpenDecisionThreadKeys,
 } from "../pluginCards/live/liveAtoms";
-import type { InitiativeSidebarGroup } from "../pluginCards/live/liveStateIndex";
 
 function sameSidebarProviderEntries(
   left: ReadonlyMap<string, SidebarProviderEntry>,
@@ -357,7 +357,6 @@ const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
 const INITIATIVE_COLLAPSED_KEY = "t3code:sidebar:initiative-collapsed";
 const InitiativeCollapsedSchema = Schema.Record(Schema.String, Schema.Literal(true));
 const NO_COLLAPSED_INITIATIVES: Readonly<Record<string, true>> = {};
-const NO_INITIATIVE_GROUPS: ReadonlyArray<InitiativeSidebarGroup> = [];
 
 const inboxReturns = createInboxReturnTracker();
 
@@ -561,8 +560,7 @@ function useSidebarThreads(input: {
       snoozed: partition.snoozedThreads,
       settled: partition.settledThreads,
     },
-    // Project folders already group the work, so they show no initiative groups.
-    folderGroups === null ? liveInitiativeGroups : NO_INITIATIVE_GROUPS,
+    liveInitiativeGroups,
     { routeThreadKey: routeRowThreadKey, collapsedKeys: collapsedInitiatives },
   );
   const {
@@ -572,7 +570,22 @@ function useSidebarThreads(input: {
     snoozed: snoozedThreads,
     settled: settledThreads,
   } = initiatives.remaining;
-  const initiativeGroups = initiatives.groups;
+  const decisionKeys = new Set(openDecisionThreadKeys);
+  const initiativeGroups = initiatives.groups.map((entry) => {
+    const collapsed = collapsedInitiatives[entry.group.key] === true;
+    return {
+      ...entry,
+      collapsed,
+      status: collapsed
+        ? resolveSidebarGroupStatus(
+            entry.members
+              .filter((member) => !entry.threads.includes(member))
+              .map(({ thread }) => thread),
+            decisionKeys,
+          )
+        : null,
+    };
+  });
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
     scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
@@ -605,32 +618,78 @@ function useSidebarThreads(input: {
   const visibleWorkingThreads = workingShelfExpanded
     ? workingThreads
     : routeThreadOnly(workingThreads, routeRowThreadKey);
-  const projectFolders =
+  const folderPlacement =
     folderGroups === null
       ? null
-      : groupSidebarThreadsByProject(folderGroups, activeThreads, keepEmpty).map((folder) => {
+      : groupSidebarFolders({
+          groups: folderGroups,
+          threads: activeThreads,
+          initiatives: initiativeGroups,
+          keepEmpty,
+        });
+  // Outside folder mode, and for an initiative whose project has no folder, groups sit after the pins.
+  const flatInitiativeGroups =
+    folderPlacement === null ? initiativeGroups : folderPlacement.unplacedInitiatives;
+  const projectFolders =
+    folderPlacement === null
+      ? null
+      : folderPlacement.folders.map((folder) => {
           const collapsed = !resolveProjectExpanded(
             projectExpandedById,
             sidebarFolderExpansionKeys(folder.group),
           );
+          if (!collapsed) {
+            return {
+              group: folder.group,
+              collapsed,
+              initiatives: folder.initiatives,
+              routeMember: null,
+              threads: folder.threads,
+              status: null,
+              idleThread: null,
+            };
+          }
+          // A closed folder still shows the open thread, whether its own or an initiative's.
+          let routeMember: {
+            readonly groupKey: string;
+            readonly thread: EnvironmentThreadShell;
+            readonly section: SidebarSection;
+          } | null = null;
+          const hiddenMembers: EnvironmentThreadShell[] = [];
+          for (const entry of folder.initiatives) {
+            for (const { thread, section } of entry.members) {
+              if (threadShellKey(thread) === routeRowThreadKey) {
+                routeMember = { groupKey: entry.group.key, thread, section };
+              } else {
+                hiddenMembers.push(thread);
+              }
+            }
+          }
+          // Own threads first: they are ordered by latest activity, so the first is the freshest.
+          const hiddenThreads = [
+            ...folder.threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey),
+            ...hiddenMembers,
+          ];
           return {
             group: folder.group,
             collapsed,
-            // A closed folder still shows the open thread, and hints at the rest.
-            threads: collapsed
-              ? routeThreadOnly(folder.threads, routeRowThreadKey)
-              : folder.threads,
-            hiddenThreads: collapsed
-              ? folder.threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey)
-              : EMPTY_THREADS,
+            initiatives: [],
+            routeMember,
+            threads: routeThreadOnly(folder.threads, routeRowThreadKey),
+            status: resolveSidebarGroupStatus(hiddenThreads, decisionKeys),
+            idleThread: hiddenThreads[0] ?? null,
           };
         });
   const orderedThreads = [
     ...pinnedThreads,
-    ...initiativeGroups.flatMap((entry) => entry.threads.map(({ thread }) => thread)),
+    ...flatInitiativeGroups.flatMap((entry) => entry.threads.map(({ thread }) => thread)),
     ...(projectFolders === null
       ? activeThreads
-      : projectFolders.flatMap((folder) => folder.threads)),
+      : projectFolders.flatMap((folder) => [
+          ...folder.initiatives.flatMap((entry) => entry.threads.map(({ thread }) => thread)),
+          ...(folder.routeMember === null ? [] : [folder.routeMember.thread]),
+          ...folder.threads,
+        ])),
     ...visibleWorkingThreads,
     ...visibleSnoozedThreads,
     ...renderedSettledThreads,
@@ -679,7 +738,7 @@ function useSidebarThreads(input: {
     toggleWorkingShelf: () => setWorkingShelfExpanded((value) => !value),
     projectFolders,
     initiativeGroups,
-    collapsedInitiatives,
+    flatInitiativeGroups,
     initiativeThreadCount: initiativeGroups.reduce((sum, entry) => sum + entry.members.length, 0),
     toggleInitiativeGroup: (groupKey: string) =>
       setCollapsedInitiatives((current) =>
@@ -1422,7 +1481,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     toggleWorkingShelf,
     projectFolders,
     initiativeGroups,
-    collapsedInitiatives,
+    flatInitiativeGroups,
     initiativeThreadCount,
     toggleInitiativeGroup,
     toggleProjectFolder,
@@ -2065,22 +2124,35 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     const items: SidebarRenderItem[] = [{ kind: "marker", marker: "pinned-header" }];
     const pinnedRows = rowsOf(pinnedThreads, "pinned");
     items.push(...pinnedRows);
-    // Before the divider, so a drag's "Active" boundary still sits right above the inbox.
-    for (const { group, threads: groupThreads } of initiativeGroups) {
-      items.push({ kind: "initiative-header", groupKey: group.key });
-      for (const { thread, section } of groupThreads) {
+    const pushInitiative = (entry: (typeof initiativeGroups)[number]) => {
+      items.push({ kind: "initiative-header", groupKey: entry.group.key });
+      for (const { thread, section } of entry.threads) {
         items.push({
           kind: "initiative-row",
           key: threadShellKey(thread),
           section,
-          groupKey: group.key,
+          groupKey: entry.group.key,
         });
       }
-      items.push({ kind: "initiative-end", groupKey: group.key });
-    }
+      items.push({ kind: "initiative-end", groupKey: entry.group.key });
+    };
+    // Before the divider, so a drag's "Active" boundary still sits right above the inbox.
+    for (const entry of flatInitiativeGroups) pushInitiative(entry);
     items.push({ kind: "marker", marker: "pinned-divider" });
     const activeRows = rowsOf(activeThreads, "active");
     items.push({ kind: "marker", marker: "active-placeholder" });
+    // Folder-placed groups render inside their folders, which the active placeholder draws.
+    for (const folder of projectFolders ?? []) {
+      for (const entry of folder.initiatives) pushInitiative(entry);
+      if (folder.routeMember !== null) {
+        items.push({
+          kind: "initiative-row",
+          key: threadShellKey(folder.routeMember.thread),
+          section: folder.routeMember.section,
+          groupKey: folder.routeMember.groupKey,
+        });
+      }
+    }
     items.push(...activeRows);
     if (workingThreads.length > 0) {
       items.push({ kind: "marker", marker: "working-header" });
@@ -3511,6 +3583,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         // The tree row of the project folder this row sits in.
                         folderRow?: string,
                         initiativeKey?: string,
+                        parentRow?: string,
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -3538,6 +3611,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             thread={thread}
                             variant={rowVariant}
                             navigationParent={
+                              parentRow ??
                               folderRow ??
                               (initiativeKey !== undefined
                                 ? initiativeGroupRowId(initiativeKey)
@@ -3641,52 +3715,57 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           onDraftContextMenu={handleDraftContextMenu}
                         />,
                       ];
-                      const initiativeGroupByKey = new Map(
-                        initiativeGroups.map((entry) => [entry.group.key, entry] as const),
+                      const renderInitiativeGroup = (
+                        entry: (typeof initiativeGroups)[number],
+                        folderRow?: string,
+                      ): ReactNode[] => {
+                        const first = entry.members[0]?.thread;
+                        const favicon =
+                          first === undefined
+                            ? null
+                            : (projectByKey.get(`${first.environmentId}:${first.projectId}`) ??
+                              null);
+                        const displayName =
+                          (first === undefined
+                            ? undefined
+                            : projectDisplayNameByKey.get(
+                                `${first.environmentId}:${first.projectId}`,
+                              )) ?? favicon?.title;
+                        const groupRow = initiativeGroupRowId(entry.group.key);
+                        return [
+                          <InitiativeGroupHeader
+                            key={initiativeGroupHeaderId(entry.group.key)}
+                            groupKey={entry.group.key}
+                            label={entry.group.label}
+                            count={entry.members.length}
+                            expanded={!entry.collapsed}
+                            project={displayName === undefined ? null : { favicon, displayName }}
+                            showProject={folderRow === undefined}
+                            status={entry.status}
+                            onToggle={toggleInitiativeGroup}
+                          />,
+                          ...entry.threads.map(({ thread, section }) =>
+                            renderThreadRow(thread, section, folderRow, entry.group.key, groupRow),
+                          ),
+                          <SidebarInitiativeWaveRow
+                            key={initiativeGroupEndId(entry.group.key)}
+                            groupKey={entry.group.key}
+                            environmentId={entry.group.environmentId}
+                            slug={entry.group.slug}
+                          />,
+                        ];
+                      };
+                      const flatInitiativeByKey = new Map(
+                        flatInitiativeGroups.map((entry) => [entry.group.key, entry] as const),
                       );
                       for (const item of sidebarListItems) {
                         if (item.kind === "initiative-header") {
-                          const entry = initiativeGroupByKey.get(item.groupKey);
-                          if (entry === undefined) continue;
-                          items.push(
-                            <InitiativeGroupHeader
-                              key={initiativeGroupHeaderId(item.groupKey)}
-                              groupKey={item.groupKey}
-                              label={entry.group.label}
-                              count={entry.members.length}
-                              expanded={collapsedInitiatives[item.groupKey] !== true}
-                              hiddenThreads={entry.members
-                                .filter((member) => !entry.threads.includes(member))
-                                .map(({ thread }) =>
-                                  scopeThreadRef(thread.environmentId, thread.id),
-                                )}
-                              onToggle={toggleInitiativeGroup}
-                            />,
-                          );
+                          const entry = flatInitiativeByKey.get(item.groupKey);
+                          if (entry !== undefined) items.push(...renderInitiativeGroup(entry));
                           continue;
                         }
-                        if (item.kind === "initiative-end") {
-                          const entry = initiativeGroupByKey.get(item.groupKey);
-                          if (entry === undefined) continue;
-                          items.push(
-                            <InitiativeGroupEnd
-                              key={initiativeGroupEndId(item.groupKey)}
-                              groupKey={item.groupKey}
-                              label={entry.group.endLabel}
-                              hiddenCount={entry.hiddenCount}
-                            />,
-                          );
-                          continue;
-                        }
-                        if (item.kind === "initiative-row") {
-                          items.push(
-                            renderThreadRow(
-                              threadByKey.get(item.key)!,
-                              item.section,
-                              undefined,
-                              item.groupKey,
-                            ),
-                          );
+                        // Headers draw their whole group; folder-placed groups draw inside folders.
+                        if (item.kind === "initiative-end" || item.kind === "initiative-row") {
                           continue;
                         }
                         if (item.kind === "thread") {
@@ -3697,25 +3776,34 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         }
                         if (projectFolders !== null && item.marker === "active-placeholder") {
                           for (const folder of projectFolders) {
+                            const folderRow = sidebarFolderRowId(folder.group.projectKey);
                             items.push(
                               <SidebarProjectFolderHeader
                                 key={`project-folder:${folder.group.projectKey}`}
                                 group={folder.group}
                                 collapsed={folder.collapsed}
-                                hiddenThreads={folder.hiddenThreads}
+                                status={folder.status}
+                                idleThread={folder.idleThread}
                                 onToggle={toggleProjectFolder}
                                 onNewThread={startThreadInProjectFolder}
                                 onContextMenu={handleProjectFolderContextMenu}
                               />,
                             );
-                            for (const thread of folder.threads) {
+                            for (const entry of folder.initiatives) {
+                              items.push(...renderInitiativeGroup(entry, folderRow));
+                            }
+                            if (folder.routeMember !== null) {
                               items.push(
                                 renderThreadRow(
-                                  thread,
-                                  "active",
-                                  sidebarFolderRowId(folder.group.projectKey),
+                                  folder.routeMember.thread,
+                                  folder.routeMember.section,
+                                  folderRow,
+                                  folder.routeMember.groupKey,
                                 ),
                               );
+                            }
+                            for (const thread of folder.threads) {
+                              items.push(renderThreadRow(thread, "active", folderRow));
                             }
                           }
                           continue;

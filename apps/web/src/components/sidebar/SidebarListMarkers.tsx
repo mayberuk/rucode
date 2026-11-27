@@ -1,17 +1,19 @@
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useNavigate } from "@tanstack/react-router";
-import { LayoutDashboardIcon } from "lucide-react";
 import { type ReactNode, useLayoutEffect } from "react";
-import type { ScopedThreadRef } from "@t3tools/contracts";
 import { cn } from "~/lib/utils";
-import { useAnyThreadHasOpenDecision } from "../../pluginCards/live/liveAtoms";
-import { animateSidebarLayoutChanges, sidebarMarkerId } from "../Sidebar.logic";
-import { FOLDER_DOT_CLASS_NAME, FOLDER_DOT_LABEL } from "./SidebarProjectFolderHeader";
+import {
+  animateSidebarLayoutChanges,
+  sidebarMarkerId,
+  type SidebarGroupStatus,
+} from "../Sidebar.logic";
+import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SidebarGroupStatusText, useSidebarGroupStatusLabel } from "./SidebarGroupStatusText";
 import { SIDEBAR_SORTABLE_DRAG_DISABLED } from "./SidebarThreadRow";
 
-function SortableSidebarMarker(props: {
+export function SortableSidebarMarker(props: {
   sortableId: string;
   placeholder?: boolean;
   className?: string;
@@ -166,59 +168,62 @@ export function InitiativeGroupHeader(props: {
   label: string;
   count: number;
   expanded: boolean;
-  hiddenThreads: ReadonlyArray<ScopedThreadRef>;
+  /** The group's project; the header shows it only outside its project folder. */
+  project: { readonly favicon: ProjectFaviconProject | null; readonly displayName: string } | null;
+  showProject: boolean;
+  /** Set while collapsed. */
+  status: SidebarGroupStatus | null;
   onToggle: (groupKey: string) => void;
 }) {
-  const openDecision = useAnyThreadHasOpenDecision(props.expanded ? [] : props.hiddenThreads);
+  const statusLabel = useSidebarGroupStatusLabel(
+    props.status?.kind === "idle" ? null : props.status,
+    null,
+  );
+  const title =
+    props.project === null ? props.label : `${props.project.displayName} · ${props.label}`;
   return (
     <SortableSidebarMarker
       sortableId={initiativeGroupHeaderId(props.groupKey)}
       data-testid="sidebar-initiative-header"
       className="relative mx-0.5 h-8"
     >
-      <CollapsibleSectionHeader
-        data-sidebar-row={initiativeGroupRowId(props.groupKey)}
-        onClick={() => props.onToggle(props.groupKey)}
-        expanded={props.expanded}
-        accessory={
-          <span className="flex items-center gap-1.5">
-            {openDecision ? (
-              <span
-                className={cn("size-1.5 shrink-0 rounded-full", FOLDER_DOT_CLASS_NAME.attention)}
-              >
-                <span className="sr-only">{FOLDER_DOT_LABEL.attention}</span>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <CollapsibleSectionHeader
+              data-sidebar-row={initiativeGroupRowId(props.groupKey)}
+              aria-label={statusLabel === null ? title : `${title}, ${statusLabel}`}
+              onClick={() => props.onToggle(props.groupKey)}
+              expanded={props.expanded}
+              accessory={
+                props.status !== null && statusLabel !== null ? (
+                  <SidebarGroupStatusText status={props.status} label={statusLabel} />
+                ) : (
+                  <span className="font-normal tabular-nums">{props.count}</span>
+                )
+              }
+            />
+          }
+        >
+          {props.showProject && props.project !== null ? (
+            <span className="flex min-w-0 items-center gap-1.5">
+              {props.project.favicon === null ? null : (
+                <ProjectFavicon project={props.project.favicon} className="size-4 shrink-0" />
+              )}
+              <span className="max-w-1/2 shrink-0 truncate font-normal text-secondary-label">
+                {props.project.displayName}
               </span>
-            ) : null}
-            <span className="font-normal tabular-nums">{props.count}</span>
-          </span>
-        }
-      >
-        {props.label}
-      </CollapsibleSectionHeader>
-    </SortableSidebarMarker>
-  );
-}
-
-export function InitiativeGroupEnd(props: {
-  groupKey: string;
-  label: string;
-  hiddenCount: number;
-}) {
-  const navigate = useNavigate();
-  return (
-    <SortableSidebarMarker sortableId={initiativeGroupEndId(props.groupKey)} className="pb-2">
-      <button
-        type="button"
-        data-sidebar-row={`${initiativeGroupRowId(props.groupKey)}:end`}
-        data-sidebar-parent={initiativeGroupRowId(props.groupKey)}
-        onClick={() => void navigate({ to: "/board" })}
-        className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
-      >
-        <LayoutDashboardIcon aria-hidden className="size-4 shrink-0" />
-        <span className="min-w-0 truncate">
-          {props.hiddenCount > 0 ? `Show ${props.hiddenCount} more · ${props.label}` : props.label}
-        </span>
-      </button>
+              <span aria-hidden className="shrink-0 font-normal text-secondary-label">
+                ·
+              </span>
+              <span className="min-w-0 truncate">{props.label}</span>
+            </span>
+          ) : (
+            props.label
+          )}
+        </TooltipTrigger>
+        <TooltipPopup>{title}</TooltipPopup>
+      </Tooltip>
     </SortableSidebarMarker>
   );
 }

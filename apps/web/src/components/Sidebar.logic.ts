@@ -1115,35 +1115,6 @@ export function resolveWindowTitleThreadStatus(thread: SidebarThreadStatusInput)
   }
 }
 
-/**
- * The dot on a closed boring-sidebar folder: the most urgent state among its
- * hidden threads. Waiting threads stay quiet, like their rows. `openDecision` is true
- * when any hidden thread has an open decision.
- */
-export function resolveSidebarFolderDot(
-  threads: ReadonlyArray<ThreadStatusInput & SidebarThreadStatusInput>,
-  context: SidebarStatusContext = {},
-): "attention" | "failed" | "unread" | "working" | null {
-  const statuses = new Set(threads.map((thread) => resolveSidebarRowStatus(thread)));
-  if (
-    context.openDecision === true ||
-    statuses.has("input") ||
-    statuses.has("approval") ||
-    statuses.has("request") ||
-    statuses.has("limited")
-  ) {
-    return "attention";
-  }
-  if (statuses.has("failed")) return "failed";
-  // Rows show Done only for ready threads, so the dot follows the same rule.
-  const hasUnread = threads.some(
-    (thread) => resolveSidebarRowStatus(thread) === "ready" && hasUnseenCompletion(thread),
-  );
-  if (hasUnread) return "unread";
-  if (statuses.has("working") || statuses.has("preparing")) return "working";
-  return null;
-}
-
 export type SidebarGroupStatus =
   | { readonly kind: "needs-you"; readonly count: number }
   | { readonly kind: "failed"; readonly count: number }
