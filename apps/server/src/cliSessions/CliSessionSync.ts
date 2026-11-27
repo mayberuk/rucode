@@ -8,6 +8,7 @@ import {
   EventId,
   isRuntimeModeAbove,
   type MessageId,
+  type OrchestrationV2AppThread,
   type PluginLiveCliSession,
   ProjectId,
   ProviderDriverKind,
@@ -58,7 +59,9 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ClaudeSessionRegistry from "./ClaudeSessionRegistry.ts";
 import { CliSessionsLive } from "./cliSessionsLiveSource.ts";
+import { parentClaudeSessionOf } from "./launchSignal.ts";
 import { pairSessionIdsIn, placeSession, transcriptOrigin } from "./sessionPlacement.ts";
+import { decideSpawn } from "./spawnedSession.ts";
 import { readSyncState, type SyncState, writeSyncState } from "./syncState.ts";
 import { readTranscript, type TranscriptEntry } from "./transcriptReader.ts";
 
@@ -176,6 +179,7 @@ const make = Effect.gen(function* () {
   const homeDir = yield* HostProcess.HomeDirectory;
   const hostEnvironment = yield* HostProcess.Environment;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  const serverSessionId = hostEnvironment.CLAUDE_CODE_SESSION_ID ?? null;
 
   const claudeHome = yield* Effect.gen(function* () {
     const current = yield* settings.getSettings.pipe(Effect.option);
@@ -215,6 +219,10 @@ const make = Effect.gen(function* () {
   const pendingRelease = new Set<ThreadId>();
   const backgroundKept = new Set<ThreadId>();
   let heldThreads = new Set<ThreadId>();
+  // Keyed `${sessionId}:${pid}`: a process's environment never changes, so /proc is walked once.
+  const launchParents = new Map<string, string | null>();
+  // Lineage is fixed at creation, so a spawned session waits for its parent's thread to exist.
+  const awaitingParent = new Map<string, string>();
 
   const saveState = Effect.suspend(() => {
     if (!stateDirty) return Effect.void;
@@ -512,11 +520,26 @@ const make = Effect.gen(function* () {
     yield* saveState;
   });
 
+  const launchParentOf = Effect.fn("CliSessionSync.launchParentOf")(function* (
+    attachment: ClaudeSessionRegistry.Attachment,
+  ) {
+    const key = `${attachment.sessionId}:${attachment.pid}`;
+    const cached = launchParents.get(key);
+    if (cached !== undefined) return cached;
+    const parent = yield* parentClaudeSessionOf(attachment.pid).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+    );
+    launchParents.set(key, parent);
+    return parent;
+  });
+
   /** Creates the thread for a terminal session and imports its history. */
   const adopt = Effect.fn("CliSessionSync.adopt")(function* (input: {
     readonly sessionId: string;
     readonly filePath: string | null;
     readonly attachment: ClaudeSessionRegistry.Attachment | null;
+    readonly sessionThreads: ReadonlyMap<string, ThreadId | null>;
   }) {
     const { sessionId, attachment } = input;
     const threadId = ThreadId.make(`import:${CLAUDE_INSTANCE}:${sessionId}`);
@@ -561,6 +584,39 @@ const make = Effect.gen(function* () {
     if (placement._tag === "Skip") {
       skipped.add(sessionId);
       return;
+    }
+    const parentSessionId = attachment === null ? null : yield* launchParentOf(attachment);
+    const decision = decideSpawn({
+      sessionId,
+      parentSessionId,
+      serverSessionId,
+      cwd: path.resolve(cwd),
+      homeDir,
+      atProjectRoot: placement._tag === "Project" && placement.worktree === null,
+      sessionThreads: input.sessionThreads,
+    });
+    if (decision._tag === "Hidden") {
+      skipped.add(sessionId);
+      return;
+    }
+    if (decision._tag === "AwaitingParent") {
+      awaitingParent.set(sessionId, decision.parentSessionId);
+      return;
+    }
+    let lineage: OrchestrationV2AppThread["lineage"] | null = null;
+    if (decision._tag === "Child") {
+      const parent = yield* projection
+        .findThread(decision.parentThreadId)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (parent === null || parent.deletedAt !== null) {
+        if (parentSessionId !== null) awaitingParent.set(sessionId, parentSessionId);
+        return;
+      }
+      lineage = {
+        parentThreadId: decision.parentThreadId,
+        relationshipToParent: null,
+        rootThreadId: parent.lineage.rootThreadId,
+      };
     }
     const projectId =
       placement._tag === "Project"
@@ -610,7 +666,7 @@ const make = Effect.gen(function* () {
           threadId,
           providerInstanceId: CLAUDE_INSTANCE,
           occurredAt: firstAt,
-          payload: appThread,
+          payload: lineage === null ? appThread : { ...appThread, lineage },
         },
         {
           id: EventId.make(`cli-sync:provider-thread:${providerThreadId}`),
@@ -623,6 +679,7 @@ const make = Effect.gen(function* () {
         },
       ],
     });
+    awaitingParent.delete(sessionId);
     if (committed.length === 0) {
       skipped.add(sessionId);
       return;
@@ -757,22 +814,31 @@ const make = Effect.gen(function* () {
     if (enabled) {
       for (const attachment of attachments.values()) {
         const { sessionId } = attachment;
+        const awaitedParent = awaitingParent.get(sessionId);
         if (
           attachment.owner !== "terminal" ||
           threads.has(sessionId) ||
           skipped.has(sessionId) ||
           state.sessions[sessionId] !== undefined ||
-          !SESSION_ID_PATTERN.test(sessionId)
+          !SESSION_ID_PATTERN.test(sessionId) ||
+          (awaitedParent !== undefined && (threads.get(awaitedParent) ?? null) === null)
         ) {
           continue;
         }
-        yield* adopt({ sessionId, filePath: null, attachment }).pipe(
+        yield* adopt({ sessionId, filePath: null, attachment, sessionThreads: threads }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("cli session sync could not adopt a session", { sessionId, cause }),
           ),
         );
         adopted = true;
       }
+    }
+    // A finished session stays without a thread; a later process for it is looked up afresh.
+    for (const sessionId of awaitingParent.keys()) {
+      if (!attachments.has(sessionId)) awaitingParent.delete(sessionId);
+    }
+    for (const key of launchParents.keys()) {
+      if (!attachments.has(key.slice(0, key.lastIndexOf(":")))) launchParents.delete(key);
     }
     // A thread adopted just now is held from the start, not from the next registry change.
     if (adopted) threads = yield* claudeSessionThreads();
@@ -877,7 +943,12 @@ const make = Effect.gen(function* () {
           Effect.orElseSucceed(() => 0),
         );
         if (modified < cutoff) continue;
-        yield* adopt({ sessionId, filePath, attachment: attachments.get(sessionId) ?? null }).pipe(
+        yield* adopt({
+          sessionId,
+          filePath,
+          attachment: attachments.get(sessionId) ?? null,
+          sessionThreads: threads,
+        }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("cli session sync could not adopt a session", { sessionId, cause }),
           ),
