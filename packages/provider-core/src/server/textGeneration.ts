@@ -60,6 +60,19 @@ export interface BranchNameGenerationResult {
   branch: string;
 }
 
+export interface ProjectActionsGenerationInput {
+  cwd: string;
+  projectName: string;
+  projectContext: string;
+  existingCommands: ReadonlyArray<string>;
+  modelSelection: ModelSelection;
+  projectId?: ProjectId | null;
+}
+
+export interface ProjectActionsGenerationResult {
+  actions: ReadonlyArray<{ name: string; command: string; icon: string }>;
+}
+
 export interface ThreadTitleGenerationInput {
   linkedContext?: string | undefined;
   cwd: string;
@@ -130,6 +143,10 @@ export interface ProviderTextGeneration {
   readonly generateBranchName: (
     input: BranchNameGenerationInput,
   ) => Effect.Effect<BranchNameGenerationResult, TextGenerationError>;
+
+  readonly generateProjectActions?: (
+    input: ProjectActionsGenerationInput,
+  ) => Effect.Effect<ProjectActionsGenerationResult, TextGenerationError>;
 
   readonly generateThreadTitle: (
     input: ThreadTitleGenerationInput,
