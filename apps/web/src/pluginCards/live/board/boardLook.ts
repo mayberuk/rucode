@@ -12,9 +12,10 @@ import {
   CircleSlashIcon,
   CircleXIcon,
   ClockIcon,
-  GitPullRequestIcon,
   type LucideIcon,
 } from "lucide-react";
+
+import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 
 export interface BoardLook {
   readonly icon: LucideIcon;
@@ -30,7 +31,7 @@ export const PART_STATUS_LOOK: Readonly<Record<PluginInitiativePartStatus, Board
   gating: { icon: CircleDashedIcon, className: "text-info-foreground" },
   "gate-fail": { icon: CircleAlertIcon, className: "text-destructive-foreground" },
   "gate-pass": { icon: CircleCheckIcon, className: "text-info-foreground" },
-  "mr-open": { icon: GitPullRequestIcon, className: "text-info-foreground" },
+  "mr-open": { icon: PullRequestGlyph.pullRequest, className: "text-info-foreground" },
   merged: { icon: CircleCheckIcon, className: "text-success-foreground" },
 };
 

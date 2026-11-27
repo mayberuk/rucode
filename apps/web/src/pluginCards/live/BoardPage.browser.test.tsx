@@ -606,7 +606,7 @@ it.each([
   ["gating", "Running the gate", "circle-dashed"],
   ["gate-fail", "Gate failed", "circle-alert"],
   ["gate-pass", "Gate passed", "circle-check"],
-  ["mr-open", "MR open", "git-pull-request"],
+  ["mr-open", "MR open", "git-pull-request-arrow"],
   ["merged", "Merged", "circle-check"],
 ] satisfies ReadonlyArray<readonly [PluginInitiativePart["status"], string, string]>)(
   "prints the %s status text and icon",

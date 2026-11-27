@@ -6,8 +6,9 @@ import type {
   PluginInitiativeWave,
 } from "@t3tools/contracts";
 import { useGT } from "gt-react";
-import { GitBranchIcon, GitPullRequestIcon } from "lucide-react";
+import { GitBranchIcon } from "lucide-react";
 
+import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { Button } from "~/components/ui/button";
 import {
   Sheet,
@@ -151,7 +152,9 @@ export function PartSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetPopup side="right" {...(reducedMotion ? { transitionDurationMs: 0 } : {})}>
         <SheetHeader>
-          <SheetTitle className="break-words pe-10">{partTitle(board, part.id)}</SheetTitle>
+          <div className="pe-10">
+            <SheetTitle className="break-words">{partTitle(board, part.id)}</SheetTitle>
+          </div>
           <SheetDescription className="break-words">
             {gt("Wave {number} · {wave} · {status}", {
               number: wave.number,
@@ -221,7 +224,7 @@ export function PartSheet({
                 size="sm"
                 render={<a href={mrUrl} target="_blank" rel="noreferrer" />}
               >
-                <GitPullRequestIcon />
+                <PullRequestGlyph.pullRequest />
                 {gt("Open MR")}
               </Button>
             ) : null}
