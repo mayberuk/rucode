@@ -4,6 +4,8 @@ import type {
   DesktopPreviewBridge,
   EnvironmentId,
   Iter8Note,
+  Iter8Page,
+  Iter8ReviewSnapshot,
   Iter8SendRefusal,
   PreviewAnnotationSubmissionResult,
 } from "@t3tools/contracts";
@@ -37,7 +39,7 @@ export type Iter8ReviewPins = Parameters<DesktopPreviewBridge["setReviewPins"]>[
 
 interface Refusal {
   readonly pageId: string;
-  readonly draftKey: string;
+  readonly stateKey: string;
   readonly reason: Iter8SendRefusal;
 }
 
@@ -51,12 +53,15 @@ function looksLikeIter8Url(url: string): boolean {
   }
 }
 
-function draftKeyOf(notes: ReadonlyArray<Iter8Note>): string {
-  return notes
-    .filter((note) => note.status === "draft")
-    .map((note) => note.id)
-    .toSorted()
-    .join(",");
+/** What a refusal was about: it stops applying once any of this changes. */
+function refusalStateKey(snapshot: Iter8ReviewSnapshot, page: Iter8Page): string {
+  const owner = snapshot.sessions.find((session) => session.ownerId === page.ownerId);
+  return JSON.stringify([
+    page.ownerId,
+    owner?.state ?? null,
+    page.rounds.map((round) => [round.id, round.stage]),
+    page.notes.map((note) => [note.id, note.status, note.roundId, note.intent, note.body]),
+  ]);
 }
 
 export function Iter8ReviewFrame({
@@ -157,9 +162,9 @@ export function Iter8ReviewFrame({
 
   const { page, path } = match;
   const availability = sendAvailability(snapshot, page);
-  const draftKey = draftKeyOf(page.notes);
+  const stateKey = refusalStateKey(snapshot, page);
   const activeRefusal =
-    refusal !== null && refusal.pageId === page.id && refusal.draftKey === draftKey
+    refusal !== null && refusal.pageId === page.id && refusal.stateKey === stateKey
       ? refusal.reason
       : null;
   const sessionReason = (reason: "no-session" | "session-ended" | Iter8SendRefusal) =>
@@ -193,7 +198,7 @@ export function Iter8ReviewFrame({
     setSendingPageId(null);
     if (result._tag === "Success") {
       if (result.value.outcome === "refused") {
-        setRefusal({ pageId: page.id, draftKey, reason: result.value.reason });
+        setRefusal({ pageId: page.id, stateKey, reason: result.value.reason });
       }
       return;
     }
