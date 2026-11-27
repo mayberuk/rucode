@@ -523,12 +523,16 @@ it.live.each(["session-gone", "no-pairing"] as const)("returns iter8's %s refusa
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+const probeNoteId = /^N[1-9][0-9]*$/;
+
 it.live.each([
   { name: "empty", drafts: [] },
   { name: "agent-only", drafts: [agentDraft] },
-])("rejects $name draft lists before posting a round", ({ drafts }) =>
+])("rejects $name draft lists when iter8 knows no round for the key", ({ drafts }) =>
   Effect.gen(function* () {
-    const { review, requests } = yield* withOverlay(() => ({ status: 200, json: drafts }));
+    const { review, requests } = yield* withOverlay(({ method }) =>
+      method === "GET" ? { status: 200, json: drafts } : { status: 404, json: {} },
+    );
     expect(yield* Effect.flip(review.sendRound(sendInput))).toMatchObject({
       _tag: "Iter8ReviewError",
       reason: "rejected",
@@ -536,7 +540,52 @@ it.live.each([
     });
     expect(requests.map(({ method, path }) => [method, path])).toEqual([
       ["GET", "/__iter8/drafts"],
+      ["POST", "/__iter8/rounds"],
     ]);
+    const probe = requests.at(1)?.body as { noteIds: ReadonlyArray<string> } | undefined;
+    expect(probe?.noteIds).toHaveLength(1);
+    expect(probe?.noteIds[0]).toMatch(probeNoteId);
+    expect(probe?.noteIds[0]).not.toBe(agentDraft.id);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("refuses an empty page when iter8 answers the key with a refusal", () =>
+  Effect.gen(function* () {
+    const { review } = yield* withOverlay(({ method }) =>
+      method === "GET"
+        ? { status: 200, json: [] }
+        : { status: 200, json: { outcome: "refused", reason: "no-pairing", pairing: null } },
+    );
+    expect(yield* Effect.flip(review.sendRound(sendInput))).toMatchObject({
+      reason: "rejected",
+      detail: "no drafts",
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("a retry after a lost response returns the original round; another key is refused", () =>
+  Effect.gen(function* () {
+    let drafts: ReadonlyArray<unknown> = [userDraft];
+    const roundByKey = new Map<string, string>();
+    // Models iter8: a send consumes the drafts, and a known key is answered before notes are checked.
+    const { review } = yield* withOverlay(({ method, body }) => {
+      if (method === "GET") return { status: 200, json: drafts };
+      const { idempotencyKey } = body as { idempotencyKey: string };
+      const known = roundByKey.get(idempotencyKey);
+      if (known !== undefined) {
+        return { status: 200, json: { outcome: "accepted", round: { id: known } } };
+      }
+      if (drafts.length === 0) return { status: 404, json: {} };
+      roundByKey.set(idempotencyKey, "R9");
+      drafts = [];
+      return { status: 200, json: { outcome: "accepted", round: { id: "R9" } } };
+    });
+
+    expect(yield* review.sendRound(sendInput)).toEqual({ outcome: "accepted", roundId: "R9" });
+    expect(yield* review.sendRound(sendInput)).toEqual({ outcome: "accepted", roundId: "R9" });
+    expect(
+      yield* Effect.flip(review.sendRound({ ...sendInput, idempotencyKey: "another-request-02" })),
+    ).toMatchObject({ _tag: "Iter8ReviewError", reason: "rejected", detail: "no drafts" });
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

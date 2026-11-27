@@ -46,8 +46,15 @@ export function Iter8SessionList({
 }) {
   const gt = useGT();
   const roundLabel = useIter8RoundLabel();
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const rows = sessionRows(snapshot);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(
+        rows
+          .filter((row) => row.pages.some(({ page }) => currentUrl.startsWith(page.origin + "/")))
+          .map((row) => row.session.ownerId),
+      ),
+  );
 
   if (rows.length === 0) {
     return <p className="px-2 py-3 text-sm text-muted-foreground">{gt("No iter8 sessions.")}</p>;

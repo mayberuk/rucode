@@ -13,6 +13,7 @@ import type { ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
+import "~/index.css";
 import { toastManager } from "~/components/ui/toast";
 import * as iter8Rpc from "~/rpc/iter8";
 import { act, render } from "../../test/render";
@@ -134,6 +135,8 @@ function setup(
     url: string;
     pickNote?: (() => Promise<PreviewAnnotationSubmissionResult | null>) | null;
     withPins?: boolean;
+    pins?: (pins: Iter8ReviewPins) => void;
+    pinsTargetId?: string;
   }): ReactNode => (
     <RegistryContext.Provider value={registry}>
       <Iter8ReviewFrame
@@ -141,7 +144,8 @@ function setup(
         url={props.url}
         pickNote={props.pickNote === undefined ? () => Promise.resolve(null) : props.pickNote}
         cancelPickNote={null}
-        setPins={props.withPins === false ? null : setPins}
+        setPins={props.withPins === false ? null : (props.pins ?? setPins)}
+        pinsTargetId={props.pinsTargetId ?? "tab-1"}
         navigate={navigate}
         openExternally={openExternally}
       >
@@ -224,9 +228,80 @@ it("docks the bar and the grouped notes around an iter8 page, and lists its sess
   await expect.element(session).toMatchTextContent("checkout-flow");
   await expect.element(session).toMatchTextContent("Running");
   await expect.element(session).toMatchTextContent("3 pages · R2 · 1 draft · 2 open");
-  await session.click();
+  await expect.element(session).toHaveAttribute("aria-expanded", "true");
+  await expect
+    .element(screen.getByRole("button", { name: /^\/plans/ }))
+    .toHaveAttribute("aria-current", "page");
   await screen.getByRole("button", { name: /^\/confirm/ }).click();
   expect(env.navigate).toHaveBeenLastCalledWith(`${origin}/confirm`);
+});
+
+it("sends the pins to the tab that becomes active even when they did not change", async () => {
+  using env = setup();
+  const first = vi.fn<(pins: Iter8ReviewPins) => void>();
+  const second = vi.fn<(pins: Iter8ReviewPins) => void>();
+  await using screen = await render(
+    env.frame({ url: `${origin}/empty`, pins: first, pinsTargetId: "tab-1" }),
+  );
+  const none = { pins: [], focusLabel: null };
+  expect(first).toHaveBeenLastCalledWith(none);
+
+  await screen.rerender(env.frame({ url: `${origin}/empty`, pins: second, pinsTargetId: "tab-2" }));
+  expect(second).toHaveBeenLastCalledWith(none);
+  expect(first).toHaveBeenLastCalledWith(null);
+});
+
+it("keeps Send disabled after an accepted send until the snapshot stops listing the drafts", async () => {
+  const source = Atom.make<ReviewResult>(AsyncResult.success(snapshot));
+  using env = setup(source);
+  env.send.mockResolvedValue(AsyncResult.success({ outcome: "accepted", roundId: "r2" } as const));
+  await using screen = await render(env.frame({ url: `${origin}/plans` }));
+  const sendButton = screen.getByRole("button", { name: "Send round" });
+
+  await sendButton.click();
+  await expect.element(sendButton).toBeDisabled();
+  screen
+    .getByRole("button", { name: /Match the totals/ })
+    .element()
+    .focus();
+  await userEvent.keyboard("{Control>}{Enter}{/Control}");
+  expect(env.send).toHaveBeenCalledOnce();
+  expect(env.toast).not.toHaveBeenCalled();
+
+  const next = note({ id: "n-next", body: "Another note", path: "/plans" });
+  await act(() => {
+    env.registry.set(
+      source,
+      AsyncResult.success({
+        ...snapshot,
+        pages: [
+          {
+            ...page,
+            notes: [{ ...draft, status: "sent" as const, roundId: "r2" }, sent, done, next],
+          },
+        ],
+      }),
+    );
+  });
+  await expect.element(sendButton).toBeEnabled();
+});
+
+it("wraps a long unbroken agent reply inside the pane", async () => {
+  const reply = `https://example.test/${"a".repeat(300)}`;
+  const long = Atom.make<ReviewResult>(
+    AsyncResult.success({
+      ...snapshot,
+      pages: [{ ...page, notes: [draft, sent, { ...done, reply }] }],
+    }),
+  );
+  using env = setup(long);
+  await using screen = await render(
+    <div style={{ width: 360 }}>{env.frame({ url: `${origin}/plans` })}</div>,
+  );
+  const row = screen.getByRole("button", { name: /Is the fee final/ });
+  await expect.element(row).toMatchTextContent(reply);
+  const element = row.element();
+  expect(element.scrollWidth).toBeLessThanOrEqual(element.clientWidth);
 });
 
 it("navigates to a selected note's path and focuses its pin, and clears the pins when the dock goes", async () => {
@@ -426,7 +501,7 @@ it("retries a send with an unknown outcome under the same idempotency key", asyn
   const keys = env.send.mock.calls.map(([, target]) => target.input.idempotencyKey);
   expect(keys[1]).toBe(keys[0]);
   expect(keys[0]!.length).toBeGreaterThanOrEqual(8);
-  await expect.element(screen.getByRole("button", { name: "Send round" })).toBeEnabled();
+  await expect.element(screen.getByRole("button", { name: "Send round" })).toBeDisabled();
 });
 
 it("shows a failed review read in the pane with a Retry that subscribes again", async () => {

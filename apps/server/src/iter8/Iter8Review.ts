@@ -37,6 +37,8 @@ export class Iter8Review extends Context.Service<
   }
 >()("t3/iter8/Iter8Review") {}
 
+const REPLAY_PROBE_NOTE_ID = `N${Number.MAX_SAFE_INTEGER}`;
+
 const unavailableError = new Iter8ReviewError({ reason: "unavailable" });
 
 export const unavailable: Iter8Review["Service"] = {
@@ -103,6 +105,20 @@ const make = Effect.fn("Iter8Review.make")(function* () {
     const page = yield* pageAccess(input.pageId);
     const notes = yield* Overlay.listDrafts(page);
     if (notes.length === 0) {
+      // A send that reached iter8 turned the drafts into a round, so an empty page may be a retry
+      // after a lost response. iter8 answers a known key before it checks note ids, so a probe
+      // with an id that is never a draft replays that round and is refused for any other key.
+      const replay = yield* Overlay.sendRound(page, {
+        idempotencyKey: input.idempotencyKey,
+        noteIds: [REPLAY_PROBE_NOTE_ID],
+        generation: page.generation,
+      }).pipe(
+        Effect.catchIf(
+          (error) => error.reason === "unknown-note",
+          () => Effect.succeed(null),
+        ),
+      );
+      if (replay?.outcome === "accepted") return replay;
       return yield* new Iter8ReviewError({ reason: "rejected", detail: "no drafts" });
     }
     return yield* Overlay.sendRound(page, {

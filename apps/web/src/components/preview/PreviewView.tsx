@@ -1079,6 +1079,7 @@ export function PreviewView({
             ? (pins) => void iter8Bridge.setReviewPins(runtimeTabId, pins).catch(() => undefined)
             : null
         }
+        pinsTargetId={runtimeTabId}
         navigate={(next) => void handleSubmitUrl(next)}
         openExternally={handleOpenInBrowser}
       >

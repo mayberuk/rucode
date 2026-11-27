@@ -86,7 +86,7 @@ function NoteBody({
           <a
             key={`page:${start}`}
             href={segment.url}
-            className="inline-flex items-center gap-1 rounded-sm bg-foreground/10 px-1 align-baseline font-mono text-xs text-foreground outline-none transition-colors duration-150 ease-out hover:bg-foreground/16 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="inline-flex items-center gap-1 rounded-sm bg-foreground/10 px-1 align-baseline font-mono text-xs text-foreground outline-none transition-colors duration-150 ease-out motion-reduce:transition-none hover:bg-foreground/16 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -280,7 +280,7 @@ export function Iter8NoteRow({
         ) : null}
         <span className="ms-auto flex shrink-0 items-center gap-1">
           {isDraft && (canUpdate || canDelete) ? (
-            <span className="flex items-center opacity-0 transition-opacity duration-150 ease-out group-hover/note:opacity-100 group-focus-within/note:opacity-100 pointer-coarse:opacity-100">
+            <span className="flex items-center opacity-0 transition-opacity duration-150 ease-out motion-reduce:transition-none group-hover/note:opacity-100 group-focus-within/note:opacity-100 pointer-coarse:opacity-100">
               {canUpdate ? (
                 <Tooltip>
                   <TooltipTrigger
@@ -331,7 +331,7 @@ export function Iter8NoteRow({
       {note.reply ? (
         <span className="flex min-w-0 items-start gap-1.5 ps-5.5 text-xs leading-4 text-muted-foreground">
           <CornerDownRightIcon aria-hidden className="mt-px size-3.5 shrink-0" />
-          <span>{note.reply}</span>
+          <span className="min-w-0 wrap-anywhere">{note.reply}</span>
         </span>
       ) : null}
     </div>

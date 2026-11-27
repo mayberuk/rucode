@@ -71,6 +71,7 @@ export function Iter8ReviewFrame({
   pickNote,
   cancelPickNote,
   setPins,
+  pinsTargetId,
   navigate,
   openExternally,
 }: {
@@ -81,6 +82,8 @@ export function Iter8ReviewFrame({
   pickNote: (() => Promise<PreviewAnnotationSubmissionResult | null>) | null;
   cancelPickNote: (() => void) | null;
   setPins: ((pins: Iter8ReviewPins) => void) | null;
+  /** Names the guest `setPins` draws on, so a tab switch re-sends pins that did not change. */
+  pinsTargetId: string | null;
   navigate: (url: string) => void;
   openExternally: (url: string) => void;
 }) {
@@ -98,6 +101,7 @@ export function Iter8ReviewFrame({
   const [picking, setPicking] = useState(false);
   const [sendingPageId, setSendingPageId] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
+  const [sentNoteIds, setSentNoteIds] = useState<ReadonlySet<string>>(() => new Set());
   const pickCancelRef = useRef<(() => void) | null>(null);
 
   const { match, snapshot, status } = review;
@@ -110,17 +114,17 @@ export function Iter8ReviewFrame({
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the desktop guest draws the pins over the page, outside React
   useEffect(() => {
     const target = currentSetPins();
-    if (pinsKey === null || target === null) return;
+    if (pinsKey === null || target === null || pinsTargetId === null) return;
     const next: Iter8ReviewPins = JSON.parse(pinsKey);
     target(next);
-  }, [pinsKey]);
+  }, [pinsKey, pinsTargetId]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the guest keeps its pins, and iter8's own overlay hidden, until told the dock is gone
   useEffect(() => {
     const target = currentSetPins();
-    if (!pinsShown || target === null) return;
+    if (!pinsShown || target === null || pinsTargetId === null) return;
     return () => target(null);
-  }, [pinsShown]);
+  }, [pinsShown, pinsTargetId]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a pick runs in the desktop guest and must end when the dock unmounts
   useEffect(() => () => pickCancelRef.current?.(), []);
@@ -161,7 +165,10 @@ export function Iter8ReviewFrame({
   }
 
   const { page, path } = match;
-  const availability = sendAvailability(snapshot, page);
+  const availability = sendAvailability(snapshot, {
+    ...page,
+    notes: page.notes.filter((item) => !sentNoteIds.has(item.id)),
+  });
   const stateKey = refusalStateKey(snapshot, page);
   const activeRefusal =
     refusal !== null && refusal.pageId === page.id && refusal.stateKey === stateKey
@@ -192,13 +199,15 @@ export function Iter8ReviewFrame({
       : gt("Add a note first"));
   const paths = [...new Set(["/", path, ...groupNotesByPath(page).map((group) => group.path)])];
 
-  const send = async (idempotencyKey: string) => {
+  const send = async (idempotencyKey: string, draftIds: ReadonlyArray<string>) => {
     setSendingPageId(page.id);
     const result = await sendRound({ environmentId, input: { pageId: page.id, idempotencyKey } });
     setSendingPageId(null);
     if (result._tag === "Success") {
       if (result.value.outcome === "refused") {
         setRefusal({ pageId: page.id, stateKey, reason: result.value.reason });
+      } else {
+        setSentNoteIds((previous) => new Set([...previous, ...draftIds]));
       }
       return;
     }
@@ -211,7 +220,7 @@ export function Iter8ReviewFrame({
         children: gt("Retry"),
         onClick: () => {
           toastManager.close(toastId);
-          void send(idempotencyKey);
+          void send(idempotencyKey, draftIds);
         },
       },
     });
@@ -219,7 +228,13 @@ export function Iter8ReviewFrame({
 
   const startSend = () => {
     if (!ready || sending) return;
-    void send(randomUUID());
+    const draftIds = page.notes
+      .filter(
+        (item) =>
+          item.status === "draft" && item.author.kind === "user" && !sentNoteIds.has(item.id),
+      )
+      .map((item) => item.id);
+    void send(randomUUID(), draftIds);
   };
 
   const addNote = async () => {
