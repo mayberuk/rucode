@@ -211,6 +211,9 @@ it("docks the bar and the grouped notes around an iter8 page, and lists its sess
   await expect.element(screen.getByRole("button", { name: /^\/confirm\s*2$/ })).toBeVisible();
   const draftRow = screen.getByRole("button", { name: /Match the totals/ });
   await expect.element(draftRow).toMatchTextContent(/^1Fixbutton\.total.*Draft/);
+  await expect
+    .element(draftRow)
+    .toHaveAccessibleName(`Note 1, Fix: Match the totals on ${origin}/confirm.`);
   const doneRow = screen.getByRole("button", { name: /Is the fee final/ });
   await expect.element(doneRow).toMatchTextContent("Resolved");
   await expect.element(doneRow).toMatchTextContent("Yes, the fee is final.");
@@ -477,6 +480,22 @@ it("shows iter8's refusal in the bar and keeps Send disabled", async () => {
   await expect.element(sendButton).toBeDisabled();
 });
 
+it("abbreviates a stale-page refusal in the bar and keeps the full sentence for screen readers", async () => {
+  using env = setup();
+  env.send.mockResolvedValue(
+    AsyncResult.success({ outcome: "refused", reason: "stale-generation" } as const),
+  );
+  await using screen = await render(env.frame({ url: `${origin}/plans` }));
+  const full = "iter8 reopened this page since it loaded. Reload it, then send again.";
+
+  await screen.getByRole("button", { name: "Send round" }).click();
+  await expect.element(screen.getByText("Page reopened. Reload to send.")).toBeVisible();
+  await expect.element(screen.getByRole("status")).toMatchTextContent(full);
+  await expect
+    .element(screen.getByRole("button", { name: "Send round" }))
+    .toHaveAccessibleDescription(full);
+});
+
 it("retries a send with an unknown outcome under the same idempotency key", async () => {
   using env = setup();
   const first = Promise.withResolvers<Awaited<ReturnType<typeof iter8Rpc.sendIter8Round.run>>>();
@@ -492,7 +511,11 @@ it("retries a send with an unknown outcome under the same idempotency key", asyn
   });
   await vi.waitFor(() => expect(env.toast).toHaveBeenCalledTimes(1));
   const toast = env.toast.mock.calls[0]![0];
-  expect(toast).toMatchObject({ type: "error", title: "The round may not have been sent" });
+  expect(toast).toMatchObject({
+    type: "error",
+    title: "The round may not have been sent",
+    description: "Retrying is safe. It won't send the round twice.",
+  });
   const retry = toast.actionProps?.onClick as (() => void) | undefined;
   expect(retry).toBeTypeOf("function");
   await act(() => retry!());

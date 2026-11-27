@@ -21,6 +21,13 @@ import { deleteIter8Note, updateIter8Note } from "~/rpc/iter8";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { type Iter8BodySegment, splitPageLinks } from "./iter8Review.logic";
 
+const EXCERPT_LENGTH = 60;
+
+function excerpt(body: string): string {
+  const text = body.replace(/\s+/g, " ").trim();
+  return text.length > EXCERPT_LENGTH ? `${text.slice(0, EXCERPT_LENGTH).trimEnd()}…` : text;
+}
+
 const INTENTS = ["fix", "change", "question", "keep"] as const satisfies ReadonlyArray<Iter8Intent>;
 
 function isIntent(value: unknown): value is Iter8Intent {
@@ -247,6 +254,11 @@ export function Iter8NoteRow({
     <div
       role="button"
       tabIndex={0}
+      aria-label={gt("Note {label}, {intent}: {excerpt}", {
+        label,
+        intent: intentLabel(note.intent),
+        excerpt: excerpt(note.body),
+      })}
       aria-current={selected ? "true" : undefined}
       className={cn(
         "group/note relative flex w-full cursor-pointer flex-col gap-0.5 rounded-md px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",

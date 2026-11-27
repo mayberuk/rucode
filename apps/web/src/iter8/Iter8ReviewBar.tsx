@@ -17,6 +17,7 @@ export function Iter8ReviewBar({
   paths,
   roundLabel,
   notice,
+  noticeDetail,
   sendTooltip,
   sendDisabled,
   sending,
@@ -33,6 +34,8 @@ export function Iter8ReviewBar({
   roundLabel: string | null;
   /** Why Send is unavailable, shown in place of the round status. */
   notice: string | null;
+  /** The notice in full, for the tooltip and screen readers when the visible text is abbreviated. */
+  noticeDetail: string | null;
   sendTooltip: string;
   sendDisabled: boolean;
   sending: boolean;
@@ -111,8 +114,19 @@ export function Iter8ReviewBar({
       </Menu>
       <span className="flex-1" />
       {status ? (
-        <span id={noticeId} className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">
-          {status}
+        <span
+          id={noticeId}
+          role={notice ? "status" : undefined}
+          className="min-w-0 truncate text-xs text-muted-foreground tabular-nums"
+        >
+          {notice && noticeDetail ? (
+            <>
+              <span aria-hidden>{status}</span>
+              <span className="sr-only">{noticeDetail}</span>
+            </>
+          ) : (
+            status
+          )}
         </span>
       ) : null}
       <Tooltip>

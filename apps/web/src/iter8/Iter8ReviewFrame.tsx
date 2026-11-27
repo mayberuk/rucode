@@ -176,20 +176,26 @@ export function Iter8ReviewFrame({
       : null;
   const sessionReason = (reason: "no-session" | "session-ended" | Iter8SendRefusal) =>
     reason === "no-session" || reason === "no-pairing"
-      ? gt("No session owns this page")
+      ? { text: gt("No session owns this page"), detail: null }
       : reason === "session-ended" || reason === "session-gone"
-        ? gt("The session that owns this page has ended")
-        : gt("iter8 reopened this page since it loaded. Reload it, then send again.");
-  const notice =
+        ? { text: gt("The session that owns this page has ended"), detail: null }
+        : {
+            text: gt("Page reopened. Reload to send."),
+            detail: gt("iter8 reopened this page since it loaded. Reload it, then send again."),
+          };
+  const blockedReason =
     activeRefusal !== null
       ? sessionReason(activeRefusal)
       : availability.kind === "blocked" && availability.reason !== "no-drafts"
         ? sessionReason(availability.reason)
         : null;
+  const notice = blockedReason?.text ?? null;
+  const noticeDetail = blockedReason?.detail ?? null;
   const ready = availability.kind === "ready" && activeRefusal === null && canSend;
   const sending = sendingPageId === page.id;
   const shortcut = isMacPlatform(navigator.platform) ? "⌘↵" : "Ctrl+Enter";
   const sendTooltip =
+    noticeDetail ??
     notice ??
     (availability.kind === "ready"
       ? gt("Send {count, plural, one {# note} other {# notes}} as one round ({shortcut})", {
@@ -215,7 +221,7 @@ export function Iter8ReviewFrame({
     const toastId = toastManager.add({
       type: "error",
       title: gt("The round may not have been sent"),
-      description: gt("Retrying can't send it twice."),
+      description: gt("Retrying is safe. It won't send the round twice."),
       actionProps: {
         children: gt("Retry"),
         onClick: () => {
@@ -291,6 +297,7 @@ export function Iter8ReviewFrame({
         paths={paths}
         roundLabel={roundLabel([page], roundStatus(page))}
         notice={notice}
+        noticeDetail={noticeDetail}
         sendTooltip={sendTooltip}
         sendDisabled={!ready}
         sending={sending}
