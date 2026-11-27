@@ -1,11 +1,15 @@
-import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
-import { AuthSettingsWriteScope } from "@t3tools/contracts";
-import { EnvironmentId, type T3ProjectFileScript } from "@t3tools/contracts";
+import {
+  AuthSettingsWriteScope,
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  type T3ProjectFileScript,
+} from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { useGT } from "gt-react";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 import { useT3ProjectFileState } from "../../hooks/useT3ProjectFileScripts";
@@ -29,11 +33,63 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { ProjectActionsList } from "./ProjectActionsList";
+import { ScopedSwitch } from "./ScopedSwitch";
 import { useProjectScriptSettings } from "./useProjectScriptSettings";
-import { SettingsRow, SettingsSection } from "./settingsLayout";
+import { SettingsRow, SettingsSection, SettingResetButton } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { useScopedSettingsWriteAllowed, useUpdateScopedSettings } from "./useScopedSettings";
 
-export function ProjectActionsSettings() {
+export function ProjectActionsSettings({ suggestionsOnly = false }: { suggestionsOnly?: boolean }) {
+  return (
+    <SettingsSection id="project-actions" title="Actions">
+      {!suggestionsOnly && <ProjectActionsEditor />}
+      <SuggestProjectActionsSetting />
+    </SettingsSection>
+  );
+}
+
+function SuggestProjectActionsSetting() {
+  const gt = useGT();
+  const { target, targets } = useSettingsScope();
+  const canWriteSettings = useScopedSettingsWriteAllowed();
+  const updateSettings = useUpdateScopedSettings();
+  const title = gt("Suggest actions");
+  const defaultValue = DEFAULT_SERVER_SETTINGS.suggestProjectActions;
+  const checked = target?.settings.suggestProjectActions ?? defaultValue;
+  const differsFromDefault = targets.some(
+    ({ settings }) => settings.suggestProjectActions !== defaultValue,
+  );
+
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["suggestProjectActions"]}
+      title={title}
+      description={gt(
+        "When a project has no actions, read its scripts with the generated-text model and add a few. You can undo or edit them.",
+      )}
+      resetAction={
+        differsFromDefault ? (
+          <SettingResetButton
+            label={title}
+            onClick={() => updateSettings({ suggestProjectActions: defaultValue })}
+          />
+        ) : null
+      }
+      control={
+        <ScopedSwitch
+          settingKeys={["suggestProjectActions"]}
+          checked={checked}
+          disabled={!canWriteSettings}
+          onCheckedChange={(value) => updateSettings({ suggestProjectActions: value })}
+          aria-label={title}
+        />
+      }
+    />
+  );
+}
+
+function ProjectActionsEditor() {
   const { scope, targets, target } = useSettingsScope();
   const { environments } = useEnvironments();
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
@@ -108,7 +164,7 @@ export function ProjectActionsSettings() {
   };
 
   return (
-    <SettingsSection id="project-actions" title="Actions">
+    <>
       <SettingsRow
         serverScoped
         settingKeys={["defaultProjectScripts"]}
@@ -204,6 +260,6 @@ export function ProjectActionsSettings() {
           onClose={() => setRequest(null)}
         />
       )}
-    </SettingsSection>
+    </>
   );
 }

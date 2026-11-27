@@ -1,4 +1,5 @@
-import { RegistryContext } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
+import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type {
   DeleteProjectInput,
   UpdateProjectInput,
@@ -12,8 +13,14 @@ import {
   ProviderInstanceId,
   type AuthEnvironmentScope,
   type AuthSessionState,
+  type ProjectActionsSuggestInput,
+  type ProjectActionsSuggestResult,
+  type ProjectScript,
+  type ServerConfig,
+  type ServerSettings,
+  type ServerSettingsPatch,
 } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import { DEFAULT_CLIENT_SETTINGS, DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import {
   createMemoryHistory,
@@ -27,10 +34,13 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
+import "~/index.css";
 import { act, render, type Screen } from "../../../test/render";
 import type { Project } from "../../types";
 
 type SessionResult = AsyncResult.AsyncResult<AuthSessionState, Error>;
+type SettingsResult = AtomCommandResult<ServerSettings, Error>;
+type SuggestResult = AtomCommandResult<ProjectActionsSuggestResult, Error>;
 const state = vi.hoisted(() => ({
   sessions: new Map<EnvironmentId, Atom.Writable<SessionResult>>(),
   projects: [] as Project[],
@@ -48,6 +58,22 @@ const state = vi.hoisted(() => ({
         input: DeleteProjectInput;
       }) => Promise<AsyncResult.Success<void>>
     >(),
+  updateSettings:
+    vi.fn<
+      (request: {
+        environmentId: EnvironmentId;
+        input: { patch: ServerSettingsPatch };
+      }) => Promise<SettingsResult>
+    >(),
+  suggest:
+    vi.fn<
+      (request: {
+        environmentId: EnvironmentId;
+        input: ProjectActionsSuggestInput;
+      }) => Promise<SuggestResult>
+    >(),
+  upsertKeybinding: vi.fn(),
+  removeKeybinding: vi.fn(),
   confirm: vi.fn<() => Promise<boolean>>(),
   releaseUploads: vi.fn(),
   clearDraft: vi.fn(),
@@ -69,10 +95,12 @@ vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
 });
 vi.mock(import("~/state/environments"), async (original) => ({
   ...(await original()),
-  useEnvironments: (() => ({ environments })) as never,
+  useEnvironments: (() => ({ environments: useAtomValue(environmentsAtom) })) as never,
   readEnvironment: ((id: EnvironmentId) =>
-    environments.find((environment) => environment.environmentId === id) ?? null) as never,
+    appAtomRegistry.get(environmentsAtom).find((environment) => environment.environmentId === id) ??
+    null) as never,
   usePrimaryEnvironmentId: () => primaryId,
+  usePrimaryEnvironment: (() => useAtomValue(environmentsAtom)[0] ?? null) as never,
 }));
 vi.mock(import("~/state/entities"), async (original) => ({
   ...(await original()),
@@ -80,7 +108,10 @@ vi.mock(import("~/state/entities"), async (original) => ({
   useThreadShells: () => [],
   useServerConfigs: (() =>
     new Map(
-      environments.map((environment) => [environment.environmentId, environment.serverConfig]),
+      useAtomValue(environmentsAtom).map((environment) => [
+        environment.environmentId,
+        environment.serverConfig,
+      ]),
     )) as never,
   waitForProjectRemoval: async () => true,
 }));
@@ -97,8 +128,26 @@ vi.mock(import("~/state/projects"), async (original) => {
 });
 vi.mock(import("~/state/use-atom-command"), async (original) => ({
   ...(await original()),
-  useAtomCommand: ((command: "update" | "delete") => state[command]) as never,
+  useAtomCommand: ((command: "update" | "delete" | { label: string }) =>
+    typeof command === "string"
+      ? state[command]
+      : {
+          "environment-data:server:update-settings": state.updateSettings,
+          "environment-data:project-actions:suggest": state.suggest,
+          [serverEnvironment.upsertKeybinding.label]: state.upsertKeybinding,
+          [serverEnvironment.removeKeybinding.label]: state.removeKeybinding,
+        }[command.label]) as never,
 }));
+vi.mock(import("~/state/server"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      configValueAtom: (environmentId: EnvironmentId | null) => fixtureConfigAtom(environmentId),
+    },
+  };
+});
 vi.mock(import("~/hooks/useSettings"), async (original) => ({
   ...(await original()),
   useClientSettings: ((selector?: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
@@ -122,11 +171,6 @@ vi.mock(import("./ProjectDefaultsSettings"), async (original) => ({
   ...(await original()),
   ProjectDefaultsSettings: (() => null) as never,
 }));
-vi.mock(import("./ProjectActionsSettings"), async (original) => ({
-  ...(await original()),
-  ProjectActionsSettings: (() => null) as never,
-}));
-
 vi.mock(import("../files/projectFilesQueryState"), async (original) => ({
   ...(await original()),
   getProjectFileQueryAtom: () => missingProjectFile,
@@ -134,32 +178,53 @@ vi.mock(import("../files/projectFilesQueryState"), async (original) => ({
 
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
+import { I18nProvider } from "../../i18n/I18nProvider";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { assetEnvironment } from "../../state/assets";
+import { serverEnvironment } from "../../state/server";
 import { buildSidebarProjectSnapshots } from "../../sidebarProjectGrouping";
+import { useProjectScriptEditing } from "../chat/useProjectScriptEditing";
+import type {
+  ProjectActionSuggestOutcome,
+  ProjectActionSuggestionsController,
+} from "../projectActionSuggestions.logic";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { SettingsScopeProvider } from "./SettingsScopeContext";
 import { SettingsScopeNotice } from "./SettingsScopeNotice";
+import { pendingScopedWritesAtom } from "./scopedSettings";
 import { validateSettingsScopeSearch, type SettingsScopeSearch } from "./settingsScope";
 import { retainSettingsScope, validateSettingsRouteSearch } from "./settingsScopeNavigation";
 
 const primaryId = EnvironmentId.make("primary");
 const remoteId = EnvironmentId.make("remote");
 const instanceId = ProviderInstanceId.make("codex");
-const environments = [primaryId, remoteId].map((environmentId) => ({
-  environmentId,
-  label: environmentId,
-  connection: { phase: "connected" },
-  serverConfig: {
-    keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
-    settings: DEFAULT_SERVER_SETTINGS,
-    environment: { platform: { machine: "server" }, capabilities: { projectOrganization: true } },
-  },
-}));
+const makeEnvironments = () =>
+  [primaryId, remoteId].map((environmentId) => ({
+    environmentId,
+    label: environmentId,
+    connection: { phase: "connected" },
+    serverConfig: {
+      keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+      settings: { ...DEFAULT_SERVER_SETTINGS },
+      environment: {
+        platform: { machine: "server" },
+        capabilities: { projectOrganization: true, projectSettingsOverrides: true },
+      },
+    },
+  }));
+const environmentsAtom = Atom.make(makeEnvironments()).pipe(Atom.keepAlive);
+const fixtureConfigAtom = Atom.family((id: EnvironmentId | null) =>
+  Atom.make(
+    (get) =>
+      (get(environmentsAtom).find((environment) => environment.environmentId === id)
+        ?.serverConfig as ServerConfig | undefined) ?? null,
+  ),
+);
 const session = (scopes: ReadonlyArray<AuthEnvironmentScope>): AuthSessionState => ({
   authenticated: true,
   scopes,
+  permissions: scopes,
   auth: {
     policy: "remote-reachable",
     bootstrapMethods: ["one-time-token"],
@@ -180,9 +245,18 @@ function deferred<T>() {
 
 function setup() {
   vi.clearAllMocks();
-  state.sessions.clear();
-  for (const id of [primaryId, remoteId])
-    state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
+  appAtomRegistry.set(environmentsAtom, makeEnvironments());
+  appAtomRegistry.set(pendingScopedWritesAtom, []);
+  state.updateSettings.mockReset().mockResolvedValue(AsyncResult.success(DEFAULT_SERVER_SETTINGS));
+  state.suggest.mockReset();
+  for (const id of [primaryId, remoteId]) {
+    const atom = state.sessions.get(id);
+    if (atom) {
+      appAtomRegistry.set(atom, writable());
+    } else {
+      state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
+    }
+  }
   state.projects = [primaryId, remoteId].map((environmentId) => ({
     id: ProjectId.make(`project-${environmentId}`),
     environmentId,
@@ -240,11 +314,15 @@ async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
     getParentRoute: () => settingsRoute,
     path: "projects",
     component: () => (
-      <ProjectSettingsPanel
-        projectKey={key}
-        environmentId={search.machine ? EnvironmentId.make(search.machine) : null}
-        checkoutKey={search.checkout ?? null}
-      />
+      <I18nProvider>
+        <SettingsScopeProvider search={{ project: key, ...search }} onChange={() => {}}>
+          <ProjectSettingsPanel
+            projectKey={key}
+            environmentId={search.machine ? EnvironmentId.make(search.machine) : null}
+            checkoutKey={search.checkout ?? null}
+          />
+        </SettingsScopeProvider>
+      </I18nProvider>
     ),
   });
   const query = new URLSearchParams({ project: key });
@@ -282,7 +360,9 @@ async function mountSettings(search: SettingsScopeSearch) {
         search={route.useSearch()}
         onChange={(next) => void router.navigate({ to: "/settings/projects", search: () => next })}
       >
-        <ProjectsSettings />
+        <I18nProvider>
+          <ProjectsSettings />
+        </I18nProvider>
       </SettingsScopeProvider>
     ),
   });
@@ -777,6 +857,385 @@ describe("project settings scope", () => {
     await expect
       .element(page.getByRole("button", { name: "Remove project", exact: true }))
       .toBeEnabled();
+  });
+});
+
+describe("Suggest actions setting", () => {
+  const toggle = () => page.getByRole("switch", { name: "Suggest actions" });
+  const reset = () => page.getByRole("button", { name: "Reset Suggest actions to default" });
+  const withSuggestions = (suggestProjectActions: boolean) => ({
+    ...DEFAULT_SERVER_SETTINGS,
+    suggestProjectActions,
+  });
+
+  async function allowSettingsWrites() {
+    for (const id of [primaryId, remoteId]) {
+      await grant(id, AsyncResult.success(session([AuthSettingsWriteScope])));
+    }
+  }
+
+  async function publishSettings(
+    environmentIds: readonly EnvironmentId[],
+    settings: ServerSettings,
+  ) {
+    await act(() =>
+      appAtomRegistry.update(environmentsAtom, (environments) =>
+        environments.map((environment) =>
+          environmentIds.includes(environment.environmentId)
+            ? { ...environment, serverConfig: { ...environment.serverConfig, settings } }
+            : environment,
+        ),
+      ),
+    );
+  }
+
+  it("keeps each global change visible while saving, including a toggle queued behind a save", async () => {
+    setup();
+    state.projects = [];
+    await allowSettingsWrites();
+    const disable = deferred<SettingsResult>();
+    const enable = deferred<SettingsResult>();
+    state.updateSettings.mockReturnValueOnce(disable.promise).mockReturnValueOnce(enable.promise);
+    await using _screen = await mountSettings({ machine: primaryId });
+
+    await expect.element(toggle()).toBeChecked();
+    await userEvent.click(toggle());
+    await expect.element(toggle()).not.toBeChecked();
+    expect(appAtomRegistry.get(fixtureConfigAtom(primaryId))?.settings.suggestProjectActions).toBe(
+      true,
+    );
+    expect(state.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      environmentId: primaryId,
+      input: { patch: { suggestProjectActions: false } },
+    });
+
+    await userEvent.click(toggle());
+    await expect.element(toggle()).toBeChecked();
+    expect(state.updateSettings).toHaveBeenCalledOnce();
+    await act(() => disable.resolve(AsyncResult.success(withSuggestions(false))));
+    expect(state.updateSettings).toHaveBeenLastCalledWith({
+      environmentId: primaryId,
+      input: { patch: { suggestProjectActions: true } },
+    });
+    await expect.element(toggle()).toBeChecked();
+    await act(() => enable.resolve(AsyncResult.success(withSuggestions(true))));
+    await expect.element(toggle()).toBeChecked();
+    expect(state.toast).not.toHaveBeenCalled();
+  });
+
+  it("saves globally on every environment and resets to the built-in default", async () => {
+    setup();
+    await allowSettingsWrites();
+    state.updateSettings.mockResolvedValue(AsyncResult.success(withSuggestions(false)));
+    await using _screen = await mountSettings({});
+
+    await userEvent.click(toggle());
+    await vi.waitFor(() => expect(state.updateSettings).toHaveBeenCalledTimes(2));
+    expect(state.updateSettings.mock.calls).toEqual(
+      [primaryId, remoteId].map((environmentId) => [
+        { environmentId, input: { patch: { suggestProjectActions: false } } },
+      ]),
+    );
+    await expect.element(toggle()).not.toBeChecked();
+    await expect.element(reset()).toBeEnabled();
+    await publishSettings([primaryId, remoteId], withSuggestions(false));
+    state.updateSettings.mockResolvedValue(AsyncResult.success(withSuggestions(true)));
+    await userEvent.click(reset());
+    await vi.waitFor(() => expect(state.updateSettings).toHaveBeenCalledTimes(4));
+    expect(state.updateSettings.mock.calls.slice(2)).toEqual(
+      [primaryId, remoteId].map((environmentId) => [
+        { environmentId, input: { patch: { suggestProjectActions: true } } },
+      ]),
+    );
+    await expect.element(toggle()).toBeChecked();
+  });
+
+  it.each([
+    [
+      "a rejected save",
+      AsyncResult.failure<ServerSettings, Error>(Cause.fail(new Error("Save rejected"))),
+      "Save rejected",
+    ],
+    [
+      "an interrupted save",
+      AsyncResult.failure<ServerSettings, Error>(Cause.interrupt()),
+      "All fibers interrupted without error",
+    ],
+    [
+      "an unsupported setting",
+      AsyncResult.success(DEFAULT_SERVER_SETTINGS),
+      "does not support this setting",
+    ],
+  ] as const)("restores the stored value after %s", async (_case, result, message) => {
+    setup();
+    await allowSettingsWrites();
+    const save = deferred<SettingsResult>();
+    state.updateSettings.mockReturnValueOnce(save.promise);
+    await using _screen = await mountSettings({ machine: remoteId });
+
+    await userEvent.click(toggle());
+    await expect.element(toggle()).not.toBeChecked();
+    await act(() => save.resolve(result));
+    await expect.element(toggle()).toBeChecked();
+    await vi.waitFor(() =>
+      expect(state.toast).toHaveBeenCalledExactlyOnceWith({
+        type: "error",
+        title: "Setting not saved",
+        description: expect.stringContaining(message),
+      }),
+    );
+  });
+
+  it.each([undefined, "primary:/work/primary"])(
+    "saves and clears an override in the selected project scope (%s)",
+    async (checkout) => {
+      setup();
+      await allowSettingsWrites();
+      const id = state.projects[0]!.id;
+      const patch = { projectSettingsOverrides: { [id]: { suggestProjectActions: false } } };
+      const saved = { ...DEFAULT_SERVER_SETTINGS, ...patch };
+      state.updateSettings.mockResolvedValueOnce(AsyncResult.success(saved));
+      await using _screen = await mountSettings({
+        project: projectKey(),
+        machine: primaryId,
+        checkout,
+      });
+
+      await expect.element(toggle()).toBeChecked();
+      await userEvent.click(toggle());
+      await vi.waitFor(() =>
+        expect(state.updateSettings).toHaveBeenCalledExactlyOnceWith({
+          environmentId: primaryId,
+          input: { patch },
+        }),
+      );
+      await expect.element(toggle()).not.toBeChecked();
+      await publishSettings([primaryId], saved);
+      await userEvent.click(reset());
+      await vi.waitFor(() =>
+        expect(state.updateSettings).toHaveBeenLastCalledWith({
+          environmentId: primaryId,
+          input: { patch: { projectSettingsOverrides: { [id]: null } } },
+        }),
+      );
+      await expect.element(toggle()).toBeChecked();
+    },
+  );
+
+  it("disables the switch when the selected environment cannot write settings", async () => {
+    setup();
+    await using screen = await mountSettings({ machine: remoteId });
+    const switchElement = screen.container.querySelector<HTMLElement>(
+      '[aria-label="Suggest actions"][role="switch"]',
+    );
+    expect(switchElement).not.toBeNull();
+    await expect.element(switchElement).toHaveAttribute("data-disabled");
+    expect(state.updateSettings).not.toHaveBeenCalled();
+  });
+});
+
+const suggestedAction: ProjectScript = {
+  id: "test",
+  name: "Run tests",
+  command: "make test",
+  icon: "test",
+  runOnWorktreeCreate: false,
+};
+
+type SuggestionInput = Parameters<typeof useProjectScriptEditing>[0];
+const suggestionInput = (project: Project | null, scripts: readonly ProjectScript[] = []) => ({
+  environmentId: project?.environmentId ?? primaryId,
+  project,
+  scripts,
+  settings: DEFAULT_UNIFIED_SETTINGS,
+});
+
+function SuggestionProbe({
+  input,
+  onController,
+}: {
+  input: SuggestionInput;
+  onController: (controller: ProjectActionSuggestionsController) => void;
+}) {
+  onController(useProjectScriptEditing(input).projectActionSuggestions);
+  return null;
+}
+
+async function mountSuggestionController(input: SuggestionInput) {
+  let controller: ProjectActionSuggestionsController;
+  const view = (value: SuggestionInput) => (
+    <RegistryContext.Provider value={appAtomRegistry}>
+      <SuggestionProbe
+        input={value}
+        onController={(next) => {
+          controller = next;
+        }}
+      />
+    </RegistryContext.Provider>
+  );
+  const screen = await render(view(input));
+  return {
+    ...screen,
+    get controller() {
+      return controller;
+    },
+    select: (next: SuggestionInput) => screen.rerender(view(next)),
+  };
+}
+
+describe("project action suggestions controller", () => {
+  it("resolves the project override and requires a project and the destination's settings grant", async () => {
+    setup();
+    const project = { ...state.projects[1]!, title: "acme-app" };
+    const input = suggestionInput(project);
+    await using screen = await mountSuggestionController(input);
+    expect(screen.controller).toMatchObject({ projectName: "acme-app", available: false });
+    await grant(remoteId, AsyncResult.success(session([AuthSettingsWriteScope])));
+    expect(screen.controller.available).toBe(true);
+
+    const settings = (global: boolean, override?: boolean) => ({
+      ...DEFAULT_UNIFIED_SETTINGS,
+      suggestProjectActions: global,
+      projectSettingsOverrides:
+        override === undefined ? {} : { [project.id]: { suggestProjectActions: override } },
+    });
+    await screen.select({ ...input, settings: settings(true, false) });
+    expect(screen.controller.available).toBe(false);
+    await expect(screen.controller.suggest("manual")).resolves.toEqual({ _tag: "Skipped" });
+    await screen.select({ ...input, settings: settings(false) });
+    expect(screen.controller.available).toBe(false);
+    await screen.select({ ...input, settings: settings(false, true) });
+    expect(screen.controller.available).toBe(true);
+    await screen.select({ ...input, project: null });
+    expect(screen.controller).toMatchObject({ projectName: null, available: false });
+    await expect(screen.controller.suggest("manual")).resolves.toEqual({ _tag: "Skipped" });
+    expect(state.suggest).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      AsyncResult.success<ProjectActionsSuggestResult>({
+        _tag: "Added",
+        scripts: [suggestedAction],
+      }),
+      { _tag: "Added", scripts: [suggestedAction] },
+    ],
+    [
+      AsyncResult.success<ProjectActionsSuggestResult>({ _tag: "Skipped", reason: "in-progress" }),
+      { _tag: "Skipped" },
+    ],
+    [
+      AsyncResult.success<ProjectActionsSuggestResult>({ _tag: "NoneFound" }),
+      { _tag: "NoneFound" },
+    ],
+    [
+      AsyncResult.failure<ProjectActionsSuggestResult, Error>(
+        Cause.fail(new Error("Model unavailable")),
+      ),
+      { _tag: "Failed", message: "Model unavailable" },
+    ],
+    [
+      AsyncResult.failure<ProjectActionsSuggestResult, Error>(Cause.interrupt()),
+      { _tag: "Skipped" },
+    ],
+  ] as const)("stays busy until the RPC settles as %j", async (reply, outcome) => {
+    setup();
+    await grant(remoteId, AsyncResult.success(session([AuthSettingsWriteScope])));
+    const project = state.projects[1]!;
+    const response = deferred<SuggestResult>();
+    state.suggest.mockReturnValueOnce(response.promise);
+    await using screen = await mountSuggestionController(suggestionInput(project));
+
+    let pending!: Promise<ProjectActionSuggestOutcome>;
+    await act(() => {
+      pending = screen.controller.suggest("manual");
+    });
+    expect(screen.controller).toMatchObject({ suggesting: true, autoAttempted: false });
+    expect(state.suggest).toHaveBeenCalledExactlyOnceWith({
+      environmentId: remoteId,
+      input: { projectId: project.id, trigger: "manual" },
+    });
+    await act(async () => {
+      response.resolve(reply);
+      expect(await pending).toEqual(outcome);
+    });
+    expect(screen.controller.suggesting).toBe(false);
+  });
+
+  it("keeps automatic attempts and pending requests scoped to their project", async () => {
+    setup();
+    for (const id of [primaryId, remoteId]) {
+      await grant(id, AsyncResult.success(session([AuthSettingsWriteScope])));
+    }
+    const primary = suggestionInput(state.projects[0]!);
+    const remote = suggestionInput(state.projects[1]!);
+    const first = deferred<SuggestResult>();
+    const second = deferred<SuggestResult>();
+    const none = AsyncResult.success({ _tag: "NoneFound" } as const);
+    state.suggest.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    await using screen = await mountSuggestionController(primary);
+
+    let duplicate!: Promise<ProjectActionSuggestOutcome>;
+    await act(() => {
+      void screen.controller.suggest("auto");
+      duplicate = screen.controller.suggest("auto");
+    });
+    expect(state.suggest).toHaveBeenCalledOnce();
+    await expect(duplicate).resolves.toEqual({ _tag: "Skipped" });
+    expect(screen.controller).toMatchObject({ suggesting: true, autoAttempted: true });
+    await screen.select(remote);
+    expect(screen.controller).toMatchObject({ suggesting: false, autoAttempted: false });
+    await act(() => {
+      void screen.controller.suggest("manual");
+    });
+    expect(screen.controller.suggesting).toBe(true);
+    await act(() => second.resolve(none));
+    await screen.select(primary);
+    expect(screen.controller).toMatchObject({ suggesting: true, autoAttempted: true });
+    await act(() => first.resolve(none));
+    expect(screen.controller).toMatchObject({ suggesting: false, autoAttempted: true });
+    expect(await screen.controller.suggest("auto")).toEqual({ _tag: "Skipped" });
+    expect(state.suggest.mock.calls).toEqual([
+      [{ environmentId: primaryId, input: { projectId: primary.project!.id, trigger: "auto" } }],
+      [{ environmentId: remoteId, input: { projectId: remote.project!.id, trigger: "manual" } }],
+    ]);
+  });
+
+  it("persists Undo through the actions override and preserves edited, unrelated and same-command actions", async () => {
+    setup();
+    const project = state.projects[0]!;
+    const edited = { ...suggestedAction, id: "lint", command: "make check" };
+    const sameCommand = { ...suggestedAction, id: "other-test" };
+    const unrelated = { ...suggestedAction, id: "build", command: "make build" };
+    const keep = [edited, sameCommand, unrelated];
+    const input = suggestionInput(project, [suggestedAction, ...keep]);
+    await using screen = await mountSuggestionController({
+      ...input,
+      settings: {
+        ...input.settings,
+        projectSettingsOverrides: { [project.id]: { suggestProjectActions: false } },
+      },
+    });
+
+    await expect(
+      screen.controller.undo([
+        suggestedAction,
+        { ...edited, command: "make lint" },
+        { ...suggestedAction, id: "missing", command: "make dev" },
+      ]),
+    ).resolves.toMatchObject({ _tag: "Success" });
+    expect(state.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      environmentId: primaryId,
+      input: {
+        patch: {
+          projectSettingsOverrides: {
+            [project.id]: { suggestProjectActions: false, defaultProjectScripts: keep },
+          },
+        },
+      },
+    });
+    expect(state.upsertKeybinding).not.toHaveBeenCalled();
+    expect(state.removeKeybinding).not.toHaveBeenCalled();
   });
 });
 

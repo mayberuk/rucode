@@ -83,9 +83,15 @@ export function settlePendingScopedWrites(
   readSettings: (environmentId: EnvironmentId) => ServerSettings | undefined,
   saved?: ServerSettings,
 ): readonly PendingScopedWrite[] {
+  const targetCurrent = readSettings(target.environmentId);
+  // Saves to one environment run in order, so a result the stored copy already holds includes
+  // every earlier acknowledged save; keeping them would replay them over it.
+  const stored =
+    saved !== undefined && targetCurrent !== undefined && Equal.equals(targetCurrent, saved);
   return writes.flatMap((write) => {
     const current = readSettings(write.environmentId);
     if (write.save !== target.save || write.environmentId !== target.environmentId) {
+      if (stored && write.environmentId === target.environmentId && write.settledOver) return [];
       return pendingWriteApplies(write, current) ? [write] : [];
     }
     if (saved === undefined || current === undefined || Equal.equals(current, saved)) return [];

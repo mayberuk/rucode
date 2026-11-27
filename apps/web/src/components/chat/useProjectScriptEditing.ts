@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import type {
   KeybindingCommand,
   ProjectId,
@@ -14,8 +15,10 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { resolveProjectScripts } from "@t3tools/shared/projectScripts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
+import { useRef, useState } from "react";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import {
   decodeProjectScriptKeybindingRule,
@@ -29,10 +32,15 @@ import {
   releaseClaimedRoles,
 } from "../../projectScripts";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { suggestProjectActions } from "../../state/projectActions";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useProjects } from "../../state/entities";
+import {
+  scriptsAfterUndo,
+  type ProjectActionSuggestionsController,
+} from "../projectActionSuggestions.logic";
 import { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
@@ -54,6 +62,16 @@ export function useProjectScriptEditing(input: {
   const removeKeybinding = useAtomCommand(serverEnvironment.removeKeybinding, {
     reportFailure: false,
   });
+  const requestSuggestions = useAtomCommand(suggestProjectActions, { reportFailure: false });
+  const canSuggest = useAtomValue(suggestProjectActions.permissionAtom(environmentId));
+  const available =
+    project !== null &&
+    canSuggest &&
+    resolveProjectSettings(settings, project.id).settings.suggestProjectActions;
+  const autoAttempts = useRef(new Set<ProjectId>());
+  const pendingSuggestions = useRef(new Set<ProjectId>());
+  const [attemptedProjects, setAttemptedProjects] = useState(() => new Set<ProjectId>());
+  const [suggestingProjects, setSuggestingProjects] = useState(() => new Set<ProjectId>());
   const persistProjectScripts = async (input: {
     projectId: ProjectId;
     projectCwd: string;
@@ -265,9 +283,61 @@ export function useProjectScriptEditing(input: {
     }
     return result;
   };
+
+  const suggest: ProjectActionSuggestionsController["suggest"] = async (trigger) => {
+    if (!project || !available) return { _tag: "Skipped" };
+    const projectId = project.id;
+    if (
+      pendingSuggestions.current.has(projectId) ||
+      (trigger === "auto" && autoAttempts.current.has(projectId))
+    ) {
+      return { _tag: "Skipped" };
+    }
+    if (trigger === "auto") {
+      autoAttempts.current.add(projectId);
+      setAttemptedProjects(new Set(autoAttempts.current));
+    }
+    pendingSuggestions.current.add(projectId);
+    setSuggestingProjects(new Set(pendingSuggestions.current));
+
+    const result = await requestSuggestions({
+      environmentId,
+      input: { projectId, trigger },
+    }).finally(() => {
+      pendingSuggestions.current.delete(projectId);
+      setSuggestingProjects(new Set(pendingSuggestions.current));
+    });
+    if (result._tag === "Success") {
+      return result.value._tag === "Skipped" ? { _tag: "Skipped" } : result.value;
+    }
+    if (isAtomCommandInterrupted(result)) return { _tag: "Skipped" };
+    const error = squashAtomCommandFailure(result);
+    return { _tag: "Failed", message: error instanceof Error ? error.message : String(error) };
+  };
+  const undo: ProjectActionSuggestionsController["undo"] = async (added) => {
+    if (!project) return AsyncResult.success(undefined);
+    return persistProjectScripts({
+      projectId: project.id,
+      projectCwd: project.workspaceRoot,
+      previousScripts: scripts,
+      nextScripts: scriptsAfterUndo(scripts, added),
+      keybinding: undefined,
+      keybindingCommand: null,
+    });
+  };
+  const projectActionSuggestions: ProjectActionSuggestionsController = {
+    available,
+    projectName: project?.title ?? null,
+    suggesting: project !== null && suggestingProjects.has(project.id),
+    autoAttempted: project !== null && attemptedProjects.has(project.id),
+    suggest: useStableCallback(suggest),
+    undo: useStableCallback(undo),
+  };
+
   return {
     saveProjectScript: useStableCallback(saveProjectScript),
     updateProjectScript: useStableCallback(updateProjectScript),
     deleteProjectScript: useStableCallback(deleteProjectScript),
+    projectActionSuggestions,
   };
 }
