@@ -91,6 +91,7 @@ export const make = Effect.gen(function* () {
   const binDirectory = path.dirname(launcher);
   const ownedPathMarker = path.join(environment.stateDir, "cli-command-path-entry");
   const firstLaunchMarker = path.join(environment.stateDir, "cli-command-first-launch");
+  const rucodeLinkMarker = path.join(environment.stateDir, "cli-command-rucode-link");
 
   const fail = (message: string) => new DesktopCliCommandError({ message });
   const exists = (target: string) => fs.exists(target).pipe(Effect.orElseSucceed(() => false));
@@ -347,6 +348,7 @@ export const make = Effect.gen(function* () {
       const target = yield* fs.readLink(replaced).pipe(Effect.option);
       if (Option.getOrUndefined(target) === launcher) {
         yield* linkRucode(path.dirname(replaced));
+        yield* fs.writeFileString(rucodeLinkMarker, "").pipe(Effect.ignore);
         return yield* state;
       }
     }
@@ -382,6 +384,7 @@ export const make = Effect.gen(function* () {
       );
       if (!linked) continue;
       yield* linkRucode(directory);
+      yield* fs.writeFileString(rucodeLinkMarker, "").pipe(Effect.ignore);
       if (replaced !== undefined && replaced !== link) {
         yield* fs.remove(replaced).pipe(Effect.ignore);
         const oldRucode = path.join(path.dirname(replaced), "rucode");
@@ -447,10 +450,14 @@ export const make = Effect.gen(function* () {
     function* () {
       if (!environment.isPackaged) return;
       if (yield* exists(firstLaunchMarker)) {
-        const linked = Option.getOrUndefined(yield* installedAt);
-        if (linked !== undefined) {
-          const target = yield* fs.readLink(linked).pipe(Effect.option);
-          if (Option.getOrUndefined(target) === launcher) yield* linkRucode(path.dirname(linked));
+        // Once, for a t3 installed before rucode existed; a rucode the user removed stays removed.
+        if (!windows && !(yield* exists(rucodeLinkMarker))) {
+          const linked = Option.getOrUndefined(yield* installedAt);
+          if (linked !== undefined) {
+            const target = yield* fs.readLink(linked).pipe(Effect.option);
+            if (Option.getOrUndefined(target) === launcher) yield* linkRucode(path.dirname(linked));
+          }
+          yield* fs.writeFileString(rucodeLinkMarker, "").pipe(Effect.ignore);
         }
         return;
       }

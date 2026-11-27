@@ -58,7 +58,7 @@ const commandIn = (
 
 /** `inherited` stands in for the app's own environment, which `extendEnv` passes on. */
 const fakePowerShell = (initial: string, inherited: Record<string, string> = {}) => {
-  const registry = { path: initial, failReads: false, writes: 0 };
+  const registry = { path: initial, failReads: false, writes: 0, spawns: 0 };
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
       const { options } = command as unknown as {
@@ -67,6 +67,7 @@ const fakePowerShell = (initial: string, inherited: Record<string, string> = {})
       const env = { ...(options.extendEnv ? inherited : {}), ...options.env };
       let exitCode = 0;
       let stdout = "";
+      registry.spawns += 1;
       if (env.T3_SET === "1") {
         registry.path = env.T3_PATH ?? "";
         registry.writes += 1;
@@ -121,14 +122,21 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       expect(yield* fs.readFileString(path.join(home, ".t3", "bin", "rucode"))).toBe(
         yield* fs.readFileString(path.join(home, ".t3", "bin", "t3")),
       );
-      // After an update, Install and a later launch both restore a `rucode` the earlier app version
-      // never linked.
+      // After an update, Install restores a `rucode` the earlier app version never linked.
       yield* fs.remove(rucodeLink);
       expect((yield* command.install).installedPath).toBe(link);
       expect(yield* fs.readLink(rucodeLink)).toBe(path.join(home, ".t3", "bin", "rucode"));
+      // Install links `rucode` once, so a user who then deletes only `rucode` keeps it deleted.
       yield* fs.remove(rucodeLink);
       yield* command.installOnFirstLaunch;
+      expect(Option.isSome(yield* fs.readLink(rucodeLink).pipe(Effect.option))).toBe(false);
+      // A launch after updating from a version that never linked `rucode` links it once.
+      yield* fs.remove(path.join(home, ".t3", "userdata", "cli-command-rucode-link"));
+      yield* command.installOnFirstLaunch;
       expect(yield* fs.readLink(rucodeLink)).toBe(path.join(home, ".t3", "bin", "rucode"));
+      yield* fs.remove(rucodeLink);
+      yield* command.installOnFirstLaunch;
+      expect(Option.isSome(yield* fs.readLink(rucodeLink).pipe(Effect.option))).toBe(false);
 
       // Add to PATH appends one line, once, and keeps a final line with no newline intact.
       const zshrc = path.join(home, ".zshrc");
@@ -463,6 +471,11 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const reader = yield* commandIn({ home, platform: "win32" }, inherited.spawner);
       yield* reader.install;
       expect(inherited.registry).toMatchObject({ path: `${userPath};${launcherDir}`, writes: 1 });
+
+      // Windows never links `rucode`, so a launch after the first one reads no PATH.
+      const spawned = inherited.registry.spawns;
+      yield* reader.installOnFirstLaunch;
+      expect(inherited.registry.spawns).toBe(spawned);
     }),
   );
 
