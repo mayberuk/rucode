@@ -184,7 +184,7 @@ const setup = Effect.fnUntraced(function* (
     ),
   );
   const notify = (file: string) =>
-    PubSub.publish(events, { _tag: "Update", path: path.join(storeDir, file) });
+    PubSub.publish(events, { _tag: "Update", path: path.join(storeDir, file) } as const);
   const setBusy = (busy: boolean) =>
     withStore(dbPath, (db) => db.prepare("UPDATE owners SET busy = ?").run(Number(busy)));
 
@@ -675,6 +675,10 @@ const reviewMethods = [
   WS_METHODS.iter8SendRound,
 ] as const;
 
+const sendRoundRpc = WsRpcGroup.requests.get(WS_METHODS.iter8SendRound);
+if (sendRoundRpc?._tag !== "iter8.sendRound") throw new Error("Expected the iter8.sendRound RPC");
+const isSendRoundPayload = Schema.is(sendRoundRpc.payloadSchema);
+
 it.each([
   { key: undefined, valid: false },
   { key: 12345678, valid: false },
@@ -684,11 +688,8 @@ it.each([
   { key: "a".repeat(100), valid: true },
   { key: "a".repeat(101), valid: false },
 ])("validates the round key at the RPC boundary ($key)", ({ key, valid }) => {
-  const rpc = WsRpcGroup.requests.get(WS_METHODS.iter8SendRound);
-  expect(rpc?._tag).toBe("iter8.sendRound");
-  if (rpc?._tag !== "iter8.sendRound") throw new Error("Expected the iter8.sendRound RPC");
   const payload = key === undefined ? { pageId: "pg1" } : { pageId: "pg1", idempotencyKey: key };
-  expect(Schema.is(rpc.payloadSchema)(payload)).toBe(valid);
+  expect(isSendRoundPayload(payload)).toBe(valid);
 });
 
 it.effect("lets read-only clients subscribe and denies every mutation before its handler", () =>

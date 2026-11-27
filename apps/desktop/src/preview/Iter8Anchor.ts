@@ -211,7 +211,7 @@ export function buildIter8Anchor(element: Element, win: Window): Iter8ElementAnc
   };
 }
 
-export function iter8Viewport(win: Window): Iter8Viewport {
+function iter8Viewport(win: Window): Iter8Viewport {
   return {
     width: win.innerWidth,
     height: win.innerHeight,
