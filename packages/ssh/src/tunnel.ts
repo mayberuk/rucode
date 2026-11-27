@@ -1580,9 +1580,19 @@ const reserveLocalTunnelPort = Effect.fn("ssh/tunnel.reserveLocalTunnelPort")(fu
 const waitForTunnelForward = Effect.fn("ssh/tunnel.waitForTunnelForward")(function* (input: {
   readonly target: DesktopSshEnvironmentTarget;
   readonly localPort: number;
+  readonly stderr: () => string;
 }) {
   const net = yield* NetService.NetService;
-  yield* net.hasListenerOnHost(input.localPort, "127.0.0.1").pipe(
+  yield* Effect.suspend(() =>
+    // With ExitOnForwardFailure=no, ssh stays up when its own -L fails and only says so here.
+    input.stderr().includes(`bind [127.0.0.1]:${input.localPort}: `)
+      ? Effect.fail(
+          new SshReadinessError({
+            message: `SSH connected to ${input.target.alias} but could not listen on 127.0.0.1:${input.localPort}.`,
+          }),
+        )
+      : net.hasListenerOnHost(input.localPort, "127.0.0.1"),
+  ).pipe(
     Effect.repeat({
       schedule: Schedule.spaced(Duration.millis(SSH_TUNNEL_FORWARD_PROBE_INTERVAL_MS)),
       until: (listening) => listening,
@@ -1642,9 +1652,8 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
   const args = [
     ...baseSshArgs(input.resolvedTarget, {
       batchMode: input.authOptions.batchMode ?? "no",
+      forwardsPorts: true,
     }),
-    "-o",
-    "ExitOnForwardFailure=yes",
     "-o",
     "ControlMaster=no",
     "-o",
@@ -1774,7 +1783,11 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     }),
   );
   yield* Effect.raceFirst(
-    waitForTunnelForward({ target: input.resolvedTarget, localPort: input.localPort }).pipe(
+    waitForTunnelForward({
+      target: input.resolvedTarget,
+      localPort: input.localPort,
+      stderr: () => stderrTail,
+    }).pipe(
       Effect.andThen(
         waitForHttpReady({
           baseUrl: input.httpBaseUrl,
