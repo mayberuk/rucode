@@ -10,6 +10,7 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildProjectActionsPrompt,
   buildReviewGuidePrompt,
   buildThreadTitlePrompt,
 } from "./textGenerationPrompts.ts";
@@ -84,7 +85,7 @@ export const generatedThreadTitle = (raw: string) => {
     : Effect.succeed(title);
 };
 
-export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
+export function fromRunner(name: string, run: Runner) {
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -147,6 +148,23 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     return { branch: formatGeneratedBranchName(generated.branch, input.naming) };
   });
 
+  const generateProjectActions: NonNullable<ProviderTextGeneration["generateProjectActions"]> =
+    Effect.fn(`${name}.generateProjectActions`)(function* (input) {
+      const { actions } = yield* run({
+        operation: "generateProjectActions",
+        cwd: input.cwd,
+        modelSelection: input.modelSelection,
+        ...buildProjectActionsPrompt(input),
+      });
+      return {
+        actions: actions.map(({ name, command, icon }) => ({
+          name: name.trim(),
+          command: command.trim(),
+          icon: icon.trim(),
+        })),
+      };
+    });
+
   const generateThreadTitle: ProviderTextGeneration["generateThreadTitle"] = Effect.fn(
     `${name}.generateThreadTitle`,
   )(function* (input) {
@@ -198,6 +216,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
+    generateProjectActions,
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,

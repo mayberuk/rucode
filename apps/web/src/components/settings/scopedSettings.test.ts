@@ -762,6 +762,36 @@ describe("scoped settings mixed values", () => {
   });
 });
 
+describe("queued saves to one environment", () => {
+  it("shows the newest save once a later ack matches the stored copy, however late the earlier ack was", () => {
+    const stored = environment("Laptop", { settings: { suggestProjectActions: true } });
+    const settings = stored.serverConfig!.settings;
+    const off = { suggestProjectActions: false };
+    const on = { suggestProjectActions: true };
+    const first = {};
+    const second = {};
+    let writes: readonly PendingScopedWrite[] = [
+      { save: first, environmentId: stored.environmentId, patch: off },
+      { save: second, environmentId: stored.environmentId, patch: on },
+    ];
+    const settle = (save: object, result: ServerSettings) => {
+      writes = settlePendingScopedWrites(
+        writes,
+        { save, environmentId: stored.environmentId },
+        () => settings,
+        result,
+      );
+    };
+    const shown = () =>
+      applyPendingScopedWrites([stored], writes)[0]!.serverConfig!.settings.suggestProjectActions;
+
+    settle(first, applyServerSettingsPatch(settings, off));
+    expect(shown()).toBe(true);
+    settle(second, { ...settings });
+    expect(shown()).toBe(true);
+  });
+});
+
 describe("project overrides at environment scope", () => {
   const laptop = EnvironmentId.make("laptop");
   const fleet = ProjectId.make("fleet");

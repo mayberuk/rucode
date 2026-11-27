@@ -258,7 +258,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         }),
     ),
   );
-  const nativeGeneration = yield* makeCodexTextGeneration(
+  const nativeGeneration: ProviderInstance["textGeneration"] = yield* makeCodexTextGeneration(
     config,
     undefined,
     models,
@@ -275,6 +275,10 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           }),
       ),
     );
+  const { generateProjectActions: generateNativeProjectActions } = nativeGeneration;
+  const generateProjectActions: ProviderInstance["textGeneration"]["generateProjectActions"] =
+    generateNativeProjectActions &&
+    ((value) => protect("generateProjectActions", generateNativeProjectActions(value)));
   const textGeneration: ProviderInstance["textGeneration"] = {
     generateCommitMessage: (value) =>
       protect("generateCommitMessage", nativeGeneration.generateCommitMessage(value)),
@@ -282,6 +286,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       protect("generatePrContent", nativeGeneration.generatePrContent(value)),
     generateBranchName: (value) =>
       protect("generateBranchName", nativeGeneration.generateBranchName(value)),
+    ...(generateProjectActions && { generateProjectActions }),
     generateThreadTitle: (value) =>
       protect("generateThreadTitle", nativeGeneration.generateThreadTitle(value)),
     generateReviewGuide: (value) =>

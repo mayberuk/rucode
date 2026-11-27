@@ -81,6 +81,13 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod("server.getSettings")).toBe(AuthOrchestrationReadScope);
   });
 
+  it("requires settings-write permission to suggest project actions", () => {
+    expect(WS_METHODS.projectActionsSuggest).toBe("projectActions.suggest");
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectActionsSuggest)).toBe(
+      AuthSettingsWriteScope,
+    );
+  });
+
   it("rejects unknown RPC method names", () => {
     for (const method of ["server.notRegistered", "toString", "constructor"]) {
       expect(() => requiredScopeForRpcMethod(method)).toThrow(
@@ -251,6 +258,46 @@ it.effect.each([WS_METHODS.subscribeVcsBranch, WS_METHODS.subscribeVcsStatus] as
       expect(handled).toBe(1);
     }),
 );
+
+describe("project action suggestion authorization", () => {
+  const method = WS_METHODS.projectActionsSuggest;
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof method> => tag !== method,
+    ),
+  );
+
+  it.effect.each(["auto", "manual"] as const)(
+    "refuses the %s trigger without settings-write permission",
+    (trigger) =>
+      Effect.gen(function* () {
+        let handled = 0;
+        const handler = group.toLayerHandler(method, () =>
+          Effect.sync(() => {
+            handled++;
+            return { _tag: "NoneFound" as const };
+          }),
+        );
+        const input = { projectId: ProjectId.make("acme-app"), trigger };
+        const denied = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.merge(handler, RpcAuthorization.layer([AuthOrchestrationOperateScope])),
+          ),
+        );
+        expect(yield* denied[method](input).pipe(Effect.flip)).toMatchObject({
+          _tag: "EnvironmentAuthorizationError",
+          requiredPermission: AuthSettingsWriteScope,
+        });
+        expect(handled).toBe(0);
+
+        const allowed = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(Layer.merge(handler, RpcAuthorization.layer([AuthSettingsWriteScope]))),
+        );
+        expect(yield* allowed[method](input)).toEqual({ _tag: "NoneFound" });
+        expect(handled).toBe(1);
+      }),
+  );
+});
 
 describe("settings mutation authorization", () => {
   const group = WsRpcGroup.omit(
