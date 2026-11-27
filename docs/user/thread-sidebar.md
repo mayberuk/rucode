@@ -158,8 +158,8 @@ project's folder comes last and shows only while it has active threads. Click a 
 close it. A closed folder says in words what its threads need: **Needs you** when one is waiting
 on you, otherwise how many have failed or are working, and when none of those apply, how long ago
 the latest one was active. Initiatives sit inside their project's folder. Sessions a thread
-started nest under it behind a count button; the button also says when one of them needs you,
-has failed or is working. Use the pen button on a folder, or right-click it, to start a thread in
+started nest under it behind a count button; the button shows an icon when one of them needs you,
+has failed or is working, and its tooltip names the state. Use the pen button on a folder, or right-click it, to start a thread in
 that project. Pinned threads stay above the folders, and Snoozed and Settled stay below them. In
 this mode you can drag a thread onto the composer to mention it, but not within the sidebar, and
 the Working section is off. Each device keeps its own choice.

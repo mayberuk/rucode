@@ -213,7 +213,8 @@ export function InitiativeGroupHeader(props: {
               {props.project.favicon === null ? null : (
                 <ProjectFavicon project={props.project.favicon} className="size-4 shrink-0" />
               )}
-              <span className="max-w-1/2 shrink-0 truncate font-normal text-secondary-label">
+              {/* The huge shrink makes the project name give way before the label does. */}
+              <span className="min-w-8 shrink-[1000] truncate font-normal text-secondary-label">
                 {props.project.displayName}
               </span>
               <span aria-hidden className="shrink-0 font-normal text-secondary-label">

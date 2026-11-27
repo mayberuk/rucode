@@ -608,6 +608,78 @@ describe("sidebar initiative groups", () => {
     expect(screen.router!.state.location.search).toEqual({ environmentId, slug: group.slug });
   });
 
+  const longLabel = "Checkout retries and every follow-up migration we planned for the quarter";
+  it.each([
+    {
+      name: "a project and label that fit",
+      project: "acme",
+      label: "Checkout retries",
+      labelTruncated: false,
+      projectTruncated: false,
+    },
+    {
+      name: "a label that fits only when the project gives way",
+      project: "acme-app",
+      label: "Checkout retries",
+      labelTruncated: false,
+      projectTruncated: true,
+    },
+    {
+      name: "a label too long for the row",
+      project: "acme-app",
+      label: longLabel,
+      labelTruncated: true,
+      projectTruncated: true,
+    },
+    {
+      name: "a long project and a long label",
+      project: "acme-application-monorepo-with-a-very-long-name",
+      label: longLabel,
+      labelTruncated: true,
+      projectTruncated: true,
+    },
+  ])(
+    "lets the flat header's label use the free width and keeps the count inside: $name",
+    async ({ project: projectName, label, labelTruncated, projectTruncated }) => {
+      using stack = new DisposableStack();
+      const style = document.createElement("style");
+      style.textContent = appCss;
+      document.head.append(style);
+      stack.defer(() => style.remove());
+      setup(stack, { boringSidebarEnabled: false });
+      vi.mocked(useProjects).mockReturnValue([{ ...groupedProject, title: projectName }]);
+      stack.use(
+        vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([{ ...group, label }]),
+      );
+      await using screen = await render(
+        <SidebarProvider>
+          <div style={{ width: "16rem", flex: "none" }}>
+            <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+          </div>
+        </SidebarProvider>,
+      );
+      const header = screen.getByRole("button", { name: new RegExp(`^${projectName} · `) });
+      await expect.element(header).toBeInTheDocument();
+      const button = header.element();
+      const spans = Array.from(button.querySelectorAll("span"));
+      const labelText = spans.find((span) => span.textContent === label)!;
+      const projectText = spans.find((span) => span.textContent === projectName)!;
+      const count = spans.find((span) => span.textContent === "2")!;
+
+      expect(count.getBoundingClientRect().right).toBeLessThanOrEqual(
+        button.getBoundingClientRect().right,
+      );
+      const gapToCount =
+        count.getBoundingClientRect().left - labelText.getBoundingClientRect().right;
+      expect(gapToCount).toBeGreaterThanOrEqual(0);
+      // Out of room, the label ends one gap, the hidden rule's minimum width and one gap before the count.
+      if (labelTruncated || projectTruncated) expect(gapToCount).toBeLessThanOrEqual(26);
+      expect(labelText.scrollWidth > labelText.clientWidth).toBe(labelTruncated);
+      expect(projectText.scrollWidth > projectText.clientWidth).toBe(projectTruncated);
+      expect(projectText.clientWidth).toBeGreaterThan(0);
+    },
+  );
+
   it("counts a spawned session of a hidden member in the collapsed initiative's status", async () => {
     using stack = new DisposableStack();
     setup(stack, {
