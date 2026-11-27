@@ -1,12 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import type { ProjectScript } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import * as NodePath from "node:path";
 import { expect, it } from "vite-plus/test";
 import { writeFakeCli } from "../../packages/provider-testing/src/fakeCli.ts";
 import { projectActionEvaluationCases } from "./cases.ts";
@@ -222,8 +222,9 @@ if (args.includes("mcp") && args.includes("list")) {
 }
 `,
     });
+    const delimiter = (yield* HostProcess.Platform) === "win32" ? ";" : ":";
     const commandPath = [directory, path.dirname(process.execPath), environment.PATH ?? ""].join(
-      NodePath.delimiter,
+      delimiter,
     );
     const result = yield* runEval(
       directory,

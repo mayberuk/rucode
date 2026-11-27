@@ -15,7 +15,7 @@ export type ProjectActionRejection =
   | "dangerous-command"
   | "duplicate";
 
-export const MAX_SUGGESTED_PROJECT_ACTIONS = 3;
+const MAX_SUGGESTED_PROJECT_ACTIONS = 3;
 
 const MAX_NAME_LENGTH = 40;
 const MAX_COMMAND_LENGTH = 200;
