@@ -64,7 +64,7 @@ export function ConfirmBlock({
   const answerable = mode === "answerable" && threadRef !== undefined;
   const answerableNumbers = questions.filter((q) => q.kind !== "open").map((q) => q.number);
   const prompt = useComposerDraftStore((state) =>
-    threadRef ? (state.getComposerDraft(threadRef)?.prompt ?? "") : "",
+    answerable ? (state.getComposerDraft(threadRef)?.prompt ?? "") : "",
   );
   const answers = answerable ? parseConfirmReply(questions, prompt).answers : NO_ANSWERS;
   const [focusedRow, setFocusedRow] = useState(answerableNumbers[0]);
@@ -199,6 +199,7 @@ export function ConfirmBlock({
                         .join("")}
                       description={option.suggested ? gt("my pick") : undefined}
                       shortcutDigit={null}
+                      className="text-start"
                       onClick={() => select(question, index)}
                     />
                   ))}
