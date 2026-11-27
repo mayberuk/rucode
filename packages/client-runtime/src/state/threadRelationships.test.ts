@@ -5,6 +5,7 @@ import * as DateTime from "effect/DateTime";
 import {
   deriveThreadRelationshipGraph,
   immediateThreadRelationships,
+  isSpawnedChildLineage,
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   threadRelationshipRowStatus,
@@ -92,6 +93,77 @@ describe("thread relationships", () => {
       );
     },
   );
+
+  it.each([
+    { lineage: { relationshipToParent: null }, forkedFromRun: false, kind: "spawned" },
+    {
+      lineage: { relationshipToParent: null, sideChat: false },
+      forkedFromRun: false,
+      kind: "spawned",
+    },
+    { lineage: { relationshipToParent: "fork" }, forkedFromRun: false, kind: "fork" },
+    { lineage: { relationshipToParent: "fork" }, forkedFromRun: true, kind: "fork" },
+    { lineage: { relationshipToParent: null, sideChat: true }, forkedFromRun: false, kind: "fork" },
+    { lineage: { relationshipToParent: null }, forkedFromRun: true, kind: "fork" },
+    { lineage: { relationshipToParent: "subagent" }, forkedFromRun: false, kind: "subagent" },
+  ] as const)(
+    "derives a $kind edge for lineage $lineage with forkedFrom run $forkedFromRun, loaded parent or not",
+    ({ lineage, forkedFromRun, kind }) => {
+      const parent = ThreadId.make("thread-parent");
+      const runSource = ThreadId.make("thread-run-source");
+      const child = {
+        id: ThreadId.make("thread-child"),
+        title: "Child",
+        status: "completed",
+        forkedFrom: forkedFromRun
+          ? { type: "run", threadId: runSource, runId: "run-source" }
+          : null,
+        lineage: { rootThreadId: parent, parentThreadId: parent, ...lineage },
+      };
+      const parentShell = {
+        id: parent,
+        title: "Parent",
+        status: "completed",
+        forkedFrom: null,
+        lineage: { rootThreadId: parent, parentThreadId: null, relationshipToParent: null },
+      };
+      const expected = [
+        {
+          sourceThreadId: forkedFromRun ? runSource : parent,
+          targetThreadId: child.id,
+          kind,
+          status: "completed",
+        },
+      ];
+      for (const threads of [[child], [parentShell, child]]) {
+        expect(
+          deriveThreadRelationshipGraph({ threads: threads as never, projection: null }).edges,
+        ).toEqual(expected);
+      }
+      const openedOmittedChild = deriveThreadRelationshipGraph({
+        threads: [],
+        projection: { thread: child, subagents: [], contextTransfers: [] } as never,
+      });
+      expect(openedOmittedChild.edges).toEqual([{ ...expected[0], status: null }]);
+    },
+  );
+
+  it.each([
+    ["a spawned session", { parentThreadId: "p", relationshipToParent: null }, true],
+    [
+      "an explicit non-side-chat",
+      { parentThreadId: "p", relationshipToParent: null, sideChat: false },
+      true,
+    ],
+    ["a fork", { parentThreadId: "p", relationshipToParent: "fork" }, false],
+    ["a subagent", { parentThreadId: "p", relationshipToParent: "subagent" }, false],
+    ["a side chat", { parentThreadId: "p", relationshipToParent: null, sideChat: true }, false],
+    ["a thread with no parent", { parentThreadId: null, relationshipToParent: null }, false],
+  ] as const)("isSpawnedChildLineage is %s → %s", (_, lineage, spawned) => {
+    expect(
+      isSpawnedChildLineage({ rootThreadId: ThreadId.make("root"), ...lineage } as never),
+    ).toBe(spawned);
+  });
 
   it("keeps an older activity run visible over a newer cancelled run", () => {
     const parent = ThreadId.make("thread-parent");

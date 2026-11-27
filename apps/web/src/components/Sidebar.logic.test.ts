@@ -34,8 +34,11 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  groupSidebarFolders,
   groupSidebarThreadsByProject,
+  nestSpawnedThreads,
   partitionInitiativeThreads,
+  resolveSidebarGroupStatus,
   resolveInboxShelf,
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
@@ -1736,6 +1739,295 @@ describe("groupSidebarThreadsByProject", () => {
   });
 });
 
+const appProject = ProjectId.make("acme-app");
+
+function lineageThread(
+  id: string,
+  parent: string | null,
+  options: {
+    readonly relationship?: "fork" | "subagent" | null;
+    readonly sideChat?: boolean;
+    readonly createdAt?: string;
+    readonly projectId?: ProjectId;
+    readonly environmentId?: EnvironmentId;
+  } = {},
+) {
+  return {
+    environmentId: options.environmentId ?? localEnvironmentId,
+    id: ThreadId.make(id),
+    projectId: options.projectId ?? appProject,
+    createdAt: options.createdAt ?? "2026-01-01T00:00:00.000Z",
+    lineage: {
+      rootThreadId: ThreadId.make(parent ?? id),
+      parentThreadId: parent === null ? null : ThreadId.make(parent),
+      relationshipToParent: options.relationship ?? null,
+      ...(options.sideChat === undefined ? {} : { sideChat: options.sideChat }),
+    },
+  };
+}
+
+const lineageKey = (id: string, environmentId = localEnvironmentId) =>
+  scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(id)));
+
+describe("nestSpawnedThreads", () => {
+  const summarize = (threads: ReadonlyArray<ReturnType<typeof lineageThread>>) => {
+    const nesting = nestSpawnedThreads(threads);
+    return {
+      nested: [...nesting.nestedKeys].toSorted(),
+      hidden: [...nesting.hiddenKeys].toSorted(),
+      children: Object.fromEntries(
+        [...nesting.childrenByAnchorKey].map(([anchor, rows]) => [
+          anchor,
+          rows.map((row) => row.id),
+        ]),
+      ),
+    };
+  };
+
+  it("nests a spawned child under its listed parent and maps it to that parent", () => {
+    const nesting = nestSpawnedThreads([
+      lineageThread("alpha", null),
+      lineageThread("alpha-child", "alpha"),
+    ]);
+
+    expect([...nesting.nestedKeys]).toEqual([lineageKey("alpha-child")]);
+    expect(nesting.hiddenKeys.size).toBe(0);
+    expect(nesting.childrenByAnchorKey.get(lineageKey("alpha"))?.map((row) => row.id)).toEqual([
+      "alpha-child",
+    ]);
+    expect(nesting.anchorKeyOf(lineageKey("alpha-child"))).toBe(lineageKey("alpha"));
+    expect(nesting.anchorKeyOf(lineageKey("alpha"))).toBe(lineageKey("alpha"));
+    expect(nesting.anchorKeyOf(lineageKey("unlisted"))).toBe(lineageKey("unlisted"));
+  });
+
+  it("flattens a grandchild under the top-most listed ancestor, which counts both", () => {
+    const nesting = nestSpawnedThreads([
+      lineageThread("grandchild", "child", { createdAt: "2026-01-03T00:00:00.000Z" }),
+      lineageThread("child", "root", { createdAt: "2026-01-02T00:00:00.000Z" }),
+      lineageThread("root", null),
+    ]);
+
+    expect(nesting.childrenByAnchorKey.get(lineageKey("root"))?.map((row) => row.id)).toEqual([
+      "child",
+      "grandchild",
+    ]);
+    expect(nesting.childrenByAnchorKey.has(lineageKey("child"))).toBe(false);
+    expect(nesting.anchorKeyOf(lineageKey("grandchild"))).toBe(lineageKey("root"));
+    expect(nesting.anchorKeyOf(lineageKey("child"))).toBe(lineageKey("root"));
+    expect(nesting.hiddenKeys.size).toBe(0);
+  });
+
+  it("anchors on the nearest listed ancestor that is not itself spawned", () => {
+    expect(
+      summarize([
+        lineageThread("root", null),
+        lineageThread("fork", "root", { relationship: "fork" }),
+        lineageThread("spawned", "fork"),
+      ]),
+    ).toEqual({
+      nested: [lineageKey("spawned")],
+      hidden: [],
+      children: { [lineageKey("fork")]: ["spawned"] },
+    });
+  });
+
+  it("hides a child while any ancestor is unlisted and nests it again once it returns", () => {
+    const root = lineageThread("root", null);
+    const child = lineageThread("child", "root");
+    const grandchild = lineageThread("grandchild", "child");
+
+    expect(summarize([child, grandchild])).toEqual({
+      nested: [],
+      hidden: [lineageKey("child"), lineageKey("grandchild")].toSorted(),
+      children: {},
+    });
+    expect(summarize([root, grandchild])).toEqual({
+      nested: [],
+      hidden: [lineageKey("grandchild")],
+      children: {},
+    });
+    expect(summarize([root, child, grandchild])).toEqual({
+      nested: [lineageKey("child"), lineageKey("grandchild")].toSorted(),
+      hidden: [],
+      children: { [lineageKey("root")]: ["child", "grandchild"] },
+    });
+  });
+
+  it("nests a child whose project differs from its parent's", () => {
+    expect(
+      summarize([
+        lineageThread("root", null),
+        lineageThread("child", "root", { projectId: ProjectId.make("acme-api") }),
+      ]).children,
+    ).toEqual({ [lineageKey("root")]: ["child"] });
+  });
+
+  it("looks for the parent only in the child's own environment", () => {
+    const remote = EnvironmentId.make("environment-remote");
+    expect(
+      summarize([
+        lineageThread("root", null),
+        lineageThread("child", "root", { environmentId: remote }),
+      ]),
+    ).toEqual({ nested: [], hidden: [lineageKey("child", remote)], children: {} });
+  });
+
+  it("never nests or hides a fork, subagent, side chat or parentless thread", () => {
+    const others = [
+      lineageThread("fork", "root", { relationship: "fork" }),
+      lineageThread("subagent", "root", { relationship: "subagent" }),
+      lineageThread("side-chat", "root", { sideChat: true }),
+      lineageThread("orphan-fork", "missing", { relationship: "fork" }),
+    ];
+    for (const threads of [[lineageThread("root", null), ...others], others]) {
+      expect(summarize(threads)).toEqual({ nested: [], hidden: [], children: {} });
+    }
+  });
+
+  it("orders an anchor's children by creation time, then id", () => {
+    expect(
+      summarize([
+        lineageThread("late", "root", { createdAt: "2026-01-05T00:00:00.000Z" }),
+        lineageThread("tie-b", "root", { createdAt: "2026-01-03T00:00:00.000Z" }),
+        lineageThread("early", "root", { createdAt: "2026-01-02T00:00:00.000Z" }),
+        lineageThread("tie-a", "root", { createdAt: "2026-01-03T00:00:00.000Z" }),
+        lineageThread("root", null),
+      ]).children,
+    ).toEqual({ [lineageKey("root")]: ["early", "tie-a", "tie-b", "late"] });
+  });
+
+  it("hides threads caught in a lineage cycle instead of looping", () => {
+    expect(
+      summarize([
+        lineageThread("root", null),
+        lineageThread("cycle-a", "cycle-b"),
+        lineageThread("cycle-b", "cycle-a"),
+        lineageThread("self", "self"),
+        lineageThread("child", "root"),
+      ]),
+    ).toEqual({
+      nested: [lineageKey("child")],
+      hidden: [lineageKey("cycle-a"), lineageKey("cycle-b"), lineageKey("self")].toSorted(),
+      children: { [lineageKey("root")]: ["child"] },
+    });
+  });
+
+  it("returns the same empty nesting when nothing is spawned", () => {
+    const empty = nestSpawnedThreads([]);
+    const unspawned = nestSpawnedThreads([
+      lineageThread("root", null),
+      lineageThread("fork", "root", { relationship: "fork" }),
+    ]);
+
+    expect(empty.nestedKeys.size).toBe(0);
+    expect(empty.hiddenKeys.size).toBe(0);
+    expect(empty.childrenByAnchorKey.size).toBe(0);
+    expect(empty.anchorKeyOf(lineageKey("root"))).toBe(lineageKey("root"));
+    expect(unspawned.nestedKeys).toBe(empty.nestedKeys);
+    expect(unspawned.hiddenKeys).toBe(empty.hiddenKeys);
+    expect(unspawned.childrenByAnchorKey).toBe(empty.childrenByAnchorKey);
+  });
+});
+
+describe("groupSidebarFolders", () => {
+  const apiProject = ProjectId.make("acme-api");
+  const docsProject = ProjectId.make("acme-docs");
+  const folderGroup = (projectKey: string, projectId: ProjectId) => ({
+    projectKey,
+    memberProjectRefs: [{ environmentId: localEnvironmentId, projectId }],
+  });
+  const groups = [
+    folderGroup("app", appProject),
+    folderGroup("api", apiProject),
+    folderGroup("docs", docsProject),
+  ];
+  const initiative = (slug: string, members: ReadonlyArray<ReturnType<typeof lineageThread>>) => ({
+    slug,
+    members: members.map((thread) => ({ thread })),
+  });
+  const noThreads: ReadonlyArray<ReturnType<typeof lineageThread>> = [];
+  const summarize = (result: {
+    readonly folders: ReadonlyArray<{
+      readonly group: { readonly projectKey: string };
+      readonly threads: ReadonlyArray<{ readonly id: string }>;
+      readonly initiatives: ReadonlyArray<{ readonly slug: string }>;
+    }>;
+    readonly unplacedInitiatives: ReadonlyArray<{ readonly slug: string }>;
+  }) => ({
+    folders: result.folders.map((folder) => ({
+      projectKey: folder.group.projectKey,
+      threads: folder.threads.map((thread) => thread.id),
+      initiatives: folder.initiatives.map((entry) => entry.slug),
+    })),
+    unplaced: result.unplacedInitiatives.map((entry) => entry.slug),
+  });
+
+  it("places each initiative in its first member's project folder, keeping initiative-only folders", () => {
+    const result = groupSidebarFolders({
+      groups,
+      threads: [lineageThread("app-thread", null)],
+      initiatives: [
+        initiative("checkout-retries", [
+          lineageThread("orchestrator", null, { projectId: apiProject }),
+          lineageThread("part", null, { projectId: appProject }),
+        ]),
+        initiative("billing", [lineageThread("billing-part", null, { projectId: appProject })]),
+      ],
+      keepEmpty: () => false,
+    });
+
+    expect(summarize(result)).toEqual({
+      folders: [
+        { projectKey: "app", threads: ["app-thread"], initiatives: ["billing"] },
+        { projectKey: "api", threads: [], initiatives: ["checkout-retries"] },
+      ],
+      unplaced: [],
+    });
+  });
+
+  it("returns an initiative whose project has no folder, or that has no members, as unplaced", () => {
+    const result = groupSidebarFolders({
+      groups,
+      threads: noThreads,
+      initiatives: [
+        initiative("elsewhere", [
+          lineageThread("outside", null, { projectId: ProjectId.make("deleted") }),
+          lineageThread("inside", null, { projectId: appProject }),
+        ]),
+        initiative("empty", []),
+      ],
+      keepEmpty: (group) => group.projectKey === "docs",
+    });
+
+    expect(summarize(result)).toEqual({
+      folders: [{ projectKey: "docs", threads: [], initiatives: [] }],
+      unplaced: ["elsewhere", "empty"],
+    });
+  });
+
+  it("gives no folder to a project whose only threads are nested spawned children", () => {
+    const threads = [
+      lineageThread("root", null),
+      lineageThread("api-child", "root", { projectId: apiProject }),
+      lineageThread("docs-orphan", "missing", { projectId: docsProject }),
+    ];
+    const nesting = nestSpawnedThreads(threads);
+    const listed = threads.filter((thread) => {
+      const key = lineageKey(thread.id);
+      return !nesting.nestedKeys.has(key) && !nesting.hiddenKeys.has(key);
+    });
+
+    expect(
+      summarize(
+        groupSidebarFolders({ groups, threads: listed, initiatives: [], keepEmpty: () => false }),
+      ),
+    ).toEqual({
+      folders: [{ projectKey: "app", threads: ["root"], initiatives: [] }],
+      unplaced: [],
+    });
+  });
+});
+
 describe("partitionInitiativeThreads", () => {
   const remoteEnvironmentId = EnvironmentId.make("environment-remote");
   const thread = (id: string, environmentId = localEnvironmentId) => ({
@@ -2035,6 +2327,109 @@ describe("resolveSidebarFolderDot", () => {
     expect(resolveSidebarFolderDot([idle, working], { openDecision: false })).toBe("working");
     expect(resolveSidebarFolderDot([idle], { openDecision: false })).toBeNull();
     expect(resolveSidebarFolderDot([idle], {})).toBeNull();
+  });
+});
+
+describe("resolveSidebarGroupStatus", () => {
+  const runtime = {
+    status: "running" as const,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: "Codex",
+    lastError: null,
+    updatedAt: "2026-03-09T10:00:00.000Z",
+  };
+  let nextId = 0;
+  const statusThread = (overrides: Record<string, unknown> = {}) => ({
+    environmentId: localEnvironmentId,
+    id: ThreadId.make(`status-${nextId++}`),
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    latestRun: makeLatestRun(),
+    lastVisitedAt: "2026-03-09T10:06:00.000Z",
+    runtime: null as typeof runtime | null,
+    ...overrides,
+  });
+  const idle = () => statusThread();
+  const working = () => statusThread({ runtime });
+  const preparing = () => statusThread({ runtime: { ...runtime, status: "preparing" as const } });
+  const failed = () => statusThread({ runtime: { ...runtime, status: "failed" as const } });
+  const limited = () =>
+    statusThread({
+      runtime: { ...runtime, status: "failed" as const, lastErrorClass: "usage_limit" as const },
+    });
+  const noDecisions: ReadonlySet<string> = new Set();
+
+  it.each([
+    ["approval", () => statusThread({ hasPendingApprovals: true })],
+    ["input", () => statusThread({ hasPendingUserInput: true })],
+    ["guest request", () => statusThread({ pendingGuestMessageCount: 1 })],
+    ["usage limit", limited],
+  ])("counts a thread waiting on %s as needing you ahead of everything else", (_, needy) => {
+    expect(resolveSidebarGroupStatus([failed(), working(), needy(), idle()], noDecisions)).toEqual({
+      kind: "needs-you",
+      count: 1,
+    });
+  });
+
+  it("counts an open decision as needing you, by the thread's own key", () => {
+    const decided = working();
+    const other = working();
+    expect(
+      resolveSidebarGroupStatus(
+        [decided, other],
+        new Set([scopedThreadKey(scopeThreadRef(decided.environmentId, decided.id))]),
+      ),
+    ).toEqual({ kind: "needs-you", count: 1 });
+    expect(
+      resolveSidebarGroupStatus([decided, other], new Set([lineageKey("not-in-group")])),
+    ).toEqual({ kind: "working", count: 2 });
+  });
+
+  it("counts every thread at the winning step", () => {
+    expect(
+      resolveSidebarGroupStatus(
+        [
+          statusThread({ hasPendingApprovals: true }),
+          limited(),
+          statusThread({ hasPendingUserInput: true }),
+          failed(),
+        ],
+        noDecisions,
+      ),
+    ).toEqual({ kind: "needs-you", count: 3 });
+    expect(resolveSidebarGroupStatus([failed(), working(), failed(), idle()], noDecisions)).toEqual(
+      {
+        kind: "failed",
+        count: 2,
+      },
+    );
+    expect(resolveSidebarGroupStatus([working(), idle(), preparing()], noDecisions)).toEqual({
+      kind: "working",
+      count: 2,
+    });
+    expect(resolveSidebarGroupStatus([failed()], noDecisions)).toEqual({
+      kind: "failed",
+      count: 1,
+    });
+    expect(resolveSidebarGroupStatus([preparing()], noDecisions)).toEqual({
+      kind: "working",
+      count: 1,
+    });
+  });
+
+  it("reports idle for an empty, idle, waiting or opened-failure group", () => {
+    const openedFailure = statusThread({
+      runtime: { ...runtime, status: "failed" as const },
+      latestRun: { ...makeLatestRun(), status: "failed" as const },
+    });
+    const waiting = statusThread({ runtime: { ...runtime, status: "idle" as const } });
+    expect(resolveSidebarGroupStatus([], noDecisions)).toEqual({ kind: "idle" });
+    expect(resolveSidebarGroupStatus([idle(), waiting, openedFailure], noDecisions)).toEqual({
+      kind: "idle",
+    });
   });
 });
 

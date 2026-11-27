@@ -1,6 +1,7 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import { isSpawnedChildLineage } from "@t3tools/client-runtime/state/thread-relationships";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -623,6 +624,88 @@ export function filterSidebarV2VisibleThreads<
   );
 }
 
+export interface SpawnedThreadNesting<TThread> {
+  /** Spawned children withdrawn from the top level because they render under a listed ancestor. */
+  readonly nestedKeys: ReadonlySet<string>;
+  /** Spawned children withdrawn from every list because an ancestor is not listed. */
+  readonly hiddenKeys: ReadonlySet<string>;
+  /** Nested rows by the thread key of their top-most listed ancestor, oldest first. */
+  readonly childrenByAnchorKey: ReadonlyMap<string, ReadonlyArray<TThread>>;
+  /** The listed row that stands for a thread: its top-most listed ancestor, else itself. */
+  readonly anchorKeyOf: (threadKey: string) => string;
+}
+
+const NO_SPAWNED_NESTING: SpawnedThreadNesting<never> = {
+  nestedKeys: new Set(),
+  hiddenKeys: new Set(),
+  childrenByAnchorKey: new Map(),
+  anchorKeyOf: (threadKey) => threadKey,
+};
+
+function createdAtMs(thread: { readonly createdAt: string }): number {
+  const ms = Date.parse(thread.createdAt);
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
+/**
+ * Places each spawned child under its top-most listed ancestor, by lineage alone, whatever
+ * its project. A child with an ancestor missing from `threads` (archived, filtered out or
+ * deleted) is hidden until that ancestor is listed again, and a lineage cycle hides the
+ * threads in it.
+ */
+export function nestSpawnedThreads<
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "id" | "lineage" | "createdAt">,
+>(threads: ReadonlyArray<TThread>): SpawnedThreadNesting<TThread> {
+  if (!threads.some((thread) => isSpawnedChildLineage(thread.lineage))) return NO_SPAWNED_NESTING;
+  const keyOf = (environmentId: EnvironmentId, threadId: ThreadId) =>
+    scopedThreadKey(scopeThreadRef(environmentId, threadId));
+  const byKey = new Map(threads.map((thread) => [keyOf(thread.environmentId, thread.id), thread]));
+  const nestedKeys = new Set<string>();
+  const hiddenKeys = new Set<string>();
+  const anchorByKey = new Map<string, string>();
+  const childrenByAnchorKey = new Map<string, TThread[]>();
+  for (const [childKey, child] of byKey) {
+    if (!isSpawnedChildLineage(child.lineage)) continue;
+    const visited = new Set([childKey]);
+    let current: TThread = child;
+    let anchorKey: string | null = null;
+    while (current.lineage.parentThreadId !== null) {
+      const parentKey = keyOf(child.environmentId, current.lineage.parentThreadId);
+      const parent = byKey.get(parentKey);
+      if (parent === undefined || visited.has(parentKey)) break;
+      visited.add(parentKey);
+      if (!isSpawnedChildLineage(parent.lineage)) {
+        anchorKey = parentKey;
+        break;
+      }
+      current = parent;
+    }
+    if (anchorKey === null) {
+      hiddenKeys.add(childKey);
+      continue;
+    }
+    nestedKeys.add(childKey);
+    anchorByKey.set(childKey, anchorKey);
+    const siblings = childrenByAnchorKey.get(anchorKey);
+    if (siblings === undefined) childrenByAnchorKey.set(anchorKey, [child]);
+    else siblings.push(child);
+  }
+  for (const children of childrenByAnchorKey.values()) {
+    children.sort((left, right) => {
+      const leftMs = createdAtMs(left);
+      const rightMs = createdAtMs(right);
+      if (leftMs !== rightMs) return leftMs < rightMs ? -1 : 1;
+      return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+    });
+  }
+  return {
+    nestedKeys,
+    hiddenKeys,
+    childrenByAnchorKey,
+    anchorKeyOf: (threadKey) => anchorByKey.get(threadKey) ?? threadKey,
+  };
+}
+
 export function buildBulkTitleRegenerationContextMenuItem(input: {
   supportedCount: number;
   actionableCount: number;
@@ -1061,6 +1144,51 @@ export function resolveSidebarFolderDot(
   return null;
 }
 
+export type SidebarGroupStatus =
+  | { readonly kind: "needs-you"; readonly count: number }
+  | { readonly kind: "failed"; readonly count: number }
+  | { readonly kind: "working"; readonly count: number }
+  | { readonly kind: "idle" };
+
+/** The one state a collapsed group reports: needs-you, then failed, then working, else idle. */
+export function resolveSidebarGroupStatus(
+  threads: ReadonlyArray<
+    ThreadStatusInput &
+      SidebarThreadStatusInput &
+      Pick<SidebarThreadSummary, "environmentId" | "id">
+  >,
+  openDecisionThreadKeys: ReadonlySet<string>,
+): SidebarGroupStatus {
+  let needsYou = 0;
+  let failed = 0;
+  let working = 0;
+  for (const thread of threads) {
+    const openDecision = openDecisionThreadKeys.has(
+      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+    );
+    switch (resolveSidebarRowStatus(thread, { openDecision })) {
+      case "approval":
+      case "input":
+      case "request":
+      case "limited":
+      case "decision":
+        needsYou++;
+        break;
+      case "failed":
+        failed++;
+        break;
+      case "working":
+      case "preparing":
+        working++;
+        break;
+    }
+  }
+  if (needsYou > 0) return { kind: "needs-you", count: needsYou };
+  if (failed > 0) return { kind: "failed", count: failed };
+  if (working > 0) return { kind: "working", count: working };
+  return { kind: "idle" };
+}
+
 /**
  * Keys the old per-project sidebar saved folder open state under, most
  * specific first, for `resolveProjectExpanded`. Boring folders read and write
@@ -1109,6 +1237,68 @@ export function groupSidebarThreadsByProject<
     folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
   }
   return folders.filter((folder) => folder.threads.length > 0 || keepEmpty(folder.group));
+}
+
+export interface SidebarFolder<TGroup, TThread, TInitiative> {
+  readonly group: TGroup;
+  readonly threads: ReadonlyArray<TThread>;
+  readonly initiatives: ReadonlyArray<TInitiative>;
+}
+
+/**
+ * Project folders holding their threads, as `groupSidebarThreadsByProject` places them, and
+ * each initiative in the folder of its first member's project. A folder holding only an
+ * initiative is kept; an initiative whose project has no folder is returned as unplaced.
+ */
+export function groupSidebarFolders<
+  TGroup extends {
+    readonly memberProjectRefs: ReadonlyArray<{
+      readonly environmentId: EnvironmentId;
+      readonly projectId: string;
+    }>;
+  },
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "projectId">,
+  TInitiative extends { readonly members: ReadonlyArray<{ readonly thread: TThread }> },
+>(input: {
+  readonly groups: ReadonlyArray<TGroup>;
+  readonly threads: ReadonlyArray<TThread>;
+  readonly initiatives: ReadonlyArray<TInitiative>;
+  readonly keepEmpty: (group: TGroup) => boolean;
+}): {
+  readonly folders: ReadonlyArray<SidebarFolder<TGroup, TThread, TInitiative>>;
+  readonly unplacedInitiatives: ReadonlyArray<TInitiative>;
+} {
+  const folders = input.groups.map((group) => ({
+    group,
+    threads: [] as TThread[],
+    initiatives: [] as TInitiative[],
+  }));
+  const folderByProject = new Map<string, (typeof folders)[number]>();
+  for (const folder of folders) {
+    for (const ref of folder.group.memberProjectRefs) {
+      folderByProject.set(`${ref.environmentId}:${ref.projectId}`, folder);
+    }
+  }
+  for (const thread of input.threads) {
+    folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
+  }
+  const unplacedInitiatives: TInitiative[] = [];
+  for (const initiative of input.initiatives) {
+    const first = initiative.members[0]?.thread;
+    const folder =
+      first === undefined
+        ? undefined
+        : folderByProject.get(`${first.environmentId}:${first.projectId}`);
+    if (folder === undefined) unplacedInitiatives.push(initiative);
+    else folder.initiatives.push(initiative);
+  }
+  return {
+    folders: folders.filter(
+      (folder) =>
+        folder.threads.length > 0 || folder.initiatives.length > 0 || input.keepEmpty(folder.group),
+    ),
+    unplacedInitiatives,
+  };
 }
 
 export interface SidebarSectionLists<TThread> {
