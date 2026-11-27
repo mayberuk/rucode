@@ -110,6 +110,81 @@ describe("preview IPC methods", () => {
       }),
   );
 
+  const invokeForwarding = (
+    method: typeof PreviewIpc.pickElement | typeof PreviewIpc.setReviewPins,
+    manager: Partial<PreviewManager.PreviewManager["Service"]>,
+    payload: unknown,
+  ) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let listener: DesktopIpc.DesktopIpcHandleListener | undefined;
+        const ipc = DesktopIpc.make(
+          {
+            removeHandler: vi.fn(),
+            handle: (_channel, registered) => {
+              listener = registered;
+            },
+            removeAllListeners: vi.fn(),
+            on: vi.fn(),
+          },
+          () => Effect.succeed(true),
+        );
+        yield* ipc.handle(method);
+        return yield* Effect.promise(async () => listener!({ sender: { id: 7 } }, payload));
+      }).pipe(
+        Effect.provideService(
+          PreviewManager.PreviewManager,
+          manager as PreviewManager.PreviewManager["Service"],
+        ),
+        Effect.provideService(DesktopClientSettings.DesktopClientSettings, {
+          get: Effect.succeedNone,
+          set: () => Effect.void,
+        }),
+      ),
+    );
+
+  effectIt.effect("passes the pick mode through, and leaves it unset for existing callers", () =>
+    Effect.gen(function* () {
+      const pickElement = vi.fn(() => Effect.succeed(null));
+      yield* invokeForwarding(
+        PreviewIpc.pickElement,
+        { pickElement },
+        { tabId: "tab_1", mode: "iter8" },
+      );
+      yield* invokeForwarding(PreviewIpc.pickElement, { pickElement }, { tabId: "tab_1" });
+
+      expect(pickElement.mock.calls).toEqual([
+        ["tab_1", undefined, "iter8"],
+        ["tab_1", undefined, undefined],
+      ]);
+    }),
+  );
+
+  effectIt.effect("forwards review pins, including a clear, to the preview manager", () =>
+    Effect.gen(function* () {
+      const setReviewPins = vi.fn(() => Effect.void);
+      const pins = {
+        pins: [{ label: "1", selector: ["x-card#card", "button#pay"], resolved: false }],
+        focusLabel: "1",
+      };
+      yield* invokeForwarding(
+        PreviewIpc.setReviewPins,
+        { setReviewPins },
+        { tabId: "tab_1", pins },
+      );
+      yield* invokeForwarding(
+        PreviewIpc.setReviewPins,
+        { setReviewPins },
+        { tabId: "tab_1", pins: null },
+      );
+
+      expect(setReviewPins.mock.calls).toEqual([
+        ["tab_1", pins],
+        ["tab_1", null],
+      ]);
+    }),
+  );
+
   beforeEach(() => {
     fromPartition.mockClear();
   });

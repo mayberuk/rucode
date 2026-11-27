@@ -438,6 +438,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         tabId,
         enabled,
       }),
+    setReviewPins: (tabId, pins) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_SET_REVIEW_PINS_CHANNEL, { tabId, pins }),
     annotationVoice: {
       onEvent: (listener) => {
         const onEvent = (_event: Electron.IpcRendererEvent, tabId: string, value: unknown) => {
@@ -450,8 +452,12 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       update: (state) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_ANNOTATION_VOICE_STATE_CHANNEL, state),
     },
-    pickElement: (tabId, voice) =>
-      ipcRenderer.invoke(IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL, { tabId, voice }),
+    pickElement: (tabId, voice, options) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL, {
+        tabId,
+        voice,
+        ...(options?.mode ? { mode: options.mode } : {}),
+      }),
     cancelPickElement: (tabId) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, { tabId }),
     captureScreenshot: (tabId) =>
