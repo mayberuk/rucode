@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildConfirmReply,
+  latestConfirmMessageId,
   mergeConfirmReply,
   parseConfirmReply,
   parseConfirmSection,
@@ -696,5 +697,29 @@ describe("splitInlineCode", () => {
     ["", []],
   ])("splits %j", (input, expected) => {
     expect(splitInlineCode(input)).toEqual(expected);
+  });
+});
+
+describe("latestConfirmMessageId", () => {
+  const confirmText = "Plan.\n\n**Just confirm — 1. Ship it?**";
+  const assistant = (messageId: string, text: string, streaming = false) => ({
+    item: { type: "assistant_message", messageId, text, streaming },
+  });
+
+  it("picks the latest finished assistant message that ends in a confirm section", () => {
+    expect(
+      latestConfirmMessageId([
+        assistant("old", confirmText),
+        assistant("latest", confirmText),
+        assistant("plain", "Done."),
+        assistant("streaming", confirmText, true),
+        { item: { type: "user_message", text: confirmText } },
+      ]),
+    ).toBe("latest");
+  });
+
+  it("is null when no message has one", () => {
+    expect(latestConfirmMessageId([assistant("plain", "Done.")])).toBeNull();
+    expect(latestConfirmMessageId([])).toBeNull();
   });
 });

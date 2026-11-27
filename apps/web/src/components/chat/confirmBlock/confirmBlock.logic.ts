@@ -256,3 +256,32 @@ export function splitInlineCode(text: string): ReadonlyArray<InlineSegment> {
     .map((part, index) => ({ text: part, code: index % 2 === 1 }))
     .filter((segment) => segment.text !== "");
 }
+
+/**
+ * The one message whose confirm section can be answered: the latest finished assistant message
+ * that ends in one. Older sections stay read-only, so the composer's reply belongs to one block.
+ */
+export function latestConfirmMessageId(
+  items: ReadonlyArray<{
+    readonly item: {
+      readonly type: string;
+      readonly messageId?: string;
+      readonly text?: string;
+      readonly streaming?: boolean;
+    };
+  }>,
+): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const { item } = items[index]!;
+    if (
+      item.type === "assistant_message" &&
+      item.messageId !== undefined &&
+      item.streaming !== true &&
+      item.text !== undefined &&
+      parseConfirmSection(item.text) !== null
+    ) {
+      return item.messageId;
+    }
+  }
+  return null;
+}

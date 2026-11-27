@@ -1,6 +1,6 @@
 import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { type ReactElement } from "react";
 import remarkGfm from "remark-gfm";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -10,6 +10,8 @@ import { act, render } from "../../test/render";
 import "../index.css";
 
 import { filesystemEnvironment } from "../state/filesystem";
+import { environmentThreadDetails } from "../state/threads";
+import { useConfirmBlockMode } from "./chat/confirmBlock/useConfirmBlockMode";
 import { useRightPanelStore } from "../rightPanelStore";
 import { useComposerDraftStore } from "../composerDraftStore";
 import {
@@ -1191,6 +1193,58 @@ describe("confirm block", () => {
     await expect.element(screen.getByText("1 of 3 answered")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Staging" }));
     expect(draftPrompt()).toBe("1. yes\n2. Staging");
+  });
+
+  it("lets only the latest finished message with a confirm section be answered", async () => {
+    setupConfirm();
+    const thread = { ...confirmThread, threadId: ThreadId.make("confirm-thread-latest") };
+    const assistant = (messageId: string, text: string, streaming = false) => ({
+      item: { type: "assistant_message", messageId, text, streaming },
+    });
+    using _items = vi
+      .spyOn(environmentThreadDetails, "timelineVisibleTurnItemsAtom")
+      .mockReturnValue(
+        Atom.make([
+          assistant("old", MESSAGE),
+          assistant("latest", MESSAGE),
+          assistant("plain", "Nothing to ask here."),
+          assistant("streaming", MESSAGE, true),
+        ]) as never,
+      );
+    function Message({ id }: { id: string }) {
+      const mode = useConfirmBlockMode(thread, id, true);
+      return (
+        <div data-message={id}>
+          <ChatMarkdown cwd={undefined} text={MESSAGE} threadRef={thread} confirmBlock={mode} />
+        </div>
+      );
+    }
+    const messages = (key = "first") => (
+      <div key={key}>
+        <Message id="old" />
+        <Message id="latest" />
+      </div>
+    );
+    const buttonIn = (screen: { container: HTMLElement }, id: string, name: string) =>
+      [
+        ...screen.container.querySelectorAll<HTMLButtonElement>(`[data-message="${id}"] button`),
+      ].find((button) => button.textContent?.includes(name))!;
+    await using screen = await render(messages());
+
+    expect(buttonIn(screen, "old", "Yes").disabled).toBe(true);
+    expect(buttonIn(screen, "latest", "Yes").disabled).toBe(false);
+    await userEvent.click(buttonIn(screen, "latest", "Yes"));
+    expect(useComposerDraftStore.getState().getComposerDraft(thread)?.prompt).toBe("1. yes");
+    expect(buttonIn(screen, "latest", "Yes").getAttribute("aria-pressed")).toBe("true");
+    expect(buttonIn(screen, "old", "Yes").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.container.querySelector('[data-message="old"]')?.textContent).not.toContain(
+      "answered",
+    );
+
+    await screen.rerender(messages("remounted"));
+    expect(buttonIn(screen, "latest", "Yes").getAttribute("aria-pressed")).toBe("true");
+    expect(buttonIn(screen, "old", "Yes").getAttribute("aria-pressed")).toBe("false");
+    expect(buttonIn(screen, "old", "Yes").disabled).toBe(true);
   });
 
   it("stacks options whose labels would overflow a narrow column", async () => {
