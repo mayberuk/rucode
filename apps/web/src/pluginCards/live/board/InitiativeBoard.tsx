@@ -14,9 +14,10 @@ import { Skeleton } from "~/components/ui/skeleton";
 
 import type { InitiativeBoardView } from "../liveAtoms";
 import { BoardHeader } from "./BoardHeader";
+import { NeedsYouGroup } from "./NeedsYouGroup";
 import { PartSheet } from "./PartSheet";
 import { WaveGroup } from "./WaveGroup";
-import { previousWave } from "./board.logic";
+import { partTitle, previousWave } from "./board.logic";
 
 export function BoardSkeleton() {
   return (
@@ -46,6 +47,7 @@ export function InitiativeBoardUnavailable() {
 }
 
 export function InitiativeBoard({
+  environmentId,
   view,
   now,
 }: {
@@ -69,6 +71,11 @@ export function InitiativeBoard({
   return (
     <div className="flex flex-col gap-6">
       <BoardHeader board={board} now={now} paused={view.status === "unavailable"} />
+      <NeedsYouGroup
+        environmentId={environmentId}
+        items={view.needsYou.map((item) => ({ ...item, part: partTitle(board, item.part) }))}
+        now={now}
+      />
       {board.waves.length === 0 ? (
         <p className="text-xs text-muted-foreground">{gt("No parts yet")}</p>
       ) : (

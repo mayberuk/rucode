@@ -1,5 +1,7 @@
+import { RegistryContext } from "@effect/atom-react";
 import {
   EnvironmentId,
+  PluginCardError,
   ThreadId,
   type PluginInitiativeBoard,
   type PluginInitiativePart,
@@ -13,24 +15,29 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
+import * as Cause from "effect/Cause";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { createContext, use } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { cdp, page, userEvent } from "vite-plus/test/browser";
 
+import { ToastProvider } from "~/components/ui/toast";
+import * as pluginCardsRpc from "~/rpc/pluginCards";
 import * as environments from "~/state/environments";
 
-import { render } from "../../../test/render";
+import { act, fakeTimers, render } from "../../../test/render";
 import { BoardPage } from "./BoardPage";
 import { InitiativeDetailsSection } from "./InitiativeDetailsSection";
 import { InitiativeBoard } from "./board/InitiativeBoard";
 import { boardSearchFromUrl } from "./boardSearch";
 import * as liveAtoms from "./liveAtoms";
 import type { InitiativeBoardView } from "./liveAtoms";
-import { boardInitiatives } from "./liveStateIndex";
+import { boardInitiatives, type InitiativeNeedsYouItem } from "./liveStateIndex";
 
 import "~/index.css";
 
 vi.mock(import("./liveAtoms"), { spy: true });
+vi.mock(import("~/rpc/pluginCards"), { spy: true });
 vi.mock(import("~/state/environments"), { spy: true });
 
 const environmentId = EnvironmentId.make("env-a");
@@ -990,4 +997,325 @@ it("opens the sheet without a transition under reduced motion", async () => {
   const dialog = page.getByRole("dialog", { name: "Checkout retries" });
   await expect.element(dialog).toBeVisible();
   expect(getComputedStyle(dialog.element()).transitionProperty).toBe("none");
+});
+
+function decision(overrides: Partial<InitiativeNeedsYouItem> = {}): InitiativeNeedsYouItem {
+  return {
+    cardId: "dispatch.decision:alpha#decision-a",
+    decisionId: "decision-a",
+    kind: "scope",
+    question: "Continue checkout?",
+    part: "part-a",
+    options: [
+      { key: "keep", label: "Keep checkout", recommended: true },
+      { key: "skip", label: "Skip checkout", recommended: false },
+    ],
+    defaultKey: null,
+    applyAfter: null,
+    protection: null,
+    needsPerson: true,
+    raisedAt: asOf,
+    threadId: ThreadId.make("thread-a"),
+    answerableInPlace: true,
+    ...overrides,
+  };
+}
+
+function anotherDecision(): InitiativeNeedsYouItem {
+  return decision({
+    cardId: "dispatch.decision:alpha#decision-b",
+    decisionId: "decision-b",
+    question: "Continue receipts?",
+    part: "part-b",
+    threadId: ThreadId.make("thread-b"),
+    options: [{ key: "keep", label: "Keep receipts", recommended: true }],
+  });
+}
+
+type AnswerResult = Awaited<ReturnType<typeof pluginCardsRpc.answerPluginDecision.run>>;
+
+function setup({ canAnswer = true }: { canAnswer?: boolean } = {}) {
+  const stack = new DisposableStack();
+  const registry = stack.adopt(AtomRegistry.make(), (value) => value.dispose());
+  stack.use(
+    vi
+      .spyOn(pluginCardsRpc.answerPluginDecision, "permissionAtom")
+      .mockReturnValue(Atom.make(canAnswer)),
+  );
+  const calls: Array<PromiseWithResolvers<AnswerResult>> = [];
+  const answer = stack.use(
+    vi.spyOn(pluginCardsRpc.answerPluginDecision, "run").mockImplementation(() => {
+      const call = Promise.withResolvers<AnswerResult>();
+      calls.push(call);
+      return call.promise;
+    }),
+  );
+
+  const ui = (items: ReadonlyArray<InitiativeNeedsYouItem>, time = now, showBoard = true) => (
+    <RegistryContext.Provider value={registry}>
+      <ToastProvider>
+        {showBoard ? (
+          <InitiativeBoard
+            environmentId={environmentId}
+            view={{
+              ...board({
+                waves: [
+                  wave(1, "Checkout", "active", [
+                    part("part-a", { title: "Checkout retries" }),
+                    part("part-b", { title: "Receipt history" }),
+                  ]),
+                ],
+                needsYou: items,
+              }),
+              needsYou: items,
+            }}
+            now={time}
+          />
+        ) : null}
+      </ToastProvider>
+    </RegistryContext.Provider>
+  );
+
+  return { ui, answer, calls, [Symbol.dispose]: () => stack.dispose() };
+}
+
+it.each([
+  ["2026-11-21T09:04:00Z", "Checkout retries · Continues with Skip checkout in 2 minutes"],
+  ["2026-11-21T09:05:00Z", "Checkout retries · Continues with Skip checkout in 1 minute"],
+  ["2026-11-21T09:05:59Z", "Checkout retries · Continues with Skip checkout in 1 minute"],
+  ["2026-11-21T09:06:00Z", "Checkout retries · Continuing with Skip checkout"],
+  ["2026-11-21T09:06:01Z", "Checkout retries · Continuing with Skip checkout"],
+])("lists the open decision with the correct countdown at %s", async (time, detail) => {
+  using env = setup();
+  await using screen = await render(
+    env.ui([decision({ applyAfter: "2026-11-21T09:06:00Z", defaultKey: "skip" })], time),
+  );
+  const group = screen.getByRole("region", { name: "Needs you" });
+  await expect.element(group.getByText("1", { exact: true })).toBeVisible();
+  await expect.element(group.getByText("Continue checkout?")).toBeVisible();
+  await expect.element(group.getByText(detail, { exact: true })).toBeVisible();
+  await expect
+    .element(group.getByRole("button", { name: "Keep checkout" }))
+    .toHaveClass("border-primary");
+  await expect
+    .element(group.getByRole("button", { name: "Skip checkout" }))
+    .toHaveClass("border-input");
+});
+
+it.each([
+  { applyAfter: null, defaultKey: "skip" },
+  { applyAfter: "2026-11-21T09:06:00Z", defaultKey: null },
+  { applyAfter: "2026-11-21T09:06:00Z", defaultKey: "unknown" },
+])(
+  "omits the countdown without a deadline and a matching default option ($applyAfter, $defaultKey)",
+  async (overrides) => {
+    using env = setup();
+    await using screen = await render(env.ui([decision(overrides)]));
+    const group = screen.getByRole("region", { name: "Needs you" });
+    await expect.element(group.getByText("Checkout retries", { exact: true })).toBeVisible();
+    await expect.element(group.getByText(/Continues|Continuing/)).not.toBeInTheDocument();
+  },
+);
+
+it("shows the question without buttons or a countdown when there are no options", async () => {
+  using env = setup();
+  await using screen = await render(
+    env.ui([decision({ options: [], applyAfter: "2026-11-21T09:06:00Z", defaultKey: "skip" })]),
+  );
+  const group = screen.getByRole("region", { name: "Needs you" });
+  await expect.element(group.getByText("Continue checkout?")).toBeVisible();
+  await expect.element(group.getByText("Checkout retries", { exact: true })).toBeVisible();
+  await expect.element(group.getByRole("button")).not.toBeInTheDocument();
+});
+
+it("undoes only the picked decision and never sends it", async () => {
+  using env = setup();
+  await using screen = await render(env.ui([decision(), anotherDecision()]));
+  using _timers = fakeTimers();
+  const group = screen.getByRole("region", { name: "Needs you" });
+  const question = group.getByText("Continue checkout?");
+  await expect.element(group.getByText("2", { exact: true })).toBeVisible();
+
+  await group.getByRole("button", { name: "Keep checkout" }).click();
+  await expect.element(question).not.toBeInTheDocument();
+  await expect.element(group.getByText("Continue receipts?")).toBeVisible();
+  await expect.element(group.getByText("1", { exact: true })).toBeVisible();
+  const toast = page.getByRole("region", { name: "Notifications" });
+  await expect.element(toast.getByText("Answered: Keep checkout")).toBeVisible();
+  await expect.element(toast.getByText("Continue checkout?")).toBeVisible();
+  expect(env.answer).not.toHaveBeenCalled();
+
+  await toast.getByRole("button", { name: "Undo" }).click();
+  await expect.element(question).toBeVisible();
+  await expect.element(group.getByText("2", { exact: true })).toBeVisible();
+  await act(() => vi.advanceTimersByTime(6000));
+  expect(env.answer).not.toHaveBeenCalled();
+});
+
+it("sends only after the six-second window and keeps the decision hidden through success", async () => {
+  using env = setup();
+  const item = decision();
+  await using screen = await render(env.ui([item]));
+  using _timers = fakeTimers();
+  const group = screen.getByRole("region", { name: "Needs you" });
+
+  await screen.getByRole("button", { name: "Skip checkout" }).click();
+  await act(() => vi.advanceTimersByTime(5999));
+  expect(env.answer).not.toHaveBeenCalled();
+  await act(() => vi.advanceTimersByTime(1));
+  expect(env.answer).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    environmentId,
+    input: {
+      threadId: ThreadId.make("thread-a"),
+      cardId: "dispatch.decision:alpha#decision-a",
+      optionKey: "skip",
+    },
+  });
+  await expect.element(group).not.toBeInTheDocument();
+
+  await screen.rerender(env.ui([{ ...item }]));
+  await expect.element(group).not.toBeInTheDocument();
+  await act(() => env.calls[0]!.resolve(AsyncResult.success({ delivery: "started" })));
+  await expect.element(group).not.toBeInTheDocument();
+  await screen.rerender(env.ui([]));
+  await expect.element(group).not.toBeInTheDocument();
+  expect(env.answer).toHaveBeenCalledTimes(1);
+});
+
+it("sends once when dismissed without Undo after leaving the board", async () => {
+  using env = setup();
+  await using screen = await render(env.ui([decision()]));
+  using _timers = fakeTimers();
+
+  await screen.getByRole("button", { name: "Keep checkout" }).click();
+  await screen.rerender(env.ui([], now, false));
+  await page.getByRole("button", { name: "Dismiss notification" }).click();
+  expect(env.answer).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    environmentId,
+    input: {
+      threadId: ThreadId.make("thread-a"),
+      cardId: "dispatch.decision:alpha#decision-a",
+      optionKey: "keep",
+    },
+  });
+  await act(() => env.calls[0]!.resolve(AsyncResult.success({ delivery: "started" })));
+  await act(() => vi.advanceTimersByTime(6000));
+  expect(env.answer).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  {
+    result: AsyncResult.fail(new PluginCardError({ reason: "dp-failed" })),
+    description: "Couldn't record your answer.",
+    latest: "still open",
+  },
+  {
+    result: AsyncResult.failure(Cause.interrupt()),
+    description: "Check the decision in its chat.",
+    latest: "answered",
+  },
+] satisfies ReadonlyArray<{ result: AnswerResult; description: string; latest: string }>)(
+  "restores a failed answer and reflects a decision that is $latest on the next update",
+  async ({ result, description, latest }) => {
+    using env = setup();
+    const item = decision();
+    await using screen = await render(env.ui([item]));
+    using _timers = fakeTimers();
+    const group = screen.getByRole("region", { name: "Needs you" });
+
+    await screen.getByRole("button", { name: "Keep checkout" }).click();
+    await act(() => vi.advanceTimersByTime(6000));
+    await expect.element(group).not.toBeInTheDocument();
+
+    await act(() => env.calls[0]!.resolve(result));
+    await expect.element(group.getByRole("button", { name: "Keep checkout" })).toBeVisible();
+    const toast = page.getByRole("region", { name: "Notifications" });
+    await expect.element(toast.getByText("Couldn't confirm your answer was sent")).toBeVisible();
+    await expect.element(toast.getByText(description, { exact: true })).toBeVisible();
+
+    if (latest === "still open") {
+      await screen.rerender(env.ui([{ ...item, question: "Keep checkout retries?" }]));
+      await expect.element(group.getByText("Keep checkout retries?")).toBeVisible();
+      await expect.element(group.getByText("1", { exact: true })).toBeVisible();
+    } else {
+      await screen.rerender(env.ui([]));
+      await expect.element(group).not.toBeInTheDocument();
+    }
+  },
+);
+
+it("settles two answers independently when their results arrive in reverse order", async () => {
+  using env = setup();
+  await using screen = await render(env.ui([decision(), anotherDecision()]));
+  using _timers = fakeTimers();
+  const group = screen.getByRole("region", { name: "Needs you" });
+
+  await group.getByRole("button", { name: "Keep checkout" }).click();
+  await group.getByRole("button", { name: "Keep receipts" }).click();
+  await act(() => vi.advanceTimersByTime(6000));
+  expect(env.answer).toHaveBeenCalledTimes(2);
+  expect(env.answer).toHaveBeenNthCalledWith(2, expect.anything(), {
+    environmentId,
+    input: {
+      threadId: ThreadId.make("thread-b"),
+      cardId: "dispatch.decision:alpha#decision-b",
+      optionKey: "keep",
+    },
+  });
+
+  await act(() => env.calls[1]!.resolve(AsyncResult.success({ delivery: "started" })));
+  await expect.element(group).not.toBeInTheDocument();
+  await act(() =>
+    env.calls[0]!.resolve(AsyncResult.fail(new PluginCardError({ reason: "decision-closed" }))),
+  );
+  await expect.element(group.getByText("Continue checkout?")).toBeVisible();
+  await expect.element(group.getByText("Continue receipts?")).not.toBeInTheDocument();
+  await expect.element(group.getByText("1", { exact: true })).toBeVisible();
+});
+
+it.each(["outward", "always-ask"] as const)(
+  "offers the chat for a decision with %s protection",
+  async (protection) => {
+    using env = setup();
+    await using screen = await render(env.ui([decision({ protection, answerableInPlace: false })]));
+    const group = screen.getByRole("region", { name: "Needs you" });
+    await expect
+      .element(
+        group.getByText("Checkout retries · Asks for confirmation in its chat", { exact: true }),
+      )
+      .toBeVisible();
+    await expect
+      .element(group.getByRole("link", { name: "Open chat" }))
+      .toHaveAttribute("href", "/env-a/thread-a");
+    await expect.element(group.getByRole("button")).not.toBeInTheDocument();
+  },
+);
+
+it("points back to the decision source when the chat is unknown", async () => {
+  using env = setup();
+  await using screen = await render(
+    env.ui([decision({ threadId: null, answerableInPlace: false })]),
+  );
+  const group = screen.getByRole("region", { name: "Needs you" });
+  await expect.element(group.getByText("Answer it where it was asked")).toBeVisible();
+  await expect.element(group.getByRole("button")).not.toBeInTheDocument();
+  await expect.element(group.getByRole("link")).not.toBeInTheDocument();
+});
+
+it("offers the chat when the connection lacks answer permission", async () => {
+  using env = setup({ canAnswer: false });
+  await using screen = await render(env.ui([decision()]));
+  const group = screen.getByRole("region", { name: "Needs you" });
+  await expect
+    .element(group.getByRole("link", { name: "Open chat" }))
+    .toHaveAttribute("href", "/env-a/thread-a");
+  await expect.element(group.getByRole("button")).not.toBeInTheDocument();
+  await expect.element(group.getByText(/Asks for confirmation/)).not.toBeInTheDocument();
+});
+
+it("shows no Needs you group when there are no decisions", async () => {
+  using env = setup();
+  await using screen = await render(env.ui([]));
+  await expect.element(screen.getByRole("heading", { name: "Alpha" })).toBeVisible();
+  await expect.element(screen.getByRole("region", { name: "Needs you" })).not.toBeInTheDocument();
 });
