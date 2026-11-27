@@ -223,6 +223,10 @@ describe("rebrandText", () => {
     'put(RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/T3 Code")',
     "/** Adds a local image file to Photos on iOS or Pictures/T3 Code on Android. */",
     "Unable to connect to the T3 server WebSocket.",
+    "process.stderr.write(`t3: downloading T3 Code ${version}${percent}`);",
+    '`no T3 Code CLI build is available for ${key} (supported: ${SUPPORTED.join(", ")}).\n` +',
+    "`could not run T3 Code ${version} for ${key}: ${detail}` +",
+    '"T3 Code CLI. Downloads the self-contained executable for this platform from the GitHub Release.",',
   ])("preserves the wire identifier on %s", (text) => {
     assert.deepStrictEqual(rebrandText("apps/server/src/wire.ts", text), { text, hits: [] });
   });
@@ -262,6 +266,18 @@ describe("rebrandText", () => {
         "`;",
         'const context = "RuCode triage context";',
       ].join("\n"),
+    );
+  });
+
+  it("leaves everything from the playbook start alone when its closing line is missing", () => {
+    const text = [
+      'const title = "T3 Code triage";',
+      "export const TRIAGE_PLAYBOOK = `# T3 Code triage playbook",
+      "You are a support engineer for T3 Code.",
+    ].join("\n");
+    assert.strictEqual(
+      rebrandText("apps/server/src/triage/triagePrompt.ts", text).text,
+      ['const title = "RuCode triage";', ...text.split("\n").slice(1)].join("\n"),
     );
   });
 
@@ -498,6 +514,65 @@ it.layer(NodeServices.layer)("runRebrand", (it) => {
     }),
   );
 
+  it.effect("reports an unterminated triage playbook as a problem in both modes", () =>
+    Effect.gen(function* () {
+      const file = "apps/server/src/triage/triagePrompt.ts";
+      const source = [
+        "export const TRIAGE_PLAYBOOK = `# T3 Code triage playbook",
+        "You are a support engineer for T3 Code.",
+        "",
+      ].join("\n");
+      const tree = yield* makeTree({ [file]: source });
+
+      for (const mode of ["check", "apply"] as const) {
+        const result = runRebrand({ ...tree, mode });
+        assert.deepStrictEqual(result.changed, []);
+        assert.deepStrictEqual(result.remaining, []);
+        assert.strictEqual(result.pinProblems.length, 1, mode);
+        assert.include(result.pinProblems[0], file);
+        assert.strictEqual(read(tree.root, file), source);
+      }
+    }),
+  );
+
+  it.effect("does not follow a symlink to a file outside the tree", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const outside = yield* fs.makeTempDirectoryScoped({ prefix: "rucode-rebrand-outside-" });
+      writeFiles(outside, { "secret.md": "T3 Code\n" });
+      const tree = yield* makeTree({ "docs/a.md": "T3 Code\n" });
+      NodeFS.symlinkSync(
+        NodePath.join(outside, "secret.md"),
+        NodePath.join(tree.root, "docs/link.md"),
+      );
+      const files = [...tree.files, "docs/link.md"];
+
+      assert.deepStrictEqual(runRebrand({ root: tree.root, files, mode: "apply" }), {
+        changed: ["docs/a.md"],
+        remaining: [],
+        pinProblems: [],
+      });
+      assert.strictEqual(read(outside, "secret.md"), "T3 Code\n");
+      assert.strictEqual(
+        NodeFS.readlinkSync(NodePath.join(tree.root, "docs/link.md")),
+        NodePath.join(outside, "secret.md"),
+      );
+    }),
+  );
+
+  it.effect("skips a listed path that no longer exists", () =>
+    Effect.gen(function* () {
+      const tree = yield* makeTree({ "docs/a.md": "T3 Code\n" });
+      const files = [...tree.files, "docs/deleted.md"];
+
+      assert.deepStrictEqual(runRebrand({ root: tree.root, files, mode: "apply" }), {
+        changed: ["docs/a.md"],
+        remaining: [],
+        pinProblems: [],
+      });
+    }),
+  );
+
   it.effect("the CLI exits 0 after apply, 1 on a dirty --check or missing pin, 2 on misuse", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -532,9 +607,13 @@ it.layer(NodeServices.layer)("runRebrand", (it) => {
       assert.strictEqual(cli([], notARepo).status, 2);
 
       git("init", "-q");
-      writeFiles(root, { "docs/a.md": "Welcome to T3 Code\n", [PIN_PATH]: UNPINNED_SOURCE });
+      writeFiles(root, {
+        "docs/a.md": "Welcome to T3 Code\n",
+        "docs/my notes.md": "My T3 Code notes\n",
+        [PIN_PATH]: UNPINNED_SOURCE,
+      });
       writeFiles(root, { "untracked.md": "T3 Code\n" });
-      git("add", "docs/a.md", PIN_PATH);
+      git("add", "docs/a.md", "docs/my notes.md", PIN_PATH);
 
       const dirty = cli(["--check"], NodePath.join(root, "docs"));
       assert.strictEqual(dirty.status, 1);
@@ -544,8 +623,13 @@ it.layer(NodeServices.layer)("runRebrand", (it) => {
 
       const applied = cli([]);
       assert.strictEqual(applied.status, 0);
-      assert.includeMembers(outputLines(applied.stdout), ["docs/a.md", PIN_PATH]);
+      assert.includeMembers(outputLines(applied.stdout), [
+        "docs/a.md",
+        "docs/my notes.md",
+        PIN_PATH,
+      ]);
       assert.strictEqual(read(root, "docs/a.md"), "Welcome to RuCode\n");
+      assert.strictEqual(read(root, "docs/my notes.md"), "My RuCode notes\n");
       assert.strictEqual(read(root, PIN_PATH), PINNED_SOURCE);
       assert.strictEqual(read(root, "untracked.md"), "T3 Code\n");
 

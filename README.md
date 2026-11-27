@@ -33,7 +33,7 @@ It works with Claude Code, Codex, Cursor, OpenCode, Grok Build, Antigravity, Kir
 
 - **Your subscriptions.** RuCode does not resell tokens. It drives the agents you are already signed in to.
 - **Every agent in one place.** Change models in the middle of a thread. Let Claude hand a task to Codex.
-- **Desktop, web, and phone.** One server, and every client shows the same threads. There are apps for iOS and Android.
+- **Desktop, web, and phone.** One server, and every client shows the same threads. RuCode has no mobile app of its own; the iOS and Android apps are upstream T3 Code's.
 - **Remote ready.** Run agents on any machine. Connect over your local network, Tailscale, or [T3 Connect](./docs/user/remote-access.md).
 - **Git built in.** Each thread can work in its own worktree. Review the diff, then commit, push, and open a pull request with one button.
 - **Fast.** Performance is a feature here. We measure it, and we treat a dropped frame as a bug.
@@ -55,7 +55,7 @@ RuCode builds are on the fork's [GitHub Releases](https://github.com/mayberuk/ru
 
 ### Command line
 
-This installs the `t3` command. Run `t3` to start the server and open the web app.
+RuCode builds are on the fork's [GitHub Releases](https://github.com/mayberuk/rucode/releases). The install scripts and the `t3` npm package below are upstream T3 Code's, so they install upstream T3 Code, not this fork. They install the `t3` command. Run `t3` to start the server and open the web app.
 
 ```bash
 curl -fsSL https://t3.codes/install.sh | sh
@@ -67,11 +67,11 @@ On Windows, in PowerShell:
 irm https://t3.codes/install.ps1 | iex
 ```
 
-To try it once without an install, run `npx t3@latest`.
+To try upstream T3 Code once without an install, run `npx t3@latest`.
 
 ### Phone
 
-Get the app from the [App Store](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or [Google Play](https://play.google.com/store/apps/details?id=com.t3tools.t3code). Then follow [remote access](./docs/user/remote-access.md) to connect it to your computer.
+RuCode publishes no mobile app. Upstream T3 Code's app is on the [App Store](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or [Google Play](https://play.google.com/store/apps/details?id=com.t3tools.t3code). Follow [remote access](./docs/user/remote-access.md) to connect it to your computer.
 
 ### Sign in to an agent
 

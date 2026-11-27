@@ -7,7 +7,7 @@ import { absoluteUrl, SITE_TAGLINE } from "../lib/seo";
 export const GET: APIRoute = () => {
   const body = `# RuCode
 
-> ${SITE_TAGLINE}. RuCode is a free, MIT-licensed fork of upstream T3 Code. It runs Claude Code, Codex, Cursor, OpenCode, Grok, Antigravity, and other coding agents from one desktop, web, and mobile app.
+> ${SITE_TAGLINE}. RuCode is a free, MIT-licensed fork of upstream T3 Code. It runs Claude Code, Codex, Cursor, OpenCode, Grok, Antigravity, and other coding agents from one desktop and web app.
 
 The t3.codes website, the web app at https://app.t3.codes, the \`t3\` package on npm (\`npx t3@latest\`), the iOS App Store listing, and the Google Play listing belong to upstream T3 Code, not to this fork. RuCode's own source and builds are at https://github.com/mayberuk/rucode.
 

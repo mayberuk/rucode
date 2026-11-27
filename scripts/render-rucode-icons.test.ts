@@ -64,6 +64,31 @@ const digest = (contents: Buffer | string) =>
   NodeCrypto.createHash("sha256").update(contents).digest("hex");
 const repoFile = (path: string) => NodeFSP.readFile(new URL(path, root));
 
+const decodeRgba = (contents: Buffer) =>
+  sharp(contents).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+
+// Pixels, not encoded bytes: PNG and WebP encoders differ by version. RGB of fully transparent
+// pixels is ignored for the same reason.
+async function expectSamePixels(path: string, generated: Buffer, committed: Buffer) {
+  const [left, right] = await Promise.all([decodeRgba(generated), decodeRgba(committed)]);
+  expect(left.info.width, path).toBe(right.info.width);
+  expect(left.info.height, path).toBe(right.info.height);
+  let mismatches = 0;
+  for (let index = 0; index < right.data.length; index += 4) {
+    const alpha = right.data[index + 3];
+    if (
+      left.data[index + 3] !== alpha ||
+      (alpha !== 0 &&
+        (left.data[index] !== right.data[index] ||
+          left.data[index + 1] !== right.data[index + 1] ||
+          left.data[index + 2] !== right.data[index + 2]))
+    ) {
+      mismatches += 1;
+    }
+  }
+  expect(mismatches, path).toBe(0);
+}
+
 it("declares each existing output once with the required source and sizes", () => {
   expect(RU_CODE_ICON_OUTPUTS.toSorted(byPath)).toEqual(expectedOutputs.toSorted(byPath));
 });
@@ -219,9 +244,19 @@ effectIt.layer(NodeServices.layer)("renderer", (it) => {
             concurrency: 2,
           });
         }
-        for (const { path } of expectedOutputs) {
+        for (const { path, frames } of expectedOutputs) {
           const generated = Buffer.from(yield* fs.readFile(NodePath.join(directory, path)));
-          expect(digest(generated), path).toBe(digest(yield* Effect.promise(() => repoFile(path))));
+          const committed = yield* Effect.promise(() => repoFile(path));
+          const sizes = frames.map(({ size }) => size);
+          const generatedFrames = path.endsWith(".ico") ? icoFrames(generated, sizes) : [generated];
+          const committedFrames = path.endsWith(".ico") ? icoFrames(committed, sizes) : [committed];
+          for (const [index, frame] of generatedFrames.entries()) {
+            const expected = committedFrames[index];
+            assert(expected !== undefined, "expected a committed frame for each generated frame");
+            yield* Effect.promise(() =>
+              expectSamePixels(path, Buffer.from(frame), Buffer.from(expected)),
+            );
+          }
         }
       }
     }),

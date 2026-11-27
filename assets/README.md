@@ -2,8 +2,11 @@
 
 The RuCode masters in `prod/` are `rucode-icon.svg` for the squircle, `rucode-icon-square.svg` for iOS, `rucode-mark.svg` for the single-colour glyph, and `rucode-favicon-{16,32}.svg` for the hand-pixelled favicons.
 Run `node scripts/render-rucode-icons.ts` from the repository root on Linux to regenerate the tracked icons for all channels, including the 1024×1024 macOS pre-Tahoe PNGs with an 824×824 body.
-The production Icon Composer project also carries the ሩ layer and plum gradient.
-`scripts/render-rucode-icons.ts` is the source of truth for the RuCode art on Linux. `vp run icons:export` and `vp run icons:check` (macOS only) still read the T3 Icon Composer projects in `assets/dev` and `assets/nightly`, so they no longer reproduce the RuCode renders until those projects are updated.
+The production Icon Composer project (`prod/app-icon.icon`) carries the ሩ layer and plum gradient.
+`scripts/render-rucode-icons.ts` is the source of truth for the RuCode art on Linux. Besides the files under `assets/`, it also writes `apps/web/public/*`, `apps/marketing/public/*` and `apps/marketing/src/assets/icon*.webp`.
+`vp run icons:export` and `vp run icons:check` (macOS only) read the Icon Composer projects in `assets/prod`, `assets/dev` and `assets/nightly`. They cannot reproduce the hand-pixelled 16 and 32 px favicons and still read the T3 `dev` and `nightly` projects, so `icons:check` is not a valid gate for any channel until the renderer stops being the source of truth.
+The Android exports below mix RuCode production art with T3 `dev` and `nightly` layers until they are re-exported.
+`prod/logo.svg` is still the T3 glyph and nothing references it.
 Never hand-edit the generated PNG and ICO files.
 
 ## Android launcher and splash artwork

@@ -10,6 +10,9 @@ launch RuCode and configure providers afterwards.
 
 ## Command line
 
+RuCode builds are on the fork's [GitHub Releases](https://github.com/mayberuk/rucode/releases).
+The install scripts below are upstream T3 Code's and install upstream T3 Code, not this fork:
+
 ```bash
 curl -fsSL https://t3.codes/install.sh | sh
 ```
@@ -61,8 +64,8 @@ run a server there, build it from source with `vp`, which provides the Node vers
 ([Install vp](../operations/development.md#first-checkout)):
 
 ```bash
-git clone https://github.com/pingdotgg/t3code
-cd t3code && vp i && vp run build:desktop
+git clone https://github.com/mayberuk/rucode
+cd rucode && vp i && vp run build:desktop
 node apps/server/dist/bin.mjs
 ```
 

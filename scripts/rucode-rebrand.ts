@@ -39,6 +39,10 @@ const PRESERVED_LITERALS = [
   "Pictures/T3 Code",
   "DIRECTORY_PICTURES}/T3 Code",
   "Unable to connect to the T3 server WebSocket.",
+  "downloading T3 Code ${version}",
+  "no T3 Code CLI build is available for",
+  "could not run T3 Code ${version}",
+  "T3 Code CLI. Downloads the self-contained executable",
 ];
 
 const PRESERVED_LINE = /fork of T3 Code|upstream T3 Code|T3 Code upstream/i;
@@ -113,18 +117,25 @@ function rebrandLine(filePath: string, line: string): string {
   );
 }
 
+const TRIAGE_PROMPT_PATH = "apps/server/src/triage/triagePrompt.ts";
+
+function findPlaybook(path: string, lines: readonly string[]) {
+  const start =
+    path === TRIAGE_PROMPT_PATH
+      ? lines.findIndex((line) => line.startsWith("export const TRIAGE_PLAYBOOK = `"))
+      : -1;
+  if (start < 0) return { start, end: -1, unterminated: false };
+  const end = lines.findIndex((line, index) => index > start && line.trimEnd() === "`;");
+  return end < 0
+    ? { start, end: lines.length - 1, unterminated: true }
+    : { start, end, unterminated: false };
+}
+
 export function rebrandText(path: string, text: string): { text: string; hits: Hit[] } {
   const hits: Hit[] = [];
   const lines = text.split("\n");
   // The bundled playbook must match the upstream copy under .github byte for byte.
-  const playbookStart =
-    path === "apps/server/src/triage/triagePrompt.ts"
-      ? lines.findIndex((line) => line.startsWith("export const TRIAGE_PLAYBOOK = `"))
-      : -1;
-  const playbookEnd =
-    playbookStart < 0
-      ? -1
-      : lines.findIndex((line, index) => index > playbookStart && line.trimEnd() === "`;");
+  const { start: playbookStart, end: playbookEnd } = findPlaybook(path, lines);
   const rewritten = lines.map((line, index) => {
     if (index >= playbookStart && index <= playbookEnd) return line;
     const next = rebrandLine(path, line);
@@ -202,6 +213,11 @@ export function runRebrand(input: {
 
     let next = original;
     if (!isExcluded(file)) {
+      if (findPlaybook(file, original.split("\n")).unterminated) {
+        pinProblems.push(
+          `${file}: triage playbook closing line \`;\` not found; the file is left unrewritten from the playbook's start`,
+        );
+      }
       const result = rebrandText(file, original);
       if (input.mode === "check") remaining.push(...result.hits);
       else {
