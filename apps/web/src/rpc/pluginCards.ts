@@ -22,6 +22,15 @@ export const pluginLiveStateAtomFamily = createEnvironmentRpcSubscriptionAtomFam
   },
 );
 
+export const pluginInitiativeBoardAtomFamily = createEnvironmentRpcSubscriptionAtomFamily(
+  connectionAtomRuntime,
+  {
+    label: "environment-data:plugin-cards:initiative",
+    tag: WS_METHODS.pluginCardsSubscribeInitiative,
+    idleTtlMs: 0,
+  },
+);
+
 export const answerPluginDecision = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "environment-data:plugin-cards:answer-decision",
   tag: WS_METHODS.pluginCardsAnswerDecision,
