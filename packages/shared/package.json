@@ -483,6 +483,10 @@
       "types": "./src/codexAuthHandoff.ts",
       "import": "./src/codexAuthHandoff.ts"
     },
+    "./codexExecRun": {
+      "types": "./src/codexExecRun.ts",
+      "import": "./src/codexExecRun.ts"
+    },
     "./codexArtifactTemplates": {
       "types": "./src/codexArtifactTemplates.ts",
       "import": "./src/codexArtifactTemplates.ts"

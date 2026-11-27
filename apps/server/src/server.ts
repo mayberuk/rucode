@@ -110,6 +110,7 @@ import * as PluginCards from "./pluginCards/core/PluginCards.ts";
 import * as ClaudeSessionRegistry from "./cliSessions/ClaudeSessionRegistry.ts";
 import * as CliSessionHandOff from "./cliSessions/CliSessionHandOff.ts";
 import * as CliSessionSync from "./cliSessions/CliSessionSync.ts";
+import * as CodexSessionSync from "./codexSessions/CodexSessionSync.ts";
 import * as ProviderSessionRuntime from "./persistence/ProviderSessionRuntime.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as GitManager from "./git/GitManager.ts";
@@ -722,6 +723,9 @@ const layerCliSessions = Layer.mergeAll(
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   layerCliSessions,
+  CodexSessionSync.layer.pipe(
+    Layer.provide(Layer.mergeAll(RuntimeLayer.layerEventSink, ProjectionStoreV2.layer)),
+  ),
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
