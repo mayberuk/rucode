@@ -107,3 +107,69 @@ describe("isPreviewAnnotationPayload", () => {
     );
   });
 });
+
+describe("isPreviewAnnotationPayload with an iter8 target", () => {
+  const iter8 = (overrides?: {
+    readonly target?: Record<string, unknown>;
+    readonly anchor?: Record<string, unknown>;
+  }) => ({
+    intent: "change",
+    anchor: {
+      selector: ["x-card#card", "button#pay"],
+      role: "button",
+      name: "Pay",
+      text: "Pay now",
+      box: { x: 10, y: 420, width: 120, height: 32 },
+      ...overrides?.anchor,
+    },
+    viewport: { width: 1280, height: 800, devicePixelRatio: 2 },
+    theme: "dark",
+    ...overrides?.target,
+  });
+
+  it("accepts an annotation without an iter8 field and one with a well-formed target", () => {
+    expect(isPreviewAnnotationPayload(validAnnotation())).toBe(true);
+    expect(isPreviewAnnotationPayload(validAnnotation({ iter8: iter8() }))).toBe(true);
+    expect(
+      isPreviewAnnotationPayload(
+        validAnnotation({
+          iter8: iter8({ anchor: { role: undefined, name: undefined, text: undefined } }),
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["a null target", null],
+    ["an undefined target", undefined],
+    ["an unknown intent", iter8({ target: { intent: "praise" } })],
+    ["an unknown theme", iter8({ target: { theme: "sepia" } })],
+    ["no anchor", iter8({ target: { anchor: null } })],
+    ["an empty selector list", iter8({ anchor: { selector: [] } })],
+    ["an empty selector hop", iter8({ anchor: { selector: ["main", ""] } })],
+    ["a non-string selector hop", iter8({ anchor: { selector: ["main", 3] } })],
+    ["a selector string instead of a list", iter8({ anchor: { selector: "main" } })],
+    ["a non-string role", iter8({ anchor: { role: 1 } })],
+    ["a non-string name", iter8({ anchor: { name: null } })],
+    ["a non-string text", iter8({ anchor: { text: false } })],
+    [
+      "a NaN box coordinate",
+      iter8({ anchor: { box: { x: Number.NaN, y: 0, width: 1, height: 1 } } }),
+    ],
+    ["a box missing its height", iter8({ anchor: { box: { x: 0, y: 0, width: 1 } } })],
+    [
+      "an infinite viewport",
+      iter8({
+        target: {
+          viewport: { width: Number.POSITIVE_INFINITY, height: 800, devicePixelRatio: 2 },
+        },
+      }),
+    ],
+    [
+      "a viewport without a pixel ratio",
+      iter8({ target: { viewport: { width: 1280, height: 800 } } }),
+    ],
+  ])("rejects %s", (_name, target) => {
+    expect(isPreviewAnnotationPayload(validAnnotation({ iter8: target }))).toBe(false);
+  });
+});

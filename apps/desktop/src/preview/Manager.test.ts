@@ -3670,4 +3670,271 @@ describe("PreviewManager", () => {
       }),
     ),
   );
+
+  describe("iter8 review", () => {
+    const makeReviewGuest = (
+      id: number,
+      options: {
+        readonly failSend?: (channel: string) => boolean;
+        readonly startPicks?: Queue.Queue<ReadonlyArray<unknown>>;
+      } = {},
+    ) => {
+      const events = new Map<string, Array<(...args: unknown[]) => void>>();
+      const ipcListeners = new Map<string, (event: unknown, ...args: unknown[]) => void>();
+      const capturePage = vi.fn(async () => ({
+        toJPEG: () => Buffer.from("annotation"),
+        toDataURL: () => "data:image/png;base64,YW5ub3RhdGlvbg==",
+        getSize: () => ({ width: 10, height: 10 }),
+      }));
+      const guest = Object.assign(makeTestPreviewWebContents(capturePage, id), {
+        isFocused: () => true,
+        focus: vi.fn(),
+        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+          events.set(event, [...(events.get(event) ?? []), listener]);
+        }),
+        once: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+          events.set(event, [...(events.get(event) ?? []), listener]);
+        }),
+        off: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+          events.set(
+            event,
+            (events.get(event) ?? []).filter((candidate) => candidate !== listener),
+          );
+        }),
+        ipc: {
+          on: vi.fn((channel: string, listener: (event: unknown, ...args: unknown[]) => void) => {
+            ipcListeners.set(channel, listener);
+          }),
+          off: vi.fn(),
+          removeListener: vi.fn(),
+        },
+        send: (channel: string, ...args: unknown[]) => {
+          if (options.failSend?.(channel)) throw new Error("guest replaced");
+          webviewSend(channel, ...args);
+          if (channel === "preview:start-pick" && options.startPicks)
+            Queue.offerUnsafe(options.startPicks, args);
+        },
+      });
+      return {
+        guest,
+        emit: (event: string, ...args: unknown[]) => {
+          for (const listener of events.get(event) ?? []) listener(...args);
+        },
+        picked: (...args: unknown[]) => ipcListeners.get("preview:element-picked")?.({}, ...args),
+      };
+    };
+
+    const pinsSent = () =>
+      webviewSend.mock.calls
+        .filter(([channel]) => channel === "preview:review-pins")
+        .map(([, pins]) => pins);
+
+    const firstPins = {
+      pins: [{ label: "1", selector: ["button#pay"], resolved: false }],
+      focusLabel: null,
+    };
+    const latestPins = {
+      pins: [
+        { label: "1", selector: ["button#pay"], resolved: true },
+        { label: "2", selector: ["x-card#card", "a#plans"], resolved: false },
+      ],
+      focusLabel: "2",
+    };
+
+    const annotation = {
+      id: "annotation-iter8",
+      pageUrl: "https://example.com/plans",
+      pageTitle: "Plans",
+      comment: "Make this the default",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-11-01T00:00:00.000Z",
+      iter8: {
+        intent: "change",
+        anchor: { selector: ["button#pay"], box: { x: 0, y: 0, width: 10, height: 10 } },
+        viewport: { width: 1280, height: 800, devicePixelRatio: 2 },
+        theme: "light",
+      },
+    };
+
+    effectIt.effect("tells the guest which pick mode to start, defaulting to chat", () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const startPicks = yield* Queue.unbounded<ReadonlyArray<unknown>>();
+          const { guest } = makeReviewGuest(42, { startPicks });
+          fromId.mockReturnValue(guest as never);
+          yield* manager.createTab("tab_1");
+          yield* manager.registerWebview("tab_1", 42);
+
+          const chat = yield* manager.pickElement("tab_1").pipe(Effect.forkChild);
+          expect((yield* Queue.take(startPicks)).at(-1)).toBe("chat");
+          yield* manager.cancelPickElement("tab_1");
+          expect(yield* Fiber.join(chat)).toBeNull();
+
+          const iter8 = yield* manager
+            .pickElement("tab_1", undefined, "iter8")
+            .pipe(Effect.forkChild);
+          expect((yield* Queue.take(startPicks)).at(-1)).toBe("iter8");
+          yield* manager.cancelPickElement("tab_1");
+          expect(yield* Fiber.join(iter8)).toBeNull();
+        }),
+      ),
+    );
+
+    effectIt.effect("returns an iter8 note as an attachment even when sending is allowed", () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const startPicks = yield* Queue.unbounded<ReadonlyArray<unknown>>();
+          const { guest, picked } = makeReviewGuest(42, { startPicks });
+          fromId.mockReturnValue(guest as never);
+          yield* manager.createTab("tab_1");
+          yield* manager.registerWebview("tab_1", 42);
+          yield* manager.setAnnotationSendEnabled("tab_1", true);
+
+          const pick = yield* manager
+            .pickElement("tab_1", undefined, "iter8")
+            .pipe(Effect.forkChild);
+          yield* Queue.take(startPicks);
+          picked(annotation, null, "send");
+
+          const result = yield* Fiber.join(pick);
+          expect(result?.submission).toBe("attach");
+          expect(result?.annotation.iter8).toEqual(annotation.iter8);
+        }),
+      ),
+    );
+
+    effectIt.effect("resolves an iter8 pick with nothing when cancelled or navigated away", () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const startPicks = yield* Queue.unbounded<ReadonlyArray<unknown>>();
+          const { guest, picked, emit } = makeReviewGuest(42, { startPicks });
+          fromId.mockReturnValue(guest as never);
+          yield* manager.createTab("tab_1");
+          yield* manager.registerWebview("tab_1", 42);
+
+          const cancelled = yield* manager
+            .pickElement("tab_1", undefined, "iter8")
+            .pipe(Effect.forkChild);
+          yield* Queue.take(startPicks);
+          picked(null);
+          expect(yield* Fiber.join(cancelled)).toBeNull();
+
+          const navigated = yield* manager
+            .pickElement("tab_1", undefined, "iter8")
+            .pipe(Effect.forkChild);
+          yield* Queue.take(startPicks);
+          emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+          expect(yield* Fiber.join(navigated)).toBeNull();
+        }),
+      ),
+    );
+
+    effectIt.effect("rejects an iter8 pick when the tab has no ready guest", () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          yield* manager.createTab("tab_unready");
+          const unready = yield* Effect.exit(
+            manager.pickElement("tab_unready", undefined, "iter8"),
+          );
+          expect(Exit.isFailure(unready)).toBe(true);
+
+          const { guest } = makeReviewGuest(42, {
+            failSend: (channel) => channel === "preview:start-pick",
+          });
+          fromId.mockReturnValue(guest as never);
+          yield* manager.createTab("tab_1");
+          yield* manager.registerWebview("tab_1", 42);
+          const failed = yield* Effect.exit(manager.pickElement("tab_1", undefined, "iter8"));
+          expect(Exit.isFailure(failed)).toBe(true);
+        }),
+      ),
+    );
+
+    effectIt.effect("sends review pins and replays the latest after every page load", () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const { guest, emit } = makeReviewGuest(42);
+          fromId.mockReturnValue(guest as never);
+          yield* manager.createTab("tab_1");
+          yield* manager.registerWebview("tab_1", 42);
+
+          yield* manager.setReviewPins("tab_1", firstPins);
+          yield* manager.setReviewPins("tab_1", latestPins);
+          expect(pinsSent()).toEqual([firstPins, latestPins]);
+
+          webviewSend.mockClear();
+          emit("dom-ready");
+          yield* flushMicrotasks();
+          expect(pinsSent()).toEqual([latestPins]);
+
+          yield* manager.setReviewPins("tab_1", null);
+          expect(pinsSent()).toEqual([latestPins, null]);
+          webviewSend.mockClear();
+          emit("dom-ready");
+          yield* flushMicrotasks();
+          expect(pinsSent()).toEqual([]);
+        }),
+      ),
+    );
+
+    effectIt.effect("re-sends the latest pins on the next load when a send did not land", () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let replaced = true;
+          const { guest, emit } = makeReviewGuest(42, {
+            failSend: (channel) => replaced && channel === "preview:review-pins",
+          });
+          fromId.mockReturnValue(guest as never);
+          yield* manager.createTab("tab_1");
+          yield* manager.registerWebview("tab_1", 42);
+
+          const lost = yield* Effect.exit(manager.setReviewPins("tab_1", latestPins));
+          expect(Exit.isFailure(lost)).toBe(true);
+          replaced = false;
+          emit("dom-ready");
+          yield* flushMicrotasks();
+
+          expect(pinsSent()).toEqual([latestPins]);
+        }),
+      ),
+    );
+
+    effectIt.effect("holds pins for a guest that registers later, and forgets them on close", () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const first = makeReviewGuest(42);
+          const replacement = makeReviewGuest(43);
+          fromId.mockImplementation((id) =>
+            id === 42 ? (first.guest as never) : id === 43 ? (replacement.guest as never) : null,
+          );
+          yield* manager.createTab("tab_1");
+          yield* manager.setReviewPins("tab_1", latestPins);
+          expect(pinsSent()).toEqual([]);
+
+          yield* manager.registerWebview("tab_1", 42);
+          expect(pinsSent()).toEqual([latestPins]);
+          webviewSend.mockClear();
+          yield* manager.registerWebview("tab_1", 43);
+          expect(pinsSent()).toEqual([latestPins]);
+
+          yield* manager.closeTab("tab_1");
+          yield* manager.createTab("tab_1");
+          webviewSend.mockClear();
+          yield* manager.registerWebview("tab_1", 43);
+          expect(pinsSent()).toEqual([]);
+
+          const unknown = yield* Effect.exit(manager.setReviewPins("tab_missing", latestPins));
+          expect(Exit.isFailure(unknown)).toBe(true);
+          if (Exit.isFailure(unknown))
+            expect(Option.getOrThrow(Cause.findErrorOption(unknown.cause))._tag).toBe(
+              "PreviewTabNotFoundError",
+            );
+        }),
+      ),
+    );
+  });
 });

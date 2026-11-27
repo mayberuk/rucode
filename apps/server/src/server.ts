@@ -108,6 +108,7 @@ import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as PluginCards from "./pluginCards/core/PluginCards.ts";
 import * as InitiativeBoard from "./pluginCards/live/InitiativeBoard.ts";
+import * as Iter8Review from "./iter8/Iter8Review.ts";
 import * as ClaudeSessionRegistry from "./cliSessions/ClaudeSessionRegistry.ts";
 import * as CliSessionHandOff from "./cliSessions/CliSessionHandOff.ts";
 import * as CliSessionSync from "./cliSessions/CliSessionSync.ts";
@@ -734,6 +735,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerIdleCompactionWorker,
   layerPluginCards,
   layerInitiativeBoard,
+  Iter8Review.layer,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),

@@ -86,10 +86,12 @@ import {
   RECORDING_INPUT_CHANNEL,
   RECORDING_CONTROLLER_CHANNEL,
   RECORDING_POINTER_CHANNEL,
+  REVIEW_PINS_CHANNEL,
   START_PICK_CHANNEL,
   THUMB_PRESS_CHANNEL,
 } from "./GuestProtocol.ts";
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
+import type { ReviewPinsInput } from "./ReviewPins.ts";
 import { captureFavicon, safeHttpOrigin, selectFaviconCandidates } from "./FaviconCapture.ts";
 import { DEFAULT_RECORDING_INPUT_OPTIONS, type RecordingInputOptions } from "./RecordingInput.ts";
 
@@ -376,6 +378,8 @@ const nextZoomLevel = (current: number, direction: "in" | "out"): number => {
 
 type Listener = (tabId: string, state: PreviewTabState) => Effect.Effect<void>;
 
+type PreviewPickMode = "chat" | "iter8";
+
 type PreviewInputSignal =
   | { readonly kind: "pointer"; readonly x: number; readonly y: number; readonly button: number }
   | { readonly kind: "key"; readonly key: string; readonly code: string };
@@ -578,6 +582,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   let forwardedShortcuts: ReadonlyArray<PreviewForwardedShortcut> = [];
   const annotationThemeRef = yield* Ref.make(DEFAULT_ANNOTATION_THEME);
   const annotationSendEnabled = new Map<string, boolean>();
+  // A page load replaces the guest's pins with nothing, so the latest value is replayed on each load.
+  const reviewPins = new Map<string, ReviewPinsInput>();
   const mainWindowRef = yield* Ref.make<Option.Option<BrowserWindow>>(Option.none());
   const tabsRef = yield* SynchronizedRef.make<ReadonlyMap<string, PreviewTabState>>(new Map());
   const attachedRef = yield* Ref.make<ReadonlyMap<number, ManagedListeners>>(new Map());
@@ -1273,6 +1279,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }
         }),
       );
+    const restoreReviewPins = () =>
+      runFork(
+        Effect.gen(function* () {
+          const pins = reviewPins.get(tabId);
+          if (!pins || wc.isDestroyed()) return;
+          const theme = yield* Ref.get(annotationThemeRef);
+          yield* attempt({ operation: "restoreReviewPins", tabId, webContentsId: wc.id }, () =>
+            wc.send(REVIEW_PINS_CHANNEL, pins, theme),
+          ).pipe(Effect.ignore);
+        }),
+      );
     const navigationStarted = (
       event: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
     ) => {
@@ -1644,6 +1661,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("did-start-loading", sync);
         wc.off("did-stop-loading", sync);
         wc.off("dom-ready", restoreRecordingCursor);
+        wc.off("dom-ready", restoreReviewPins);
         wc.off("did-fail-load", failed as never);
         wc.off("audio-state-changed", audioStateChanged);
         wc.off("found-in-page", foundInPage as never);
@@ -1667,6 +1685,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("did-start-loading", sync);
         wc.on("did-stop-loading", sync);
         wc.on("dom-ready", restoreRecordingCursor);
+        wc.on("dom-ready", restoreReviewPins);
         wc.on("did-fail-load", failed as never);
         wc.on("audio-state-changed", audioStateChanged);
         wc.on("found-in-page", foundInPage as never);
@@ -1804,6 +1823,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (!(yield* SynchronizedRef.get(tabsRef)).has(tabId)) return;
     clearPendingRecording(tabId);
     annotationSendEnabled.delete(tabId);
+    reviewPins.delete(tabId);
     yield* Effect.all(
       [
         cancelPickElement(tabId),
@@ -1910,6 +1930,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () => {
         wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme);
         wc.send(ANNOTATION_SEND_ENABLED_CHANNEL, annotationSendEnabled.get(tabId) === true);
+        const pins = reviewPins.get(tabId);
+        if (pins) wc.send(REVIEW_PINS_CHANNEL, pins, annotationTheme);
       });
       return;
     }
@@ -2011,6 +2033,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () => {
       wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme);
       wc.send(ANNOTATION_SEND_ENABLED_CHANNEL, annotationSendEnabled.get(tabId) === true);
+      const pins = reviewPins.get(tabId);
+      if (pins) wc.send(REVIEW_PINS_CHANNEL, pins, annotationTheme);
     });
     const latestNavStatus = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.navStatus;
     if (
@@ -2302,6 +2326,25 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
   });
 
+  // Stored before sending: a guest that has not registered yet, or is replaced mid-send, gets the
+  // latest value on its next load instead.
+  const setReviewPins = Effect.fn("PreviewManager.setReviewPins")(function* (
+    tabId: string,
+    pins: ReviewPinsInput | null,
+  ) {
+    const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+    if (!tab) return yield* new PreviewTabNotFoundError({ tabId });
+    if (pins === null) reviewPins.delete(tabId);
+    else reviewPins.set(tabId, pins);
+    if (tab.webContentsId == null) return;
+    const wc = webContents.fromId(tab.webContentsId);
+    if (!wc || wc.isDestroyed()) return;
+    const theme = yield* Ref.get(annotationThemeRef);
+    yield* attempt({ operation: "setReviewPins", tabId, webContentsId: wc.id }, () =>
+      wc.send(REVIEW_PINS_CHANNEL, pins, theme),
+    );
+  });
+
   // Voice state reaches a guest only while its pick session, by id, still owns the tab.
   const updateAnnotationVoice = Effect.fn("PreviewManager.updateAnnotationVoice")(function* (
     state: DesktopPreviewAnnotationVoiceState,
@@ -2317,6 +2360,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const pickElement = Effect.fn("PreviewManager.pickElement")(function* (
     tabId: string,
     voice?: DesktopPreviewAnnotationVoiceConfig,
+    mode: PreviewPickMode = "chat",
   ) {
     const wc = yield* requireWebContents(tabId);
     yield* cancelPickElement(tabId);
@@ -2392,7 +2436,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }
           const cropRect = normalizeCaptureRect(args[1]);
           const submission =
-            args[2] === "send" && annotationSendEnabled.get(tabId) === true ? "send" : "attach";
+            mode === "chat" && args[2] === "send" && annotationSendEnabled.get(tabId) === true
+              ? "send"
+              : "attach";
           const devicePixelRatio = typeof args[3] === "number" ? args[3] : 1;
           const targetRects = [
             ...payload.elements.map((target) => target.rect),
@@ -2485,6 +2531,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               annotationTheme,
               annotationSendEnabled.get(tabId) === true,
               voice,
+              mode,
             );
           });
         });
@@ -3713,6 +3760,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     openPictureInPicture,
     openDevTools,
     pickElement,
+    setReviewPins,
     updateAnnotationVoice,
     prepareWebview,
     reapplyZoom,
@@ -3965,9 +4013,14 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       enabled: boolean,
     ) => Effect.Effect<void, PreviewManagerError>;
+    readonly setReviewPins: (
+      tabId: string,
+      pins: ReviewPinsInput | null,
+    ) => Effect.Effect<void, PreviewManagerError>;
     readonly pickElement: (
       tabId: string,
       voice?: DesktopPreviewAnnotationVoiceConfig,
+      mode?: "chat" | "iter8",
     ) => Effect.Effect<PreviewAnnotationSubmissionResult | null, PreviewManagerError>;
     readonly updateAnnotationVoice: (
       state: DesktopPreviewAnnotationVoiceState,
@@ -4140,6 +4193,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     setAnnotationTheme: operations.setAnnotationTheme,
     setAnnotationSendEnabled: operations.setAnnotationSendEnabled,
     pickElement: operations.pickElement,
+    setReviewPins: operations.setReviewPins,
     updateAnnotationVoice: operations.updateAnnotationVoice,
     cancelPickElement: operations.cancelPickElement,
     captureScreenshot: operations.captureScreenshot,

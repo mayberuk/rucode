@@ -93,6 +93,11 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // Answering a decision posts a message as the user and records the answer with dp.
   [WS_METHODS.pluginCardsAnswerDecision]: AuthOrchestrationOperateScope,
   [WS_METHODS.pluginCardsRunAction]: AuthOrchestrationOperateScope,
+  [WS_METHODS.iter8SubscribeReview]: AuthOrchestrationReadScope,
+  [WS_METHODS.iter8CreateNote]: AuthOrchestrationOperateScope,
+  [WS_METHODS.iter8UpdateNote]: AuthOrchestrationOperateScope,
+  [WS_METHODS.iter8DeleteNote]: AuthOrchestrationOperateScope,
+  [WS_METHODS.iter8SendRound]: AuthOrchestrationOperateScope,
   // Both end a Claude process for the chat, one in a terminal and one rucode's own.
   [WS_METHODS.cliSessionsTakeOver]: AuthOrchestrationOperateScope,
   [WS_METHODS.cliSessionsContinueInTerminal]: AuthOrchestrationOperateScope,

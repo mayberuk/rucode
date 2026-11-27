@@ -424,6 +424,15 @@ import {
   PluginThreadCards,
 } from "./pluginCards.ts";
 import {
+  Iter8CreateNoteInput,
+  Iter8DeleteNoteInput,
+  Iter8ReviewError,
+  Iter8ReviewSnapshot,
+  Iter8SendRoundInput,
+  Iter8SendRoundResult,
+  Iter8UpdateNoteInput,
+} from "./iter8.ts";
+import {
   CliSessionContinueInput,
   CliSessionContinueResult,
   CliSessionError,
@@ -608,6 +617,11 @@ export const WS_METHODS = {
   pluginCardsAnswerDecision: "pluginCards.answerDecision",
   pluginCardsRunAction: "pluginCards.runAction",
   pluginCardsReadAsset: "pluginCards.readAsset",
+  iter8SubscribeReview: "iter8.subscribeReview",
+  iter8CreateNote: "iter8.createNote",
+  iter8UpdateNote: "iter8.updateNote",
+  iter8DeleteNote: "iter8.deleteNote",
+  iter8SendRound: "iter8.sendRound",
   cliSessionsTakeOver: "cliSessions.takeOver",
   cliSessionsContinueInTerminal: "cliSessions.continueInTerminal",
   guestShareCreate: "guestShare.create",
@@ -2275,6 +2289,36 @@ const WsPluginCardsReadAssetRpc = Rpc.make(WS_METHODS.pluginCardsReadAsset, {
   error: PluginCardsRpcError,
 });
 
+const Iter8ReviewRpcError = Schema.Union([Iter8ReviewError, EnvironmentAuthorizationError]);
+
+const WsIter8SubscribeReviewRpc = Rpc.make(WS_METHODS.iter8SubscribeReview, {
+  payload: Schema.Struct({}),
+  success: Iter8ReviewSnapshot,
+  error: Iter8ReviewRpcError,
+  stream: true,
+});
+
+const WsIter8CreateNoteRpc = Rpc.make(WS_METHODS.iter8CreateNote, {
+  payload: Iter8CreateNoteInput,
+  error: Iter8ReviewRpcError,
+});
+
+const WsIter8UpdateNoteRpc = Rpc.make(WS_METHODS.iter8UpdateNote, {
+  payload: Iter8UpdateNoteInput,
+  error: Iter8ReviewRpcError,
+});
+
+const WsIter8DeleteNoteRpc = Rpc.make(WS_METHODS.iter8DeleteNote, {
+  payload: Iter8DeleteNoteInput,
+  error: Iter8ReviewRpcError,
+});
+
+const WsIter8SendRoundRpc = Rpc.make(WS_METHODS.iter8SendRound, {
+  payload: Iter8SendRoundInput,
+  success: Iter8SendRoundResult,
+  error: Iter8ReviewRpcError,
+});
+
 const CliSessionsRpcError = Schema.Union([CliSessionError, EnvironmentAuthorizationError]);
 
 const WsCliSessionsTakeOverRpc = Rpc.make(WS_METHODS.cliSessionsTakeOver, {
@@ -2413,6 +2457,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsPluginCardsAnswerDecisionRpc,
   WsPluginCardsRunActionRpc,
   WsPluginCardsReadAssetRpc,
+  WsIter8SubscribeReviewRpc,
+  WsIter8CreateNoteRpc,
+  WsIter8UpdateNoteRpc,
+  WsIter8DeleteNoteRpc,
+  WsIter8SendRoundRpc,
   WsCliSessionsTakeOverRpc,
   WsCliSessionsContinueInTerminalRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,

@@ -7,6 +7,7 @@ import type {
   DesktopPreviewAnnotationVoiceConfig,
   DesktopPreviewAnnotationVoiceEvent,
   DesktopPreviewAnnotationVoiceState,
+  Iter8Intent,
   PickedElementPayload,
   PickedElementStackFrame,
   PreviewAnnotationPayload,
@@ -28,6 +29,7 @@ import {
   type StrokeGeometry,
 } from "./AnnotationStroke.ts";
 import { previewAnnotationStyles } from "./AnnotationStyles.generated.ts";
+import { buildIter8Target } from "./Iter8Anchor.ts";
 import { installRecordingCursor } from "./RecordingCursor.ts";
 import { DEFAULT_RECORDING_INPUT_OPTIONS } from "./RecordingInput.ts";
 import {
@@ -144,6 +146,19 @@ ipcRenderer.on(RECORDING_POINTER_CHANNEL, (_event, point: unknown) => {
 });
 
 type AnnotationTool = "select" | "marquee" | "draw" | "erase";
+type AnnotationMode = "chat" | "iter8";
+
+const INTENT_OPTIONS: ReadonlyArray<{
+  readonly intent: Iter8Intent;
+  readonly label: string;
+  readonly placeholder: string;
+}> = [
+  { intent: "fix", label: "Fix", placeholder: "What is wrong?" },
+  { intent: "change", label: "Change", placeholder: "What should change?" },
+  { intent: "question", label: "Question", placeholder: "What do you want to know?" },
+  { intent: "keep", label: "Keep", placeholder: "What should stay as it is?" },
+];
+const DEFAULT_INTENT: Iter8Intent = "change";
 
 interface SelectedElement {
   id: string;
@@ -554,8 +569,11 @@ function createUnitInput(unit: string, placeholder = "0"): HTMLInputElement {
 function startAnnotation(
   sendEnabled: boolean,
   voice: DesktopPreviewAnnotationVoiceConfig | undefined,
+  mode: AnnotationMode,
 ): void {
   activeSession?.teardown(false);
+  // An iter8 note anchors to exactly one element, so regions, strokes and style edits are off.
+  const iter8 = mode === "iter8";
   let finished = false;
   const host = document.createElement("div");
   host.setAttribute(OVERLAY_ATTRIBUTE, "");
@@ -615,6 +633,7 @@ function startAnnotation(
     " h-8 w-8 shrink-0 bg-muted p-0 text-muted-foreground hover:bg-accent hover:text-accent-foreground";
   adjust.innerHTML =
     '<svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h12M7 3v4M13 8v4M9 13v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  adjust.hidden = iter8;
   composerRow.appendChild(adjust);
 
   const comment = document.createElement("textarea");
@@ -624,6 +643,53 @@ function startAnnotation(
   comment.className =
     "min-h-8 max-h-24 min-w-0 flex-1 resize-none overflow-y-hidden border-0 border-b border-b-transparent bg-transparent px-0 py-1.5 font-sans text-sm leading-5 text-foreground outline-none ring-0 placeholder:text-muted-foreground focus:border-b-primary focus:outline-none focus:ring-0";
   composerRow.appendChild(comment);
+
+  let intent: Iter8Intent = DEFAULT_INTENT;
+  const intentGroup = document.createElement("div");
+  intentGroup.setAttribute("role", "radiogroup");
+  intentGroup.setAttribute("aria-label", "Note intent");
+  intentGroup.className = "mx-2 mt-2 flex gap-0.5 rounded-lg bg-muted p-0.5";
+  intentGroup.hidden = !iter8;
+  const intentRadios = INTENT_OPTIONS.map((option) => {
+    const radio = document.createElement("button");
+    radio.type = "button";
+    radio.textContent = option.label;
+    radio.setAttribute("role", "radio");
+    radio.className =
+      "inline-flex h-6 min-w-0 flex-1 cursor-pointer items-center justify-center rounded-md border border-transparent bg-transparent px-2 font-sans text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground motion-reduce:transition-none aria-checked:border-border aria-checked:bg-popover aria-checked:text-foreground aria-checked:shadow-xs";
+    radio.addEventListener("click", () => selectIntent(option.intent, false));
+    intentGroup.appendChild(radio);
+    return radio;
+  });
+  const selectIntent = (next: Iter8Intent, moveFocus: boolean): void => {
+    intent = next;
+    INTENT_OPTIONS.forEach((option, index) => {
+      const radio = intentRadios[index];
+      if (!radio) return;
+      const checked = option.intent === next;
+      radio.setAttribute("aria-checked", String(checked));
+      radio.tabIndex = checked ? 0 : -1;
+      if (checked) {
+        comment.placeholder = option.placeholder;
+        if (moveFocus) radio.focus();
+      }
+    });
+  };
+  const moveIntent = (event: KeyboardEvent): boolean => {
+    const index = intentRadios.findIndex((radio) => radio === shadowRoot.activeElement);
+    if (index < 0) return false;
+    const step =
+      event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+          ? -1
+          : 0;
+    if (step === 0) return false;
+    const next = INTENT_OPTIONS[(index + step + INTENT_OPTIONS.length) % INTENT_OPTIONS.length];
+    if (next) selectIntent(next.intent, true);
+    return true;
+  };
+  if (iter8) selectIntent(DEFAULT_INTENT, false);
 
   // Recording happens in the application renderer, which owns the microphone consent.
   // This guest only draws the controls, forwards trusted gestures, and mirrors state.
@@ -852,17 +918,19 @@ function startAnnotation(
     "hidden h-8 w-6 shrink-0 cursor-grab select-none border-0 bg-transparent p-0 font-sans text-lg font-bold leading-5 text-muted-foreground";
   composerRow.appendChild(dragHandle);
 
-  const submit = createButton("Attach", "Attach annotation and screenshot (Enter)");
+  const submit = createButton(iter8 ? "Add" : "Attach", "");
   const updateSendHint = () => {
-    submit.title = sendEnabled
-      ? "Attach annotation and screenshot (Enter). Send with Cmd/Ctrl+Enter."
-      : "Attach annotation and screenshot (Enter)";
+    submit.title = iter8
+      ? "Add note (Enter)"
+      : sendEnabled
+        ? "Attach annotation and screenshot (Enter). Send with Cmd/Ctrl+Enter."
+        : "Attach annotation and screenshot (Enter)";
   };
   updateSendHint();
   submit.className +=
     " h-8 shrink-0 border-primary bg-primary px-3 text-primary-foreground shadow-sm hover:bg-primary/90";
   composerRow.appendChild(submit);
-  editor.append(composerRow, voicePreview, voiceRow);
+  editor.append(intentGroup, composerRow, voicePreview, voiceRow);
 
   const stylePanel = document.createElement("div");
   stylePanel.className =
@@ -885,7 +953,7 @@ function startAnnotation(
     inputLayer.tabIndex = -1;
     inputLayer.style.cssText = `position:fixed;inset:0;z-index:${Z_INDEX_OVERLAY - 1};cursor:crosshair;outline:none`;
   }
-  let tool: AnnotationTool = isPdf ? "marquee" : "select";
+  let tool: AnnotationTool = isPdf && !iter8 ? "marquee" : "select";
   let dragStart: PreviewAnnotationPoint | null = null;
   let activeStroke: {
     target: PreviewAnnotationStrokeTarget;
@@ -1248,6 +1316,7 @@ function startAnnotation(
       tool = candidate;
       refreshToolButtons();
     });
+    button.hidden = iter8 && candidate !== "select";
     toolButtons.set(candidate, button);
     toolbar.appendChild(button);
   }
@@ -1513,7 +1582,7 @@ function startAnnotation(
     event.stopPropagation();
     if (tool === "select") {
       const target = pickFromPoint(event.clientX, event.clientY);
-      if (target) toggleSelected(target, event.shiftKey);
+      if (target) toggleSelected(target, event.shiftKey && !iter8);
       return;
     }
     if (tool === "erase") {
@@ -1681,7 +1750,7 @@ function startAnnotation(
       teardown(true);
       return;
     }
-    if (shadowRoot.activeElement?.matches("input, textarea, select")) return;
+    if (iter8 || shadowRoot.activeElement?.matches("input, textarea, select")) return;
     if (event.key === "v") tool = "select";
     else if (event.key === "r") tool = "marquee";
     else if (event.key === "d") tool = "draw";
@@ -1691,7 +1760,7 @@ function startAnnotation(
   };
 
   const submitAnnotation = (submission: PreviewAnnotationSubmission): void => {
-    if (submission === "send" && !sendEnabled) return;
+    if (submission === "send" && (iter8 || !sendEnabled)) return;
     if (voicePhase === "preparing") return;
     // Submitting while dictating finishes the recording and submits once the text lands.
     if (voiceBusy) {
@@ -1712,6 +1781,8 @@ function startAnnotation(
     const submittedRegions = [...regions];
     const submittedStrokes = [...strokes];
     const submittedStyleChanges = Array.from(styleChanges.values(), (change) => ({ ...change }));
+    const iter8Element = iter8 ? selected.keys().next().value : undefined;
+    const submittedIter8 = iter8Element ? buildIter8Target(iter8Element, intent, window) : null;
     void Promise.all(
       Array.from(selected.values()).map(async (target) => {
         const element = await captureElement(target.element);
@@ -1741,6 +1812,7 @@ function startAnnotation(
           styleChanges: submittedStyleChanges,
           screenshot: null,
           createdAt: new Date().toISOString(),
+          ...(submittedIter8 ? { iter8: submittedIter8 } : {}),
         };
         editor.style.display = "none";
         toolbar.style.display = "none";
@@ -1754,7 +1826,7 @@ function startAnnotation(
           ELEMENT_PICKED_CHANNEL,
           annotation,
           screenshotRect,
-          submission === "send" && !sendEnabled ? "attach" : submission,
+          submission === "send" && (iter8 || !sendEnabled) ? "attach" : submission,
           // Main crops a viewport capture, whose pixels are CSS px × this.
           window.devicePixelRatio,
         );
@@ -1769,11 +1841,18 @@ function startAnnotation(
     if (event.type !== "keydown") return;
     onKeyDown(event);
     if (event.cancelBubble) return;
+    if (iter8 && moveIntent(event)) {
+      event.preventDefault();
+      return;
+    }
+    // Cmd/Ctrl+Enter adds an iter8 note like Enter does; iter8's own Send owns sending the round.
     const submission =
-      shadowRoot.activeElement === comment ? resolveAnnotationSubmission(event, sendEnabled) : null;
+      shadowRoot.activeElement === comment
+        ? resolveAnnotationSubmission(event, iter8 || sendEnabled)
+        : null;
     if (!submission) return;
     event.preventDefault();
-    submitAnnotation(submission);
+    submitAnnotation(iter8 ? "attach" : submission);
   };
 
   window.addEventListener("pointermove", onPointerMove, { capture: true, passive: false });
@@ -1821,9 +1900,10 @@ ipcRenderer.on(
     theme: DesktopPreviewAnnotationTheme | undefined,
     sendEnabled?: boolean,
     voice?: DesktopPreviewAnnotationVoiceConfig,
+    mode?: AnnotationMode,
   ) => {
     if (theme) annotationTheme = theme;
-    startAnnotation(sendEnabled === true, voice);
+    startAnnotation(sendEnabled === true, voice, mode === "iter8" ? "iter8" : "chat");
   },
 );
 ipcRenderer.on(ANNOTATION_SEND_ENABLED_CHANNEL, (_event, enabled: boolean) => {

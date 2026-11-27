@@ -55,6 +55,40 @@ function isPoint(value: unknown): boolean {
   );
 }
 
+const ITER8_INTENTS: ReadonlyArray<unknown> = ["fix", "change", "question", "keep"];
+const ITER8_THEMES: ReadonlyArray<unknown> = ["light", "dark"];
+
+function hasFiniteNumbers(value: unknown, keys: ReadonlyArray<string>): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key]));
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isIter8PickedTarget(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const target = value as Record<string, unknown>;
+  const anchor = target["anchor"];
+  if (typeof anchor !== "object" || anchor === null) return false;
+  const fields = anchor as Record<string, unknown>;
+  const selector = fields["selector"];
+  return (
+    ITER8_INTENTS.includes(target["intent"]) &&
+    ITER8_THEMES.includes(target["theme"]) &&
+    Array.isArray(selector) &&
+    selector.length > 0 &&
+    selector.every((hop) => typeof hop === "string" && hop.length > 0) &&
+    isOptionalString(fields["role"]) &&
+    isOptionalString(fields["name"]) &&
+    isOptionalString(fields["text"]) &&
+    hasFiniteNumbers(fields["box"], ["x", "y", "width", "height"]) &&
+    hasFiniteNumbers(target["viewport"], ["width", "height", "devicePixelRatio"])
+  );
+}
+
 export function isPreviewAnnotationPayload(value: unknown): value is PreviewAnnotationPayload {
   if (typeof value !== "object" || value === null) return false;
   const annotation = value as Record<string, unknown>;
@@ -64,6 +98,7 @@ export function isPreviewAnnotationPayload(value: unknown): value is PreviewAnno
   if (typeof annotation["comment"] !== "string") return false;
   if (typeof annotation["createdAt"] !== "string") return false;
   if (annotation["screenshot"] !== null) return false;
+  if ("iter8" in annotation && !isIter8PickedTarget(annotation["iter8"])) return false;
 
   const elements = annotation["elements"];
   if (!Array.isArray(elements)) return false;

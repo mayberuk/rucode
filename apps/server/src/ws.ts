@@ -129,6 +129,7 @@ import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import * as PluginCards from "./pluginCards/core/PluginCards.ts";
 import * as InitiativeBoard from "./pluginCards/live/InitiativeBoard.ts";
+import * as Iter8Review from "./iter8/Iter8Review.ts";
 import * as CliSessionHandOff from "./cliSessions/CliSessionHandOff.ts";
 import {
   bufferShellLiveStream,
@@ -1494,6 +1495,10 @@ export const layerWsRpc = (
         yield* Effect.serviceOption(InitiativeBoard.InitiativeBoard),
         () => InitiativeBoard.unavailable,
       );
+      const iter8Review = Option.getOrElse(
+        yield* Effect.serviceOption(Iter8Review.Iter8Review),
+        () => Iter8Review.unavailable,
+      );
       const cliSessionHandOff = Option.getOrElse(
         yield* Effect.serviceOption(CliSessionHandOff.CliSessionHandOff),
         () => CliSessionHandOff.unavailable,
@@ -2375,6 +2380,11 @@ export const layerWsRpc = (
         [WS_METHODS.pluginCardsAnswerDecision]: (input) => pluginCards.answerDecision(input),
         [WS_METHODS.pluginCardsRunAction]: (input) => pluginCards.runAction(input),
         [WS_METHODS.pluginCardsReadAsset]: (input) => pluginCards.readAsset(input),
+        [WS_METHODS.iter8SubscribeReview]: () => iter8Review.subscribe,
+        [WS_METHODS.iter8CreateNote]: (input) => iter8Review.createNote(input),
+        [WS_METHODS.iter8UpdateNote]: (input) => iter8Review.updateNote(input),
+        [WS_METHODS.iter8DeleteNote]: (input) => iter8Review.deleteNote(input),
+        [WS_METHODS.iter8SendRound]: (input) => iter8Review.sendRound(input),
         [WS_METHODS.cliSessionsTakeOver]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(cliSessionHandOff.takeOver(input)),
