@@ -1,4 +1,4 @@
-import type { ProjectScript } from "@t3tools/contracts";
+import { ProjectId, type ProjectScript } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -9,6 +9,7 @@ import {
   type ProjectActionSuggestOutcome,
 } from "./projectActionSuggestions.logic";
 
+const projectId = ProjectId.make("project-a");
 const testScript = {
   id: "test",
   name: "Run Tests",
@@ -135,19 +136,19 @@ describe("suggestionNoticeFor", () => {
     }>([
       {
         name: "one added action",
-        outcome: { _tag: "Added", scripts: [testScript] },
-        auto: { kind: "added", scripts: [testScript] },
-        manual: { kind: "added", scripts: [testScript] },
+        outcome: { _tag: "Added", projectId, scripts: [testScript] },
+        auto: { kind: "added", projectId, scripts: [testScript] },
+        manual: { kind: "added", projectId, scripts: [testScript] },
       },
       {
         name: "three added actions in their original order",
-        outcome: { _tag: "Added", scripts: [testScript, buildScript, lintScript] },
-        auto: { kind: "added", scripts: [testScript, buildScript, lintScript] },
-        manual: { kind: "added", scripts: [testScript, buildScript, lintScript] },
+        outcome: { _tag: "Added", projectId, scripts: [testScript, buildScript, lintScript] },
+        auto: { kind: "added", projectId, scripts: [testScript, buildScript, lintScript] },
+        manual: { kind: "added", projectId, scripts: [testScript, buildScript, lintScript] },
       },
       {
         name: "an empty added list",
-        outcome: { _tag: "Added", scripts: [] },
+        outcome: { _tag: "Added", projectId, scripts: [] },
         auto: null,
         manual: null,
       },

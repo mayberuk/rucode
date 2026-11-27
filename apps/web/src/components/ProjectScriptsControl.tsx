@@ -2,6 +2,7 @@ import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import {
   AuthSettingsWriteScope,
   type EnvironmentId,
+  type ProjectId,
   type ProjectScript,
   type T3ProjectFileScript,
 } from "@t3tools/contracts";
@@ -129,8 +130,16 @@ export default function ProjectScriptsControl({
     setActionsMenuOpen({ presentation, scripts: false, imports: false });
   }
   const [editorRequest, setEditorRequest] = useState<ProjectScriptEditorRequest | null>(null);
-  const [addedNotice, setAddedNotice] = useState<ReadonlyArray<ProjectScript> | null>(null);
-  const shownNoticeRef = React.useRef<ReadonlyArray<ProjectScript> | null>(null);
+  const activeProjectId = suggestions?.projectId ?? null;
+  const [addedNotice, setAddedNotice] = useState<{
+    readonly projectId: ProjectId;
+    readonly scripts: ReadonlyArray<ProjectScript>;
+  } | null>(null);
+  if (addedNotice !== null && addedNotice.projectId !== activeProjectId) {
+    setAddedNotice(null);
+  }
+  const shownNoticeRef = React.useRef<typeof addedNotice>(null);
+  const shownToastRef = React.useRef<{ id: string; projectId: ProjectId } | null>(null);
 
   const primaryScript =
     (preferredScriptId ? scripts.find((script) => script.id === preferredScriptId) : undefined) ??
@@ -190,7 +199,9 @@ export default function ProjectScriptsControl({
     const notice = suggestionNoticeFor(trigger, await suggestions.suggest(trigger));
     if (notice === null) return;
     if (notice.kind === "added") {
-      setAddedNotice(notice.scripts);
+      if (isActiveProject(notice.projectId)) {
+        setAddedNotice({ projectId: notice.projectId, scripts: notice.scripts });
+      }
     } else if (notice.kind === "none-found") {
       toastManager.add({
         type: "info",
@@ -210,9 +221,9 @@ export default function ProjectScriptsControl({
     }
   };
 
-  const undoAdded = async (added: ReadonlyArray<ProjectScript>) => {
+  const undoAdded = async (projectId: ProjectId, added: ReadonlyArray<ProjectScript>) => {
     if (!suggestions) return;
-    const result = await suggestions.undo(added);
+    const result = await suggestions.undo(projectId, added);
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
       toastManager.add(
@@ -233,6 +244,9 @@ export default function ProjectScriptsControl({
       autoAttempted: suggestions.autoAttempted,
       suggesting: suggestions.suggesting,
     });
+  const isActiveProject = useStableCallback(
+    (projectId: ProjectId) => projectId === activeProjectId,
+  );
   const runSuggestStable = useStableCallback(runSuggest);
   const undoAddedStable = useStableCallback(undoAdded);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- asks the server, outside React, to suggest actions once for a project that has none
@@ -240,31 +254,43 @@ export default function ProjectScriptsControl({
     if (autoSuggestDue) void runSuggestStable("auto");
   }, [autoSuggestDue, runSuggestStable]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes an external toast when the active project changes
+  useEffect(() => {
+    const shown = shownToastRef.current;
+    if (shown !== null && shown.projectId !== activeProjectId) {
+      anchoredToastManager.close(shown.id);
+      shownToastRef.current = null;
+    }
+  }, [activeProjectId]);
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the Undo notice anchors to the actions row, which exists only after the new scripts arrive through settings sync
   useEffect(() => {
     const anchor = panelAnchorRef.current;
     if (addedNotice === null || suggesting || scripts.length === 0 || anchor === null) return;
     if (shownNoticeRef.current === addedNotice) return;
     shownNoticeRef.current = addedNotice;
+    const { projectId, scripts: addedScripts } = addedNotice;
     const names = new Intl.ListFormat(locale, { style: "long", type: "conjunction" }).format(
-      addedNotice.map((script) => script.name),
+      addedScripts.map((script) => script.name),
     );
     const toastId = anchoredToastManager.add({
       type: "success",
       timeout: ADDED_TOAST_TIMEOUT_MS,
-      positionerProps: { anchor },
+      positionerProps: { anchor, side: "left", sideOffset: 8 },
+      data: { actionVariant: "outline" },
       title: gt("Added {count, plural, one {# action} other {# actions}}", {
-        count: addedNotice.length,
+        count: addedScripts.length,
       }),
       description: names,
       actionProps: {
         children: gt("Undo"),
         onClick: () => {
           anchoredToastManager.close(toastId);
-          void undoAddedStable(addedNotice);
+          void undoAddedStable(projectId, addedScripts);
         },
       },
     });
+    shownToastRef.current = { id: toastId, projectId };
   }, [addedNotice, suggesting, scripts.length, gt, locale, undoAddedStable]);
 
   const importMenuItems = importableScripts.length > 0 && (
@@ -342,6 +368,7 @@ export default function ProjectScriptsControl({
         );
       })}
       {importMenuItems}
+      {canSuggest && scripts.length > 0 && <MenuSeparator />}
       {canSuggest && (
         <MenuItem density="default" onClick={() => void runSuggest("manual")}>
           <LightbulbIcon className="size-4" />

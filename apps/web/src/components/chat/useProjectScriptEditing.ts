@@ -308,25 +308,34 @@ export function useProjectScriptEditing(input: {
       setSuggestingProjects(new Set(pendingSuggestions.current));
     });
     if (result._tag === "Success") {
+      if (result.value._tag === "Added") return { ...result.value, projectId };
       return result.value._tag === "Skipped" ? { _tag: "Skipped" } : result.value;
     }
     if (isAtomCommandInterrupted(result)) return { _tag: "Skipped" };
     const error = squashAtomCommandFailure(result);
     return { _tag: "Failed", message: error instanceof Error ? error.message : String(error) };
   };
-  const undo: ProjectActionSuggestionsController["undo"] = async (added) => {
-    if (!project) return AsyncResult.success(undefined);
+  const undo: ProjectActionSuggestionsController["undo"] = async (projectId, added) => {
+    const target =
+      project?.id === projectId
+        ? project
+        : allProjects.find(
+            (other) => other.environmentId === environmentId && other.id === projectId,
+          );
+    if (!target) return AsyncResult.success(undefined);
+    const current = target === project ? scripts : resolveProjectScripts(settings, target);
     return persistProjectScripts({
-      projectId: project.id,
-      projectCwd: project.workspaceRoot,
-      previousScripts: scripts,
-      nextScripts: scriptsAfterUndo(scripts, added),
+      projectId,
+      projectCwd: target.workspaceRoot,
+      previousScripts: current,
+      nextScripts: scriptsAfterUndo(current, added),
       keybinding: undefined,
       keybindingCommand: null,
     });
   };
   const projectActionSuggestions: ProjectActionSuggestionsController = {
     available,
+    projectId: project?.id ?? null,
     projectName: project?.title ?? null,
     suggesting: project !== null && suggestingProjects.has(project.id),
     autoAttempted: project !== null && attemptedProjects.has(project.id),

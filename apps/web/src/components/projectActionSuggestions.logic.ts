@@ -1,22 +1,30 @@
-import type { ProjectScript } from "@t3tools/contracts";
+import type { ProjectId, ProjectScript } from "@t3tools/contracts";
 
 import type { ProjectScriptActionResult } from "./ProjectScriptsControl";
 
 export type SuggestTrigger = "auto" | "manual";
 
 export type ProjectActionSuggestOutcome =
-  | { readonly _tag: "Added"; readonly scripts: ReadonlyArray<ProjectScript> }
+  | {
+      readonly _tag: "Added";
+      readonly projectId: ProjectId;
+      readonly scripts: ReadonlyArray<ProjectScript>;
+    }
   | { readonly _tag: "Skipped" }
   | { readonly _tag: "NoneFound" }
   | { readonly _tag: "Failed"; readonly message: string };
 
 export interface ProjectActionSuggestionsController {
   readonly available: boolean;
+  readonly projectId: ProjectId | null;
   readonly projectName: string | null;
   readonly suggesting: boolean;
   readonly autoAttempted: boolean;
   readonly suggest: (trigger: SuggestTrigger) => Promise<ProjectActionSuggestOutcome>;
-  readonly undo: (added: ReadonlyArray<ProjectScript>) => Promise<ProjectScriptActionResult>;
+  readonly undo: (
+    projectId: ProjectId,
+    added: ReadonlyArray<ProjectScript>,
+  ) => Promise<ProjectScriptActionResult>;
 }
 
 export function shouldAutoSuggest(input: {
@@ -41,7 +49,11 @@ export function scriptsAfterUndo(
 }
 
 export type ProjectActionSuggestionNotice =
-  | { readonly kind: "added"; readonly scripts: ReadonlyArray<ProjectScript> }
+  | {
+      readonly kind: "added";
+      readonly projectId: ProjectId;
+      readonly scripts: ReadonlyArray<ProjectScript>;
+    }
   | { readonly kind: "none-found" }
   | { readonly kind: "failed"; readonly message: string };
 
@@ -51,7 +63,9 @@ export function suggestionNoticeFor(
 ): ProjectActionSuggestionNotice | null {
   switch (outcome._tag) {
     case "Added":
-      return outcome.scripts.length > 0 ? { kind: "added", scripts: outcome.scripts } : null;
+      return outcome.scripts.length > 0
+        ? { kind: "added", projectId: outcome.projectId, scripts: outcome.scripts }
+        : null;
     case "Skipped":
       return null;
     case "NoneFound":

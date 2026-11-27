@@ -159,7 +159,7 @@ describe("ProjectActionSuggestions", () => {
         expect(harness.generate.mock.calls).toEqual([
           [
             {
-              cwd: harness.project.workspaceRoot,
+              cwd: expect.any(String),
               projectName: "Acme App",
               projectContext:
                 "Project: acme-app\n\nPackage manager: npm\n\npackage.json scripts:\ntest: node --test",
@@ -169,6 +169,11 @@ describe("ProjectActionSuggestions", () => {
             },
           ],
         ]);
+        const path = yield* Path.Path;
+        const { cwd } = harness.generate.mock.calls[0]![0];
+        const fromWorkspace = path.relative(harness.project.workspaceRoot, cwd);
+        expect(path.isAbsolute(cwd)).toBe(true);
+        expect(fromWorkspace.split(path.sep)[0]).toBe("..");
       }).pipe(Effect.provide(harness.layer));
     }).pipe(Effect.provide(platform)),
   );

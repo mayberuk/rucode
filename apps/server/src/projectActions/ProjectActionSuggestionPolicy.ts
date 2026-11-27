@@ -24,18 +24,24 @@ const isProjectScriptIcon = Schema.is(ProjectScriptIcon);
 const dangerousCommandPatterns = [
   /(?<![\w.-])(?:sudo|doas|curl|wget|eval|shutdown|reboot|kill|pkill|killall)(?![\w.-])/i,
   /(?<![\w.-])(?:rm|chmod|chown)(?=[\s'"])[^;&|\r\n]*?[\s'"]-(?:-recursive|[a-z]*r[a-z]*)(?=[\s'";&|<>()]|$)/i,
-  /\|\s*['"]?(?:[\w./\\-]*[/\\])?(?:sh|bash|zsh|fish|sudo)(?=[\s'";&|<>()]|$)/i,
+  /\|&?\s*['"]?(?:[\w./\\-]*[/\\])?(?:sh|bash|zsh|fish|sudo)(?=[\s'";&|<>()]|$)/i,
+  /(?<![\w.-])(?:(?:ba|z|da|k)?sh|fish)(?=[\s'"])[^;&|\r\n]*?\s['"]?-[a-z]*c(?=[\s'";&|<>()]|$)/i,
+  /(?<![\w.-])(?:node(?:js)?|perl|ruby)(?=[\s'"])[^;&|\r\n]*?\s['"]?-(?:-eval|-print|[a-z]*[ep])(?=[\s'";&|<>()]|$)/i,
+  /(?<![\w.-])python[\d.]*(?=[\s'"])[^;&|\r\n]*?\s['"]?-[a-z]*c(?=[\s'";&|<>()]|$)/i,
+  /(?<![\w.-])(?:npx|pnpx|bunx)(?![\w.-])/i,
+  /(?<![\w.-])(?:pnpm|yarn)(?=[\s'"])[^;&|\r\n]*?\s['"]?dlx(?=[\s'";&|<>()]|$)/i,
+  /(?<![\w.-])find(?=[\s'"])[^;&|\r\n]*?\s['"]?-delete(?=[\s'";&|<>()]|$)/i,
   /`|\$\(/,
   /(?<![\w.-])git(?=[\s'"])[^;&|\r\n]*?\s['"]?(?:push|clean)(?=[\s'";&|<>()]|$)/i,
   /(?<![\w.-])git(?=[\s'"])[^;&|\r\n]*?\s['"]?reset(?=[\s'"])[^;&|\r\n]*?\s['"]?--hard(?=[\s'";&|<>()]|$)/i,
   /(?<![\w.-])git(?=[\s'"])[^;&|\r\n]*?\s['"]?checkout(?=[\s'"])[^;&|\r\n]*?\s['"]?--(?=[\s'";&|<>()]|$)/i,
-  /(?<![\w.-])(?:npm|pnpm|yarn|bun|cargo)(?=[\s'"])[^;&|\r\n]*?\s['"]?publish(?=[\s'";&|<>()]|$)/i,
+  /(?<![\w.-])(?:npm|pnpm|yarn|bun|cargo)(?=[\s'"])[^;&|\r\n]*?\s['"]?publish(?=[\s'";&|<>():]|$)/i,
   /(?<![\w.-])twine(?=[\s'"])[^;&|\r\n]*?\s['"]?upload(?=[\s'";&|<>()]|$)/i,
   /(?<![\w.-])gem(?=[\s'"])[^;&|\r\n]*?\s['"]?push(?=[\s'";&|<>()]|$)/i,
-  /(?<![\w.-])(?:deploy|release)(?![\w.-])/i,
+  /(?<![\w.-])(?:deploy|release)(?![\w.])/i,
   /(?<![\w.-])mkfs(?:\.[\w-]+)?(?![\w.-])/i,
   /(?<![\w.-])dd(?=[\s'"])[^;&|\r\n]*?\s['"]?if=/i,
-  />\s*['"]?(?:\/|[a-z]:[/\\]|\\\\)/i,
+  />\s*['"]?(?:\/|~|\$\{?HOME\}?|[a-z]:[/\\]|\\\\)/i,
   /:\s*\(\s*\)\s*\{/,
 ];
 
@@ -61,7 +67,7 @@ export function rejectProjectActionCandidate(
   if (candidate.name.length > MAX_NAME_LENGTH || candidate.command.length > MAX_COMMAND_LENGTH) {
     return "too-long";
   }
-  const controlOrLineBreak = /[\p{Cc}\u2028\u2029]/u;
+  const controlOrLineBreak = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
   if (controlOrLineBreak.test(candidate.name) || controlOrLineBreak.test(candidate.command)) {
     return "multi-line";
   }

@@ -1,4 +1,4 @@
-import { EnvironmentId, type ProjectScript } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, type ProjectScript } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -15,6 +15,8 @@ import ProjectScriptsControl from "./ProjectScriptsControl";
 import { AnchoredToastProvider, ToastProvider } from "./ui/toast";
 
 const environmentId = EnvironmentId.make("environment");
+const projectA = ProjectId.make("project-a");
+const projectB = ProjectId.make("project-b");
 
 function script(
   id: string,
@@ -58,12 +60,14 @@ function Harness(props: {
   undo?: Undo;
   available?: boolean;
   attempted?: boolean;
+  projectId?: ProjectId;
   withController?: boolean;
 }) {
   const [suggesting, setSuggesting] = useState(false);
   const [autoAttempted, setAutoAttempted] = useState(props.attempted ?? false);
   const controller: ProjectActionSuggestionsController = {
     available: props.available ?? true,
+    projectId: props.projectId ?? projectA,
     projectName: "acme-app",
     suggesting,
     autoAttempted,
@@ -109,7 +113,7 @@ it("suggests once on its own, shows the placeholder, then the Undo notice, and d
     .element(page.getByRole("button", { name: "Add project script", exact: true }))
     .not.toBeInTheDocument();
 
-  pending.resolve({ _tag: "Added", scripts: added });
+  pending.resolve({ _tag: "Added", projectId: projectA, scripts: added });
   await screen.rerender(<Harness scripts={added} suggest={suggest} undo={undo} />);
 
   await expect.element(page.getByText("Finding actions in acme-app")).not.toBeInTheDocument();
@@ -118,7 +122,7 @@ it("suggests once on its own, shows the placeholder, then the Undo notice, and d
   await expect.element(page.getByText("Dev, Test, and Lint")).toBeVisible();
 
   await page.getByRole("button", { name: "Undo" }).click();
-  await vi.waitFor(() => expect(undo).toHaveBeenCalledWith(added));
+  await vi.waitFor(() => expect(undo).toHaveBeenCalledWith(projectA, added));
   expect(undo).toHaveBeenCalledTimes(1);
   await vi.waitFor(() => expect(document.body.innerText).not.toContain("Added 3 actions"));
 
@@ -128,7 +132,11 @@ it("suggests once on its own, shows the placeholder, then the Undo notice, and d
 });
 
 it("says 'Added 1 action' for a single suggestion", async () => {
-  const suggest = vi.fn<Suggest>(async () => ({ _tag: "Added", scripts: [dev] }));
+  const suggest = vi.fn<Suggest>(async () => ({
+    _tag: "Added",
+    projectId: projectA,
+    scripts: [dev],
+  }));
   await using screen = await render(<Harness scripts={[]} suggest={suggest} />);
   await vi.waitFor(() => expect(suggest).toHaveBeenCalledTimes(1));
   await screen.rerender(<Harness scripts={[dev]} suggest={suggest} />);
@@ -138,7 +146,11 @@ it("says 'Added 1 action' for a single suggestion", async () => {
 
 it("dismisses the Added notice as soon as Undo is pressed, before the undo finishes", async () => {
   const pendingUndo = deferred<Awaited<ReturnType<Undo>>>();
-  const suggest = vi.fn<Suggest>(async () => ({ _tag: "Added", scripts: added }));
+  const suggest = vi.fn<Suggest>(async () => ({
+    _tag: "Added",
+    projectId: projectA,
+    scripts: added,
+  }));
   const undo = vi.fn<Undo>(() => pendingUndo.promise);
   await using screen = await render(<Harness scripts={[]} suggest={suggest} undo={undo} />);
   await vi.waitFor(() => expect(suggest).toHaveBeenCalledTimes(1));
@@ -147,7 +159,7 @@ it("dismisses the Added notice as soon as Undo is pressed, before the undo finis
 
   await page.getByRole("button", { name: "Undo" }).click();
 
-  await vi.waitFor(() => expect(undo).toHaveBeenCalledWith(added));
+  await vi.waitFor(() => expect(undo).toHaveBeenCalledWith(projectA, added));
   await vi.waitFor(() => expect(document.body.innerText).not.toContain("Added 3 actions"));
   await screen.rerender(<Harness scripts={[]} suggest={suggest} undo={undo} />);
   pendingUndo.resolve(AsyncResult.success(undefined));
@@ -155,8 +167,62 @@ it("dismisses the Added notice as soon as Undo is pressed, before the undo finis
   await expect.element(page.getByText("Added 3 actions")).not.toBeInTheDocument();
 });
 
+it("closes the Added notice when another project becomes active", async () => {
+  const suggest = vi.fn<Suggest>(async () => ({
+    _tag: "Added",
+    projectId: projectA,
+    scripts: added,
+  }));
+  const undo = vi.fn<Undo>(undoSucceeds);
+  await using screen = await render(<Harness scripts={[]} suggest={suggest} undo={undo} />);
+  await vi.waitFor(() => expect(suggest).toHaveBeenCalledTimes(1));
+  await screen.rerender(<Harness scripts={added} suggest={suggest} undo={undo} />);
+  await expect.element(page.getByText("Added 3 actions")).toBeVisible();
+
+  await screen.rerender(
+    <Harness projectId={projectB} scripts={[dev]} suggest={suggest} undo={undo} />,
+  );
+
+  await vi.waitFor(() => expect(document.body.innerText).not.toContain("Added 3 actions"));
+  expect(undo).not.toHaveBeenCalled();
+});
+
+it("drops a suggestion result for a project that is no longer active, and keeps the active project's own notice", async () => {
+  const pendingA = deferred<ProjectActionSuggestOutcome>();
+  const suggest = vi.fn<Suggest>((trigger) =>
+    trigger === "auto"
+      ? pendingA.promise
+      : Promise.resolve({ _tag: "Added", projectId: projectB, scripts: [lint] }),
+  );
+  const undo = vi.fn<Undo>(undoSucceeds);
+  await using screen = await render(<Harness scripts={[]} suggest={suggest} undo={undo} />);
+  await vi.waitFor(() => expect(suggest).toHaveBeenCalledTimes(1));
+  await screen.rerender(
+    <Harness projectId={projectB} scripts={[dev]} suggest={suggest} undo={undo} />,
+  );
+
+  pendingA.resolve({ _tag: "Added", projectId: projectA, scripts: added });
+  await expect.element(page.getByRole("button", { name: "Run Dev" })).toBeVisible();
+  await page.getByRole("button", { name: "Script actions" }).click();
+  await page.getByRole("menuitem", { name: "Suggest more actions" }).click();
+  await vi.waitFor(() => expect(suggest).toHaveBeenCalledTimes(2));
+  await screen.rerender(
+    <Harness projectId={projectB} scripts={[dev, lint]} suggest={suggest} undo={undo} />,
+  );
+
+  await expect.element(page.getByText("Added 1 action", { exact: true })).toBeVisible();
+  expect(document.body.innerText).not.toContain("Added 3 actions");
+  await page.getByRole("button", { name: "Undo" }).click();
+  await vi.waitFor(() => expect(undo).toHaveBeenCalledWith(projectB, [lint]));
+  expect(undo).toHaveBeenCalledTimes(1);
+});
+
 it("explains a failed Undo", async () => {
-  const suggest = vi.fn<Suggest>(async () => ({ _tag: "Added", scripts: added }));
+  const suggest = vi.fn<Suggest>(async () => ({
+    _tag: "Added",
+    projectId: projectA,
+    scripts: added,
+  }));
   const undo = vi.fn<Undo>(async () => AsyncResult.failure(Cause.fail(new Error("Read-only"))));
   await using screen = await render(<Harness scripts={[]} suggest={suggest} undo={undo} />);
   await vi.waitFor(() => expect(suggest).toHaveBeenCalledTimes(1));
@@ -245,6 +311,7 @@ it("offers 'Suggest more actions' in the menu of a project that has actions, wit
   await expect.element(page.getByRole("button", { name: "Run Dev" })).toBeVisible();
   expect(suggest).not.toHaveBeenCalled();
   await page.getByRole("button", { name: "Script actions" }).click();
+  await expect.element(page.getByRole("menu").getByRole("separator")).toBeInTheDocument();
   await page.getByRole("menuitem", { name: "Suggest more actions" }).click();
 
   await vi.waitFor(() => expect(suggest).toHaveBeenCalledWith("manual"));

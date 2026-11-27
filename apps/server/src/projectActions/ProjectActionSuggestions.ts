@@ -65,66 +65,76 @@ const make = Effect.gen(function* () {
       return yield* new ProjectActionsSuggestError({ message: "Project not found." });
     const project = found.value;
 
-    const run = Effect.gen(function* () {
-      if (trigger === "auto" && (yield* ledger.has(projectId))) {
-        return { _tag: "Skipped", reason: "already-offered" } as const;
-      }
-      const current = resolveProjectScripts(settings, project);
-      yield* ledger.record(projectId);
-      if (trigger === "auto" && current.length > 0) {
-        return { _tag: "Skipped", reason: "has-actions" } as const;
-      }
+    const run = Effect.scoped(
+      Effect.gen(function* () {
+        if (trigger === "auto" && (yield* ledger.has(projectId))) {
+          return { _tag: "Skipped", reason: "already-offered" } as const;
+        }
+        const current = resolveProjectScripts(settings, project);
+        yield* ledger.record(projectId);
+        if (trigger === "auto" && current.length > 0) {
+          return { _tag: "Skipped", reason: "has-actions" } as const;
+        }
 
-      const projectContext = yield* gatherProjectActionContext(project.workspaceRoot).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-      );
-      const generated = yield* (
-        textGeneration.generateProjectActions?.({
-          cwd: project.workspaceRoot,
-          projectName: project.title,
-          projectContext,
-          existingCommands: current.map((script) => script.command),
-          modelSelection: resolved.textGenerationModelSelection,
-          projectId,
-        }) ??
-        Effect.fail(
-          new TextGenerationError({
-            operation: "generateProjectActions",
-            detail:
-              "This model's provider cannot suggest project actions. Choose another model for generated text in Settings.",
-          }),
-        )
-      ).pipe(
-        Effect.tapError(() =>
-          Effect.logWarning("Project action generation failed.", { projectId }),
-        ),
-        Effect.mapError((error) => new ProjectActionsSuggestError({ message: error.detail })),
-      );
-      const accepted = acceptProjectActionCandidates(generated.actions, current);
-      if (accepted.length === 0) return { _tag: "NoneFound" } as const;
-
-      const fresh = yield* readSettings;
-      const freshCurrent = resolveProjectScripts(fresh, project);
-      const finalAccepted = acceptProjectActionCandidates(accepted, freshCurrent);
-      if (finalAccepted.length === 0) return { _tag: "NoneFound" } as const;
-
-      yield* serverSettings
-        .updateSettings({
-          projectSettingsOverrides: {
-            [projectId]: {
-              ...fresh.projectSettingsOverrides[projectId],
-              defaultProjectScripts: [...freshCurrent, ...finalAccepted],
-            },
-          },
-        })
-        .pipe(
-          Effect.mapError(
-            () => new ProjectActionsSuggestError({ message: "Could not save project actions." }),
-          ),
+        const projectContext = yield* gatherProjectActionContext(project.workspaceRoot).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
         );
-      return { _tag: "Added", scripts: finalAccepted } as const;
-    });
+        // The CLI would load the untrusted repo's CLAUDE.md, AGENTS.md and settings; the context is already in the prompt.
+        const isolatedCwd = yield* fileSystem
+          .makeTempDirectoryScoped({ prefix: "t3code-project-actions-" })
+          .pipe(
+            Effect.mapError(
+              () => new ProjectActionsSuggestError({ message: "Could not prepare suggestions." }),
+            ),
+          );
+        const generated = yield* (
+          textGeneration.generateProjectActions?.({
+            cwd: isolatedCwd,
+            projectName: project.title,
+            projectContext,
+            existingCommands: current.map((script) => script.command),
+            modelSelection: resolved.textGenerationModelSelection,
+            projectId,
+          }) ??
+          Effect.fail(
+            new TextGenerationError({
+              operation: "generateProjectActions",
+              detail:
+                "This model's provider cannot suggest project actions. Choose another model for generated text in Settings.",
+            }),
+          )
+        ).pipe(
+          Effect.tapError(() =>
+            Effect.logWarning("Project action generation failed.", { projectId }),
+          ),
+          Effect.mapError((error) => new ProjectActionsSuggestError({ message: error.detail })),
+        );
+        const accepted = acceptProjectActionCandidates(generated.actions, current);
+        if (accepted.length === 0) return { _tag: "NoneFound" } as const;
+
+        const fresh = yield* readSettings;
+        const freshCurrent = resolveProjectScripts(fresh, project);
+        const finalAccepted = acceptProjectActionCandidates(accepted, freshCurrent);
+        if (finalAccepted.length === 0) return { _tag: "NoneFound" } as const;
+
+        yield* serverSettings
+          .updateSettings({
+            projectSettingsOverrides: {
+              [projectId]: {
+                ...fresh.projectSettingsOverrides[projectId],
+                defaultProjectScripts: [...freshCurrent, ...finalAccepted],
+              },
+            },
+          })
+          .pipe(
+            Effect.mapError(
+              () => new ProjectActionsSuggestError({ message: "Could not save project actions." }),
+            ),
+          );
+        return { _tag: "Added", scripts: finalAccepted } as const;
+      }),
+    );
 
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {

@@ -1118,7 +1118,7 @@ describe("project action suggestions controller", () => {
         _tag: "Added",
         scripts: [suggestedAction],
       }),
-      { _tag: "Added", scripts: [suggestedAction] },
+      { _tag: "Added", projectId: ProjectId.make("project-remote"), scripts: [suggestedAction] },
     ],
     [
       AsyncResult.success<ProjectActionsSuggestResult>({ _tag: "Skipped", reason: "in-progress" }),
@@ -1218,7 +1218,7 @@ describe("project action suggestions controller", () => {
     });
 
     await expect(
-      screen.controller.undo([
+      screen.controller.undo(project.id, [
         suggestedAction,
         { ...edited, command: "make lint" },
         { ...suggestedAction, id: "missing", command: "make dev" },
@@ -1236,6 +1236,39 @@ describe("project action suggestions controller", () => {
     });
     expect(state.upsertKeybinding).not.toHaveBeenCalled();
     expect(state.removeKeybinding).not.toHaveBeenCalled();
+  });
+
+  it("undoes the suggested project's actions, not the active project's, after a switch", async () => {
+    setup();
+    const suggestedFor = state.projects[0]!;
+    const active = { ...suggestedFor, id: ProjectId.make("project-active") };
+    state.projects = [suggestedFor, active];
+    const mine = { ...suggestedAction, id: "build", command: "make build" };
+    const activeScripts = [suggestedAction, { ...mine, command: "make all" }];
+    const settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      projectSettingsOverrides: {
+        [suggestedFor.id]: { defaultProjectScripts: [suggestedAction, mine] },
+        [active.id]: { defaultProjectScripts: activeScripts },
+      },
+    };
+    await using screen = await mountSuggestionController({
+      ...suggestionInput(active, activeScripts),
+      settings,
+    });
+
+    await expect(screen.controller.undo(suggestedFor.id, [suggestedAction])).resolves.toMatchObject(
+      { _tag: "Success" },
+    );
+
+    expect(state.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      environmentId: primaryId,
+      input: {
+        patch: {
+          projectSettingsOverrides: { [suggestedFor.id]: { defaultProjectScripts: [mine] } },
+        },
+      },
+    });
   });
 });
 
