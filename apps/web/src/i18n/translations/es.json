@@ -130,7 +130,7 @@
   "588974a600220ac7": "En una terminal",
   "4d3a013d646b5b53": "{count, plural, one {Ocultar # sesión que inició este hilo} other {Ocultar # sesiones que inició este hilo}}",
   "9342db54edca49ca": "{count, plural, one {Mostrar # sesión que inició este hilo} other {Mostrar # sesiones que inició este hilo}}",
-  "af3b0f8818acaa21": ", {working} en curso",
+  "633d59b879b3ed0e": "{sessions}, {status}",
   "0a5b021fc90c6a42": "En terminal",
   "62f3ccbbb618d50d": "Preguntas del agente",
   "42d5795d66c0fcd6": "Pregunta {number}: {text}",

@@ -608,6 +608,32 @@ describe("sidebar initiative groups", () => {
     expect(screen.router!.state.location.search).toEqual({ environmentId, slug: group.slug });
   });
 
+  it("counts a spawned session of a hidden member in the collapsed initiative's status", async () => {
+    using stack = new DisposableStack();
+    setup(stack, {
+      boringSidebarEnabled: false,
+      threads: [
+        ...baseThreads,
+        shell("part-child", "Part session", {
+          lineage: {
+            rootThreadId: ThreadId.make("part"),
+            parentThreadId: ThreadId.make("part"),
+            relationshipToParent: null,
+          },
+          runtime: { ...running.runtime, status: "failed" as const },
+        }),
+      ],
+    });
+    await using screen = await render(tree());
+    const header = screen.getByRole("button", { name: /^acme · Checkout retries/ });
+    header.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    await expect
+      .element(screen.getByRole("button", { name: "acme · Checkout retries, 1 failed" }))
+      .toBeInTheDocument();
+  });
+
   it("puts an initiative inside its project folder, before the folder's own threads, and counts its members in the closed folder", async () => {
     using stack = new DisposableStack();
     setup(stack, {
@@ -638,6 +664,22 @@ describe("sidebar initiative groups", () => {
         .map((locator) => locator.element())
         .every((element, index, all) => index === 0 || follows(all[index - 1]!, element)),
     ).toBe(true);
+
+    // Arrow keys walk folder -> initiative -> its members, and back up one level at a time.
+    folder.element().focus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.element(header).toHaveFocus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.element(screen.getByRole("button", { name: /^Orchestrator chat/ })).toHaveFocus();
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect.element(header).toHaveFocus();
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect.element(folder).toHaveFocus();
+    header.element().focus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.element(header).toHaveAttribute("aria-expanded", "true");
 
     folder.element().focus();
     await userEvent.keyboard("{Enter}");
@@ -814,7 +856,7 @@ describe("sidebar spawned sessions", () => {
         .toHaveAccessibleName("Show 2 sessions this thread started, 1 working");
       await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
       expect(toggle.element().textContent).toBe("2");
-      expect(toggle.element().querySelector(".text-info-foreground")?.textContent).toBe("2");
+      expect(toggle.element().querySelector(".lucide-circle-dashed")).not.toBeNull();
       await expect.element(first.getByText("Other chat", { exact: true })).toBeInTheDocument();
       expect(first.getByText("First session", { exact: true }).query()).toBeNull();
       expect(first.getByText("Second session", { exact: true }).query()).toBeNull();
@@ -877,6 +919,62 @@ describe("sidebar spawned sessions", () => {
     await expect.element(screen.getByTestId("sidebar-row-spawned")).not.toBeInTheDocument();
     expect(JSON.parse(window.localStorage.getItem("t3code:sidebar:spawned-expanded")!)).toEqual({});
   });
+
+  const failedChild = {
+    ...secondChild,
+    runtime: { ...runningSecondChild.runtime, status: "failed" as const },
+  };
+  const needyChild = { ...firstChild, hasPendingApprovals: true };
+
+  it.each([
+    {
+      name: "a session that needs you outranks a working one",
+      children: [needyChild, runningSecondChild],
+      label: "Needs you",
+      icon: "lucide-hand",
+    },
+    {
+      name: "a failed session outranks an idle one",
+      children: [firstChild, failedChild],
+      label: "1 failed",
+      icon: "lucide-circle-alert",
+    },
+    {
+      name: "a working session shows more than a colour",
+      children: [firstChild, runningSecondChild],
+      label: "1 working",
+      icon: "lucide-circle-dashed",
+    },
+  ])("states the strongest session state in words and an icon: $name", async (spec) => {
+    using stack = new DisposableStack();
+    setup(stack, { boringSidebarEnabled: false, threads: [parent, ...spec.children, other] });
+    await using screen = await render(tree());
+    const toggle = screen.getByTestId("sidebar-spawned-toggle");
+    await expect
+      .element(toggle)
+      .toHaveAccessibleName(`Show 2 sessions this thread started, ${spec.label}`);
+    expect(toggle.element().querySelector(`.${spec.icon}`)).not.toBeNull();
+    expect(toggle.element().textContent).toBe("2");
+    expect(toggle.element().querySelector(".text-secondary-label")?.textContent).toBe("2");
+  });
+
+  it.each([
+    { name: "needs approval", child: needyChild, label: "acme-app, Needs you" },
+    { name: "failed", child: failedChild, label: "acme-app, 1 failed" },
+  ])(
+    "reads a closed folder's nested session that is $name as the folder's status",
+    async ({ child, label }) => {
+      using stack = new DisposableStack();
+      setup(stack, { boringSidebarEnabled: true, threads: [parent, child, other] });
+      await using screen = await render(tree());
+      const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
+      await expect.element(folder).toHaveAttribute("aria-expanded", "true");
+      folder.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+      await expect.element(folder).toHaveAccessibleName(label);
+    },
+  );
 
   it("follows the snapshot: nothing while loading, hidden without the parent, nested with it, gone with the children", async () => {
     using stack = new DisposableStack();

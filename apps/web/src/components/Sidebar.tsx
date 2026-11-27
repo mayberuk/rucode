@@ -184,10 +184,10 @@ import {
 import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
-  countWorkingThreads,
   groupSidebarFolders,
   nestSpawnedThreads,
   partitionInitiativeThreads,
+  spawnedChildrenOf,
   visibleSpawnedChildren,
   withoutSpawnedThreads,
   resolveSidebarGroupStatus,
@@ -608,9 +608,15 @@ function useSidebarThreads(input: {
       collapsed,
       status: collapsed
         ? resolveSidebarGroupStatus(
-            entry.members
-              .filter((member) => !entry.threads.includes(member))
-              .map(({ thread }) => thread),
+            [
+              ...entry.members
+                .filter((member) => !entry.threads.includes(member))
+                .map(({ thread }) => thread),
+              ...spawnedChildrenOf(
+                entry.members.map(({ thread }) => thread),
+                spawnedNesting,
+              ),
+            ],
             decisionKeys,
           )
         : null,
@@ -700,13 +706,21 @@ function useSidebarThreads(input: {
             ...folder.threads.filter((thread) => threadShellKey(thread) !== routeAnchorKey),
             ...hiddenMembers,
           ];
+          const routeAnchor =
+            routeMember?.thread ??
+            folder.threads.find((thread) => threadShellKey(thread) === routeAnchorKey);
+          // Nested sessions sit in no list, but a closed folder still owes their state.
+          const nestedChildren = spawnedChildrenOf(
+            routeAnchor === undefined ? hiddenThreads : [...hiddenThreads, routeAnchor],
+            spawnedNesting,
+          );
           return {
             group: folder.group,
             collapsed,
             initiatives: [],
             routeMember,
             threads: routeThreadOnly(folder.threads, routeAnchorKey),
-            status: resolveSidebarGroupStatus(hiddenThreads, decisionKeys),
+            status: resolveSidebarGroupStatus([...hiddenThreads, ...nestedChildren], decisionKeys),
             idleThread: hiddenThreads[0] ?? null,
           };
         });
@@ -715,7 +729,7 @@ function useSidebarThreads(input: {
       anchorKey,
       {
         count: children.length,
-        workingCount: countWorkingThreads(children, decisionKeys),
+        status: resolveSidebarGroupStatus(children, decisionKeys),
         expanded: expandedSpawned[anchorKey] === true,
         visible: visibleSpawnedChildren(
           children,
@@ -3792,7 +3806,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             onAcknowledgeWoke={acknowledgeWoke}
                             onFileDropThreads={handleThreadFileDrop}
                             spawnedCount={spawned?.count}
-                            spawnedWorkingCount={spawned?.workingCount}
+                            spawnedStatus={spawned?.status}
                             spawnedExpanded={spawned?.expanded}
                             onToggleSpawned={spawned === undefined ? undefined : toggleSpawned}
                           />
@@ -3881,6 +3895,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             expanded={!entry.collapsed}
                             project={displayName === undefined ? null : { favicon, displayName }}
                             showProject={folderRow === undefined}
+                            folderRow={folderRow}
                             status={entry.status}
                             onToggle={toggleInitiativeGroup}
                           />,

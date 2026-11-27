@@ -130,7 +130,7 @@
   "588974a600220ac7": "터미널에서",
   "4d3a013d646b5b53": "{count, plural, other {이 스레드가 시작한 세션 #개 숨기기}}",
   "9342db54edca49ca": "{count, plural, other {이 스레드가 시작한 세션 #개 보기}}",
-  "af3b0f8818acaa21": ", {working}개 작업 중",
+  "633d59b879b3ed0e": "{sessions}, {status}",
   "0a5b021fc90c6a42": "터미널",
   "62f3ccbbb618d50d": "에이전트의 질문",
   "42d5795d66c0fcd6": "질문 {number}: {text}",

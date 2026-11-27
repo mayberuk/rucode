@@ -130,7 +130,7 @@
   "588974a600220ac7": "在终端中",
   "4d3a013d646b5b53": "{count, plural, other {隐藏此线程启动的 # 个会话}}",
   "9342db54edca49ca": "{count, plural, other {显示此线程启动的 # 个会话}}",
-  "af3b0f8818acaa21": "，{working} 个进行中",
+  "633d59b879b3ed0e": "{sessions}，{status}",
   "0a5b021fc90c6a42": "终端中",
   "62f3ccbbb618d50d": "来自智能体的问题",
   "42d5795d66c0fcd6": "问题 {number}：{text}",

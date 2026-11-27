@@ -130,7 +130,7 @@
   "588974a600220ac7": "In einem Terminal",
   "4d3a013d646b5b53": "{count, plural, one {# Sitzung ausblenden, die dieser Thread gestartet hat} other {# Sitzungen ausblenden, die dieser Thread gestartet hat}}",
   "9342db54edca49ca": "{count, plural, one {# Sitzung anzeigen, die dieser Thread gestartet hat} other {# Sitzungen anzeigen, die dieser Thread gestartet hat}}",
-  "af3b0f8818acaa21": ", {working} in Arbeit",
+  "633d59b879b3ed0e": "{sessions}, {status}",
   "0a5b021fc90c6a42": "Im Terminal",
   "62f3ccbbb618d50d": "Fragen des Agenten",
   "42d5795d66c0fcd6": "Frage {number}: {text}",

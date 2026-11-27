@@ -87,11 +87,13 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { useSidebarGroupStatusLabel } from "./SidebarGroupStatusText";
 import {
   animateSidebarLayoutChanges,
   hasUnseenCompletion,
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
+  type SidebarGroupStatus,
   type SidebarThreadStatus,
   resolveSidebarRowStatus,
   resolveSidebarTerminalStatus,
@@ -635,14 +637,26 @@ export function resolveSidebarTopStatus(input: {
   return null;
 }
 
+const IDLE_GROUP_STATUS: SidebarGroupStatus = { kind: "idle" };
+
+const SPAWNED_STATUS_ICON = {
+  "needs-you": { icon: "decision", className: "text-warning-foreground" },
+  failed: { icon: "failed", className: "text-error-foreground" },
+  working: { icon: "working", className: "text-info-foreground" },
+} as const;
+
 function SpawnedSessionsButton(props: {
   threadKey: string;
   count: number;
-  workingCount: number;
+  status: SidebarGroupStatus;
   expanded: boolean;
   onToggle: (threadKey: string) => void;
 }) {
   const gt = useGT();
+  const statusLabel = useSidebarGroupStatusLabel(
+    props.status.kind === "idle" ? null : props.status,
+    null,
+  );
   const sessions = props.expanded
     ? gt(
         "{count, plural, one {Hide # session this thread started} other {Hide # sessions this thread started}}",
@@ -653,9 +667,8 @@ function SpawnedSessionsButton(props: {
         { count: props.count },
       );
   const label =
-    props.workingCount > 0
-      ? `${sessions}${gt(", {working} working", { working: props.workingCount })}`
-      : sessions;
+    statusLabel === null ? sessions : gt("{sessions}, {status}", { sessions, status: statusLabel });
+  const statusIcon = props.status.kind === "idle" ? null : SPAWNED_STATUS_ICON[props.status.kind];
   return (
     <Tooltip>
       <TooltipTrigger
@@ -678,14 +691,10 @@ function SpawnedSessionsButton(props: {
         }
       >
         <BotIcon aria-hidden />
-        <span
-          className={cn(
-            "tabular-nums",
-            props.workingCount > 0 ? "text-info-foreground" : "text-secondary-label",
-          )}
-        >
-          {props.count}
-        </span>
+        <span className="tabular-nums text-secondary-label">{props.count}</span>
+        {statusIcon === null ? null : (
+          <TopStatusIcon icon={statusIcon.icon} className={statusIcon.className} />
+        )}
         <ChevronDownIcon
           aria-hidden
           className={cn(
@@ -760,7 +769,7 @@ type SidebarThreadRowProps = {
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
   /** Sessions this thread spawned that render under it. */
   spawnedCount?: number | undefined;
-  spawnedWorkingCount?: number | undefined;
+  spawnedStatus?: SidebarGroupStatus | undefined;
   spawnedExpanded?: boolean | undefined;
   onToggleSpawned?: ((threadKey: string) => void) | undefined;
 };
@@ -1204,7 +1213,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       <SpawnedSessionsButton
         threadKey={threadKey}
         count={props.spawnedCount ?? 0}
-        workingCount={props.spawnedWorkingCount ?? 0}
+        status={props.spawnedStatus ?? IDLE_GROUP_STATUS}
         expanded={props.spawnedExpanded === true}
         onToggle={props.onToggleSpawned}
       />

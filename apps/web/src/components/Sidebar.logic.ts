@@ -732,24 +732,20 @@ export function visibleSpawnedChildren<
   );
 }
 
-/** How many of the threads a row would show as working or setting up. */
-export function countWorkingThreads(
-  threads: ReadonlyArray<
-    ThreadStatusInput &
-      SidebarThreadStatusInput &
-      Pick<SidebarThreadSummary, "environmentId" | "id">
-  >,
-  openDecisionThreadKeys: ReadonlySet<string>,
-): number {
-  let working = 0;
-  for (const thread of threads) {
-    const openDecision = openDecisionThreadKeys.has(
-      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-    );
-    const status = resolveSidebarRowStatus(thread, { openDecision });
-    if (status === "working" || status === "preparing") working++;
-  }
-  return working;
+/** The spawned children nested under any of `anchors`, for a collapsed group's status to count. */
+export function spawnedChildrenOf<
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "id">,
+>(
+  anchors: ReadonlyArray<Pick<SidebarThreadSummary, "environmentId" | "id">>,
+  nesting: SpawnedThreadNesting<TThread>,
+): TThread[] {
+  if (nesting.childrenByAnchorKey.size === 0) return [];
+  return anchors.flatMap(
+    (anchor) =>
+      nesting.childrenByAnchorKey.get(
+        scopedThreadKey(scopeThreadRef(anchor.environmentId, anchor.id)),
+      ) ?? [],
+  );
 }
 
 export function buildBulkTitleRegenerationContextMenuItem(input: {

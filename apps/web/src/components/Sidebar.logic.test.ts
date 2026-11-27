@@ -34,10 +34,10 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
-  countWorkingThreads,
   groupSidebarFolders,
   groupSidebarThreadsByProject,
   nestSpawnedThreads,
+  spawnedChildrenOf,
   visibleSpawnedChildren,
   withoutSpawnedThreads,
   partitionInitiativeThreads,
@@ -2414,6 +2414,50 @@ describe("resolveSidebarGroupStatus", () => {
     });
   });
 
+  describe("with the spawned sessions nested under its threads", () => {
+    const withLineage = (id: string, parent: string | null, overrides = {}) => ({
+      ...lineageThread(id, parent),
+      ...statusThread({ id: ThreadId.make(id), ...overrides }),
+    });
+
+    it.each([
+      ["needs approval", { hasPendingApprovals: true }, { kind: "needs-you", count: 1 }],
+      [
+        "failed",
+        { runtime: { ...runtime, status: "failed" as const } },
+        { kind: "failed", count: 1 },
+      ],
+      ["working", { runtime }, { kind: "working", count: 1 }],
+    ])("a quiet parent's session that is %s decides the group", (_, childState, expected) => {
+      const parent = withLineage("quiet-parent", null);
+      const child = withLineage("quiet-child", "quiet-parent", childState);
+      const aside = withLineage("quiet-aside", "elsewhere", { hasPendingApprovals: true });
+      const nesting = nestSpawnedThreads([parent, child, aside]);
+      const held = [parent];
+
+      expect(resolveSidebarGroupStatus(held, noDecisions)).toEqual({ kind: "idle" });
+      expect(spawnedChildrenOf(held, nesting).map((row) => row.id)).toEqual(["quiet-child"]);
+      expect(
+        resolveSidebarGroupStatus([...held, ...spawnedChildrenOf(held, nesting)], noDecisions),
+      ).toEqual(expected);
+    });
+
+    it("lets the strongest state win across a thread and its sessions, and adds nothing without sessions", () => {
+      const parent = withLineage("busy-parent", null, { runtime });
+      const failedChild = withLineage("busy-failed", "busy-parent", {
+        runtime: { ...runtime, status: "failed" as const },
+      });
+      const needyChild = withLineage("busy-needy", "busy-parent", { hasPendingUserInput: true });
+      const nesting = nestSpawnedThreads([parent, failedChild, needyChild]);
+
+      expect(
+        resolveSidebarGroupStatus([parent, ...spawnedChildrenOf([parent], nesting)], noDecisions),
+      ).toEqual({ kind: "needs-you", count: 1 });
+      expect(spawnedChildrenOf([withLineage("lone", null)], nesting)).toEqual([]);
+      expect(spawnedChildrenOf([parent], nestSpawnedThreads([parent]))).toEqual([]);
+    });
+  });
+
   it("reports idle for an empty, idle, waiting or opened-failure group", () => {
     const openedFailure = statusThread({
       runtime: { ...runtime, status: "failed" as const },
@@ -2424,18 +2468,6 @@ describe("resolveSidebarGroupStatus", () => {
     expect(resolveSidebarGroupStatus([idle(), waiting, openedFailure], noDecisions)).toEqual({
       kind: "idle",
     });
-  });
-
-  it("counts working and setting-up threads, but not one a decision holds or one that waits", () => {
-    const decided = working();
-    const waiting = statusThread({ runtime: { ...runtime, status: "idle" as const } });
-    const decisionKeys = new Set([
-      scopedThreadKey(scopeThreadRef(decided.environmentId, decided.id)),
-    ]);
-    expect(countWorkingThreads([], noDecisions)).toBe(0);
-    expect(countWorkingThreads([idle(), waiting, failed()], noDecisions)).toBe(0);
-    expect(countWorkingThreads([working(), idle(), preparing(), decided], decisionKeys)).toBe(2);
-    expect(countWorkingThreads([decided], noDecisions)).toBe(1);
   });
 });
 

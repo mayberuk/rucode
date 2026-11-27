@@ -130,7 +130,7 @@
   "588974a600220ac7": "ターミナル内",
   "4d3a013d646b5b53": "{count, plural, other {このスレッドが開始した # 件のセッションを隠す}}",
   "9342db54edca49ca": "{count, plural, other {このスレッドが開始した # 件のセッションを表示}}",
-  "af3b0f8818acaa21": "、{working} 件 作業中",
+  "633d59b879b3ed0e": "{sessions}、{status}",
   "0a5b021fc90c6a42": "ターミナル",
   "62f3ccbbb618d50d": "エージェントからの質問",
   "42d5795d66c0fcd6": "質問 {number}: {text}",

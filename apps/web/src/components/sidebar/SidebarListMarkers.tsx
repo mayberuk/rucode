@@ -171,6 +171,8 @@ export function InitiativeGroupHeader(props: {
   /** The group's project; the header shows it only outside its project folder. */
   project: { readonly favicon: ProjectFaviconProject | null; readonly displayName: string } | null;
   showProject: boolean;
+  /** The tree row of the project folder this header sits in. */
+  folderRow?: string | undefined;
   /** Set while collapsed. */
   status: SidebarGroupStatus | null;
   onToggle: (groupKey: string) => void;
@@ -192,6 +194,7 @@ export function InitiativeGroupHeader(props: {
           render={
             <CollapsibleSectionHeader
               data-sidebar-row={initiativeGroupRowId(props.groupKey)}
+              data-sidebar-parent={props.folderRow}
               aria-label={statusLabel === null ? title : `${title}, ${statusLabel}`}
               onClick={() => props.onToggle(props.groupKey)}
               expanded={props.expanded}

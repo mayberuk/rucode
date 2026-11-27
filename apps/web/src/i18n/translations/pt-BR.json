@@ -130,7 +130,7 @@
   "588974a600220ac7": "Em um terminal",
   "4d3a013d646b5b53": "{count, plural, one {Ocultar # sessão iniciada por esta conversa} other {Ocultar # sessões iniciadas por esta conversa}}",
   "9342db54edca49ca": "{count, plural, one {Mostrar # sessão iniciada por esta conversa} other {Mostrar # sessões iniciadas por esta conversa}}",
-  "af3b0f8818acaa21": ", {working} em andamento",
+  "633d59b879b3ed0e": "{sessions}, {status}",
   "0a5b021fc90c6a42": "No terminal",
   "62f3ccbbb618d50d": "Perguntas do agente",
   "42d5795d66c0fcd6": "Pergunta {number}: {text}",

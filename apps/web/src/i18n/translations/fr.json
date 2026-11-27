@@ -130,7 +130,7 @@
   "588974a600220ac7": "Dans un terminal",
   "4d3a013d646b5b53": "{count, plural, one {Masquer # session lancée par ce fil} other {Masquer # sessions lancées par ce fil}}",
   "9342db54edca49ca": "{count, plural, one {Afficher # session lancée par ce fil} other {Afficher # sessions lancées par ce fil}}",
-  "af3b0f8818acaa21": ", {working} en cours",
+  "633d59b879b3ed0e": "{sessions}, {status}",
   "0a5b021fc90c6a42": "Dans le terminal",
   "62f3ccbbb618d50d": "Questions de l’agent",
   "42d5795d66c0fcd6": "Question {number} : {text}",
