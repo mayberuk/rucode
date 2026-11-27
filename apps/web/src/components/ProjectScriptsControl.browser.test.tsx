@@ -6,6 +6,8 @@ import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
 import { render } from "../../test/render";
+import "../index.css";
+import { ThreadDetailsSection } from "./chat/ThreadDetailsSection";
 import type {
   ProjectActionSuggestOutcome,
   ProjectActionSuggestionsController,
@@ -62,6 +64,7 @@ function Harness(props: {
   attempted?: boolean;
   projectId?: ProjectId;
   withController?: boolean;
+  inCard?: boolean;
 }) {
   const [suggesting, setSuggesting] = useState(false);
   const [autoAttempted, setAutoAttempted] = useState(props.attempted ?? false);
@@ -82,19 +85,38 @@ function Harness(props: {
     },
     undo: props.undo ?? undoSucceeds,
   };
+  const control = (
+    <ProjectScriptsControl
+      environmentId={environmentId}
+      displayMode="panel"
+      scripts={props.scripts}
+      onRunScript={() => {}}
+      onAddScript={async () => AsyncResult.success(undefined)}
+      onUpdateScript={async () => AsyncResult.success(undefined)}
+      onDeleteScript={async () => AsyncResult.success(undefined)}
+      {...(props.withController === false ? {} : { suggestions: controller })}
+    />
+  );
   return (
     <ToastProvider timeout={0}>
       <AnchoredToastProvider timeout={0}>
-        <ProjectScriptsControl
-          environmentId={environmentId}
-          displayMode="panel"
-          scripts={props.scripts}
-          onRunScript={() => {}}
-          onAddScript={async () => AsyncResult.success(undefined)}
-          onUpdateScript={async () => AsyncResult.success(undefined)}
-          onDeleteScript={async () => AsyncResult.success(undefined)}
-          {...(props.withController === false ? {} : { suggestions: controller })}
-        />
+        {props.inCard ? (
+          <div
+            data-thread-details-card
+            className="dropdown-glass ml-96 w-72 overflow-hidden rounded-2xl"
+          >
+            <ThreadDetailsSection
+              headingId="workspace-heading"
+              title="Workspace"
+              separated={false}
+              showHeading={false}
+            >
+              {control}
+            </ThreadDetailsSection>
+          </div>
+        ) : (
+          control
+        )}
       </AnchoredToastProvider>
     </ToastProvider>
   );
@@ -142,6 +164,25 @@ it("says 'Added 1 action' for a single suggestion", async () => {
   await screen.rerender(<Harness scripts={[dev]} suggest={suggest} />);
 
   await expect.element(page.getByText("Added 1 action", { exact: true })).toBeVisible();
+});
+
+it("leaves a gap between the Added notice and the card the actions row sits in", async () => {
+  const suggest = vi.fn<Suggest>(async () => ({
+    _tag: "Added",
+    projectId: projectA,
+    scripts: added,
+  }));
+  await using screen = await render(<Harness scripts={[]} suggest={suggest} inCard />);
+  await vi.waitFor(() => expect(suggest).toHaveBeenCalledTimes(1));
+  await screen.rerender(<Harness scripts={added} suggest={suggest} inCard />);
+  await expect.element(page.getByText("Added 3 actions")).toBeVisible();
+
+  const notice = document.querySelector("[data-slot=toast-positioner]");
+  const card = document.querySelector("[data-thread-details-card]");
+  if (!notice || !card) throw new Error("notice or card missing");
+  const gap = card.getBoundingClientRect().left - notice.getBoundingClientRect().right;
+  expect(gap).toBeGreaterThan(7.5);
+  expect(gap).toBeLessThan(10);
 });
 
 it("dismisses the Added notice as soon as Undo is pressed, before the undo finishes", async () => {
@@ -230,7 +271,7 @@ it("explains a failed Undo", async () => {
 
   await page.getByRole("button", { name: "Undo" }).click();
 
-  await expect.element(page.getByText("Could not undo")).toBeVisible();
+  await expect.element(page.getByText("Could not remove the added actions")).toBeVisible();
   await expect.element(page.getByText("Read-only")).toBeVisible();
 });
 

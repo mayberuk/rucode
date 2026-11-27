@@ -229,7 +229,7 @@ export default function ProjectScriptsControl({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: gt("Could not undo"),
+          title: gt("Could not remove the added actions"),
           description: error instanceof Error ? error.message : gt("An unexpected error occurred."),
         }),
       );
@@ -276,7 +276,8 @@ export default function ProjectScriptsControl({
     const toastId = anchoredToastManager.add({
       type: "success",
       timeout: ADDED_TOAST_TIMEOUT_MS,
-      positionerProps: { anchor, side: "left", sideOffset: 8 },
+      // 8px clear of the card: the actions row sits 9px inside it (section padding plus border).
+      positionerProps: { anchor, side: "left", sideOffset: 17 },
       data: { actionVariant: "outline" },
       title: gt("Added {count, plural, one {# action} other {# actions}}", {
         count: addedScripts.length,

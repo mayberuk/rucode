@@ -53,7 +53,7 @@ export function ProjectsSettings() {
           <ProjectActionsSettings suggestionsOnly />
           <SettingsScopeNotice target="project" inline>
             {gt(
-              "Choose a project to manage its name, icon, checkouts and actions. The setting above applies to every project.",
+              "Choose a project to manage its name, icon, checkouts and actions. Projects use this setting unless they set their own.",
             )}
           </SettingsScopeNotice>
         </SettingsPageContainer>

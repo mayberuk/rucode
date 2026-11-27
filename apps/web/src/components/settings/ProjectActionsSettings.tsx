@@ -66,7 +66,7 @@ function SuggestProjectActionsSetting() {
       settingKeys={["suggestProjectActions"]}
       title={title}
       description={gt(
-        "When a project has no actions, read its scripts with the text generation model and add a few. You can undo or edit them.",
+        "When a project has no actions, read its scripts with the text generation model and add a few. You can edit or remove them.",
       )}
       resetAction={
         differsFromDefault ? (
