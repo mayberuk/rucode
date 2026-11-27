@@ -313,6 +313,7 @@ export interface ChatComposerHandle {
   citeAssistantText: (
     citation: AssistantCitation,
     sourceAnchor: AssistantCitationSourceAnchor,
+    options?: { comment?: boolean },
   ) => boolean;
   replyToResponse: (response: ResponseContextRecord) => boolean;
   openModelPicker: () => void;
@@ -3122,11 +3123,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         focusComposer();
         return true;
       },
-      citeAssistantText: (citation, sourceAnchor) =>
+      citeAssistantText: (citation, sourceAnchor, options) =>
         insertComposerTextStable(
           formatAssistantCitationForComposer(citation, citation.comment),
           "cursor",
-          { ensureLeadingBoundary: true, citationCommentAnchor: sourceAnchor },
+          {
+            ensureLeadingBoundary: true,
+            ...(options?.comment ? { citationCommentAnchor: sourceAnchor } : {}),
+          },
         ),
       replyToResponse: (response) => {
         // An open question owns the composer, and its answer would not carry the reply.

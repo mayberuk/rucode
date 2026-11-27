@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { AudioPreview } from "../files/AudioPreview";
 import { cdp, page, userEvent } from "vite-plus/test/browser";
 import {
+  ASSISTANT_CITATION_MAX_TEXT_LENGTH,
   ComposerContextId,
   EnvironmentId,
   MessageId,
@@ -1254,6 +1255,86 @@ describe("MessagesTimeline citations", () => {
     await expect
       .element(page.getByRole("button", { name: "Cite selection in composer" }))
       .toBeVisible();
+  });
+
+  const sentEntry = (text: string): Entry => ({
+    id: "sent",
+    kind: "sent-message",
+    createdAt: CREATED_AT,
+    runId: RunId.make("run-sent"),
+    text,
+  });
+
+  it.each([
+    { button: "Comment on selection", intent: "comment" },
+    { button: "Cite selection in composer", intent: "cite" },
+  ] as const)("reports the $intent intent for the selected text", async ({ button, intent }) => {
+    const text = "Answer 0 for thread-quote.";
+    const onCite = vi.fn<NonNullable<TimelineProps["onCiteAssistantText"]>>(() => true);
+    await using screen = await renderTimeline([sentEntry(text)], { onCiteAssistantText: onCite });
+    await expect.element(screen.getByText(text)).toHaveStyle({ pointerEvents: "auto" });
+    await userEvent.tripleClick(screen.getByText(text));
+    await expect.element(page.getByRole("group", { name: "Selected text" })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Cite selection in composer" }))
+      .toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: button }));
+
+    expect(onCite).toHaveBeenCalledTimes(1);
+    expect(onCite.mock.calls[0]?.[0].text).toBe(text);
+    expect(onCite.mock.calls[0]?.[2]).toBe(intent);
+    await expect
+      .element(page.getByRole("group", { name: "Selected text" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("keeps the toolbar and the selection when the composer refuses the citation", async () => {
+    const text = "Answer 1 for thread-quote.";
+    const onCite = vi.fn<NonNullable<TimelineProps["onCiteAssistantText"]>>(() => false);
+    await using screen = await renderTimeline([sentEntry(text)], { onCiteAssistantText: onCite });
+    await expect.element(screen.getByText(text)).toHaveStyle({ pointerEvents: "auto" });
+    await userEvent.tripleClick(screen.getByText(text));
+    await userEvent.click(page.getByRole("button", { name: "Comment on selection" }));
+
+    expect(onCite).toHaveBeenCalledTimes(1);
+    await expect.element(page.getByRole("group", { name: "Selected text" })).toBeVisible();
+    expect(window.getSelection()?.toString().trim()).toBe(text);
+  });
+
+  it("disables both buttons for a selection over the citation limit", async () => {
+    const text = "Answer 2 for thread-quote. ".repeat(400).trim();
+    expect(text.length).toBeGreaterThan(ASSISTANT_CITATION_MAX_TEXT_LENGTH);
+    const onCite = vi.fn<NonNullable<TimelineProps["onCiteAssistantText"]>>(() => true);
+    await using screen = await renderTimeline([sentEntry(text)], { onCiteAssistantText: onCite });
+    await expect.element(screen.getByText(text)).toHaveStyle({ pointerEvents: "auto" });
+    await userEvent.tripleClick(screen.getByText(text));
+
+    const cite = page.getByRole("button", { name: "Selection is too long to cite" });
+    await expect.element(cite).toBeDisabled();
+    await expect.element(cite).toHaveTextContent("Shorten selection");
+    await expect.element(page.getByRole("button", { name: "Comment on selection" })).toBeDisabled();
+    expect(onCite).not.toHaveBeenCalled();
+  });
+
+  it("moves between the two buttons with Tab and dismisses with Escape", async () => {
+    const text = "Answer 4 for thread-quote.";
+    await using screen = await renderTimeline([sentEntry(text)], {
+      onCiteAssistantText: () => true,
+    });
+    await expect.element(screen.getByText(text)).toHaveStyle({ pointerEvents: "auto" });
+    await userEvent.tripleClick(screen.getByText(text));
+    await expect.element(page.getByRole("group", { name: "Selected text" })).toBeVisible();
+
+    await userEvent.tab();
+    await expect
+      .element(page.getByRole("button", { name: "Cite selection in composer" }))
+      .toHaveFocus();
+    await userEvent.tab();
+    await expect.element(page.getByRole("button", { name: "Comment on selection" })).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    await expect
+      .element(page.getByRole("group", { name: "Selected text" }))
+      .not.toBeInTheDocument();
   });
 
   it("lands a citation present at mount under StrictMode", async () => {
