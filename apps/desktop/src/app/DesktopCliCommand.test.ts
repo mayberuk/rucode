@@ -102,6 +102,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const home = yield* fs.makeTempDirectoryScoped();
       const command = yield* commandIn({ home, env });
       const link = path.join(home, ".local", "bin", "t3");
+      const rucodeLink = path.join(home, ".local", "bin", "rucode");
 
       expect(yield* command.state).toEqual({
         supported: true,
@@ -116,7 +117,14 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       expect(installed.launcherPath).toBe(path.join(home, ".t3", "bin", "t3"));
       expect(installed.pathSetup).toEqual({ file: "~/.zshrc", added: false });
       expect(yield* fs.readLink(link)).toBe(path.join(home, ".t3", "bin", "t3"));
+      expect(yield* fs.readLink(rucodeLink)).toBe(path.join(home, ".t3", "bin", "rucode"));
+      expect(yield* fs.readFileString(path.join(home, ".t3", "bin", "rucode"))).toBe(
+        yield* fs.readFileString(path.join(home, ".t3", "bin", "t3")),
+      );
+      // Install after an update restores a `rucode` the earlier app version never linked.
+      yield* fs.remove(rucodeLink);
       expect((yield* command.install).installedPath).toBe(link);
+      expect(yield* fs.readLink(rucodeLink)).toBe(path.join(home, ".t3", "bin", "rucode"));
 
       // Add to PATH appends one line, once, and keeps a final line with no newline intact.
       const zshrc = path.join(home, ".zshrc");
@@ -134,7 +142,9 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
 
       expect((yield* command.uninstall).installedPath).toBeNull();
       expect(yield* fs.exists(link)).toBe(false);
+      expect(Option.isSome(yield* fs.readLink(rucodeLink).pipe(Effect.option))).toBe(false);
       expect(yield* fs.exists(path.join(home, ".t3", "bin", "t3"))).toBe(true);
+      expect(yield* fs.exists(path.join(home, ".t3", "bin", "rucode"))).toBe(true);
       // Removed stays removed: first launch never installs again.
       yield* command.installOnFirstLaunch;
       expect(yield* fs.exists(link)).toBe(false);
@@ -195,6 +205,26 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
         expect(yield* fs.exists(path.join(besideHome, "bin", "t3"))).toBe(false);
       }
 
+      // Someone else's `rucode` stays, while `t3` is linked and removed as usual.
+      for (const dangling of [false, true]) {
+        const foreignHome = yield* fs.makeTempDirectoryScoped();
+        const foreign = path.join(foreignHome, ".local", "bin", "rucode");
+        yield* fs.makeDirectory(path.dirname(foreign), { recursive: true });
+        yield* dangling
+          ? fs.symlink(path.join(foreignHome, "gone"), foreign)
+          : fs.writeFileString(foreign, "someone's rucode\n");
+        const foreignCommand = yield* commandIn({ home: foreignHome });
+        const installed = yield* foreignCommand.install;
+        expect(installed.installedPath).toBe(path.join(foreignHome, ".local", "bin", "t3"));
+        yield* foreignCommand.uninstall;
+        expect(yield* fs.exists(path.join(foreignHome, ".local", "bin", "t3"))).toBe(false);
+        if (dangling) {
+          expect(yield* fs.readLink(foreign)).toBe(path.join(foreignHome, "gone"));
+        } else {
+          expect(yield* fs.readFileString(foreign)).toBe("someone's rucode\n");
+        }
+      }
+
       const launcher = path.join(home, ".t3", "bin", "t3");
       yield* fs.writeFileString(launcher, "npm's t3\n");
       env.PATH = path.dirname(launcher);
@@ -213,6 +243,8 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const home = yield* fs.makeTempDirectoryScoped();
       const before = yield* commandIn({ home, baseDir: path.join(home, "old-t3"), env });
       const link = (yield* before.install).installedPath;
+      const rucodeLink = path.join(path.dirname(link!), "rucode");
+      expect(yield* fs.readLink(rucodeLink)).toBe(path.join(home, "old-t3", "bin", "rucode"));
 
       const after = yield* commandIn({ home, baseDir: path.join(home, "new-t3"), env });
       // A first launch leaves another home's command alone; only Install takes it over.
@@ -239,10 +271,12 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       env.PATH = path.dirname(link!);
       expect((yield* after.install).installedPath).toBe(link);
       expect(yield* fs.readLink(link!)).toBe(path.join(home, "new-t3", "bin", "t3"));
+      expect(yield* fs.readLink(rucodeLink)).toBe(path.join(home, "new-t3", "bin", "rucode"));
       env.PATH = "";
       yield* after.uninstall;
       expect(yield* fs.exists(path.join(home, ".local", "bin", "t3"))).toBe(false);
       expect(yield* fs.exists(path.join(home, "bin", "t3"))).toBe(false);
+      expect(Option.isSome(yield* fs.readLink(rucodeLink).pipe(Effect.option))).toBe(false);
 
       // A folder already on PATH wins, even written with a trailing slash.
       env.PATH = `${path.join(home, "bin")}/`;

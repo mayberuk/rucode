@@ -1,7 +1,8 @@
 # Install RuCode
 
 RuCode runs coding agents on your computer and lets you control them from its
-desktop, web, or mobile app. Set up the machine where the agents will work first.
+desktop and web app, or from upstream T3 Code's mobile app. Set up the machine
+where the agents will work first.
 
 ## Requirements
 
@@ -141,7 +142,8 @@ in `~/.local/bin` (or `~/bin`); on Windows it adds the app's command folder to
 your `PATH`. Open a new terminal afterwards. If the folder is not on your
 `PATH`, **Add to PATH** on the Welcome page or in **Settings → About** adds one
 line to your shell's startup file. **Remove** takes it off, and the app does not
-add it again. If you already have another `t3`, it stays as it is.
+add it again. If you already have another `t3`, it stays as it is. `rucode` runs
+the same command and is linked beside `t3`; an existing `rucode` of yours also stays.
 
 ### Windows Subsystem for Linux
 

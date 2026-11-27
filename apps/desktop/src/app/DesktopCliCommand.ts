@@ -87,6 +87,7 @@ export const make = Effect.gen(function* () {
   const path = environment.path;
   const windows = environment.platform === "win32";
   const launcher = DesktopCliShim.launcherPath(environment);
+  const rucodeLauncher = DesktopCliShim.rucodeLauncherPath(environment);
   const binDirectory = path.dirname(launcher);
   const ownedPathMarker = path.join(environment.stateDir, "cli-command-path-entry");
   const firstLaunchMarker = path.join(environment.stateDir, "cli-command-first-launch");
@@ -191,6 +192,32 @@ export const make = Effect.gen(function* () {
       Effect.map((target) => target === launcher),
       Effect.orElseSucceed(() => false),
     );
+
+  const swapLink = Effect.fn("DesktopCliCommand.swapLink")(function* (
+    target: string,
+    link: string,
+  ) {
+    const staging = `${link}.${yield* Random.nextIntBetween(0, 0xffffff)}.tmp`;
+    yield* fs.symlink(target, staging);
+    yield* fs
+      .rename(staging, link)
+      .pipe(Effect.tapError(() => fs.remove(staging).pipe(Effect.ignore)));
+  });
+
+  // `rucode` sits beside a `t3` link and follows its ownership rules. Best effort: a foreign
+  // `rucode` stays as it is and never fails the `t3` install.
+  const linkRucode = Effect.fn("DesktopCliCommand.linkRucode")(
+    function* (directory: string) {
+      if (!userCandidates(environment.homeDirectory).includes(directory)) return;
+      const link = path.join(directory, "rucode");
+      if (!(yield* isOurLink(link))) {
+        yield* fs.symlink(rucodeLauncher, link);
+      } else if ((yield* fs.readLink(link)) !== rucodeLauncher) {
+        yield* swapLink(rucodeLauncher, link);
+      }
+    },
+    Effect.orElseSucceed(() => undefined),
+  );
 
   const installedAt = Effect.gen(function* () {
     if (windows) {
@@ -315,7 +342,10 @@ export const make = Effect.gen(function* () {
     const replaced = Option.getOrUndefined(yield* installedAt);
     if (replaced !== undefined) {
       const target = yield* fs.readLink(replaced).pipe(Effect.option);
-      if (Option.getOrUndefined(target) === launcher) return yield* state;
+      if (Option.getOrUndefined(target) === launcher) {
+        yield* linkRucode(path.dirname(replaced));
+        return yield* state;
+      }
     }
     const shadowedBy = yield* foreignFirstOnPath;
     // Our own link into another RuCode home runs first too; it is the one this install updates.
@@ -341,26 +371,18 @@ export const make = Effect.gen(function* () {
           );
       if (!created) continue;
       // Our own link is swapped in place; anything else there makes symlink fail and stays.
-      const staging = `${link}.${yield* Random.nextIntBetween(0, 0xffffff)}.tmp`;
       const linked = yield* (
-        link === replaced
-          ? fs
-              .symlink(launcher, staging)
-              .pipe(
-                Effect.andThen(
-                  fs
-                    .rename(staging, link)
-                    .pipe(Effect.tapError(() => fs.remove(staging).pipe(Effect.ignore))),
-                ),
-              )
-          : fs.symlink(launcher, link)
+        link === replaced ? swapLink(launcher, link) : fs.symlink(launcher, link)
       ).pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
       );
       if (!linked) continue;
+      yield* linkRucode(directory);
       if (replaced !== undefined && replaced !== link) {
         yield* fs.remove(replaced).pipe(Effect.ignore);
+        const oldRucode = path.join(path.dirname(replaced), "rucode");
+        if (yield* isOurLink(oldRucode)) yield* fs.remove(oldRucode).pipe(Effect.ignore);
       }
       return yield* state;
     }
@@ -382,9 +404,11 @@ export const make = Effect.gen(function* () {
       return yield* state;
     }
     for (const directory of knownLocations(environment.homeDirectory, environment.platform)) {
-      const link = path.join(directory, "t3");
-      if (yield* isOurLink(link)) {
-        yield* fs.remove(link).pipe(Effect.mapError(() => fail(`Could not remove ${link}.`)));
+      for (const name of ["t3", "rucode"]) {
+        const link = path.join(directory, name);
+        if (yield* isOurLink(link)) {
+          yield* fs.remove(link).pipe(Effect.mapError(() => fail(`Could not remove ${link}.`)));
+        }
       }
     }
     return yield* state;
