@@ -38,6 +38,7 @@ import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
+import { claudeTranscriptUserText } from "../provider/Drivers/ClaudeCommandTranscript.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -594,8 +595,9 @@ function parseAgentSessionRecords(
     if (input.source === "claudeAgent") {
       if (isHiddenClaudeRecord(record)) continue;
       if (record.type !== "user" && record.type !== "assistant") continue;
-      const text = extractText(record.message?.content);
-      if (text.length === 0) continue;
+      const extractedText = extractText(record.message?.content);
+      const text = record.type === "user" ? claudeTranscriptUserText(extractedText) : extractedText;
+      if (text === null || text.length === 0) continue;
       retainMessage({
         role: record.type,
         text,
