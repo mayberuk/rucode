@@ -61,7 +61,12 @@ describe("shouldAutoSuggest", () => {
     "requires an exact zero count rather than %s",
     (scriptCount) => {
       expect(
-        shouldAutoSuggest({ available: true, scriptCount, autoAttempted: false, suggesting: false }),
+        shouldAutoSuggest({
+          available: true,
+          scriptCount,
+          autoAttempted: false,
+          suggesting: false,
+        }),
       ).toBe(false);
     },
   );
