@@ -1620,7 +1620,7 @@ const CODEX_THREAD_ENV_CONFIG_KEY = `shell_environment_policy.set.${PortScanner.
 
 /**
  * One app-server serves every Codex thread on an instance, so each frame is routed to the
- * T3 thread it belongs to. Frames tied to no thread, such as `initialize`, go to the global log.
+ * RuCode thread it belongs to. Frames tied to no thread, such as `initialize`, go to the global log.
  */
 function makeCodexProtocolThreadRouter() {
   const threadIdsByNativeId = new Map<string, ThreadId>();
@@ -2051,7 +2051,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return yield* new ProviderSetupError({
                 instanceId: adapterOptions.instanceId,
                 operation: "runtime",
-                detail: `Codex ${version} does not work with this T3 Code release. Update Codex to ${target}, then retry.`,
+                detail: `Codex ${version} does not work with this RuCode release. Update Codex to ${target}, then retry.`,
               });
             }
             yield* client.notify("initialized", undefined);

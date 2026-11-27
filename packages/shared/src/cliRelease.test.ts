@@ -138,8 +138,8 @@ describe("cliRelease", () => {
     const identity = desktopAppIdentityOf(devVersion);
     expect(identity).toBe(DESKTOP_APP_IDENTITIES.dev);
     expect(identity).toStrictEqual({
-      appId: "com.t3tools.t3code.dev",
-      productName: "T3 Code Dev",
+      appId: "io.github.mayberuk.rucode.dev",
+      productName: "RuCode Dev",
       t3HomeDirName: ".t3-dev",
     });
   });
@@ -148,7 +148,7 @@ describe("cliRelease", () => {
     const identity = desktopAppIdentityOf(version);
     expect(identity).toBe(DESKTOP_APP_IDENTITIES.release);
     expect(identity).toStrictEqual({
-      appId: "com.t3tools.t3code",
+      appId: "io.github.mayberuk.rucode",
       productName: undefined,
       t3HomeDirName: ".t3",
     });

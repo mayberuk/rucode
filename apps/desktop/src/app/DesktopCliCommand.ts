@@ -87,9 +87,11 @@ export const make = Effect.gen(function* () {
   const path = environment.path;
   const windows = environment.platform === "win32";
   const launcher = DesktopCliShim.launcherPath(environment);
+  const rucodeLauncher = DesktopCliShim.rucodeLauncherPath(environment);
   const binDirectory = path.dirname(launcher);
   const ownedPathMarker = path.join(environment.stateDir, "cli-command-path-entry");
   const firstLaunchMarker = path.join(environment.stateDir, "cli-command-first-launch");
+  const rucodeLinkMarker = path.join(environment.stateDir, "cli-command-rucode-link");
 
   const fail = (message: string) => new DesktopCliCommandError({ message });
   const exists = (target: string) => fs.exists(target).pipe(Effect.orElseSucceed(() => false));
@@ -117,7 +119,7 @@ export const make = Effect.gen(function* () {
 
   // PATH can reach the regular launcher directly; removal still requires isOurLink.
   const runsOurLauncher = Effect.fn("DesktopCliCommand.runsOurLauncher")(
-    // Another T3 home's link is marked too, so compare where it leads, not the marker alone.
+    // Another RuCode home's link is marked too, so compare where it leads, not the marker alone.
     function* (candidate: string) {
       const [resolved, ours] = yield* Effect.all([fs.realPath(candidate), fs.realPath(launcher)]);
       if (resolved !== ours) return false;
@@ -192,6 +194,49 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
+  const swapLink = Effect.fn("DesktopCliCommand.swapLink")(function* (
+    target: string,
+    link: string,
+  ) {
+    const staging = `${link}.${yield* Random.nextIntBetween(0, 0xffffff)}.tmp`;
+    yield* fs.symlink(target, staging);
+    yield* fs
+      .rename(staging, link)
+      .pipe(Effect.tapError(() => fs.remove(staging).pipe(Effect.ignore)));
+  });
+
+  // A `rucode` link is ours only if it leads to a launcher named rucode, this home's or another's;
+  // a link the user made to the `t3` launcher is theirs.
+  const isOurRucodeLink = Effect.fn("DesktopCliCommand.isOurRucodeLink")(
+    function* (link: string) {
+      if (!(yield* isOurLink(link))) return false;
+      return ["rucode", "rucode.cmd"].includes(path.basename(yield* fs.readLink(link)));
+    },
+    Effect.orElseSucceed(() => false),
+  );
+
+  // `rucode` sits beside a `t3` link and follows its ownership rules, and only leads to a launcher
+  // this app wrote. Best effort: a foreign `rucode` stays as it is and never fails the `t3` install.
+  // Returns false when the launcher is missing or not ours, so a caller can try again later.
+  const linkRucode = Effect.fn("DesktopCliCommand.linkRucode")(
+    function* (directory: string) {
+      if (!userCandidates(environment.homeDirectory).includes(directory)) return true;
+      const info = yield* fs.stat(rucodeLauncher);
+      if (info.type !== "File" || Number(info.size) > 16_384) return false;
+      if (!(yield* fs.readFileString(rucodeLauncher)).includes(DesktopCliShim.MARKER)) return false;
+      const link = path.join(directory, "rucode");
+      yield* Effect.gen(function* () {
+        if (!(yield* isOurRucodeLink(link))) {
+          yield* fs.symlink(rucodeLauncher, link);
+        } else if ((yield* fs.readLink(link)) !== rucodeLauncher) {
+          yield* swapLink(rucodeLauncher, link);
+        }
+      }).pipe(Effect.ignore);
+      return true;
+    },
+    Effect.orElseSucceed(() => false),
+  );
+
   const installedAt = Effect.gen(function* () {
     if (windows) {
       if (!(yield* exists(ownedPathMarker))) return Option.none<string>();
@@ -240,7 +285,7 @@ export const make = Effect.gen(function* () {
     }
     const launcherPath = (yield* exists(launcher)) ? launcher : null;
     const found = yield* installedAt;
-    // Our link into another T3 home is not this app's command; Install updates it in place.
+    // Our link into another RuCode home is not this app's command; Install updates it in place.
     const installed =
       windows || (Option.isSome(found) && (yield* leadsHere(found.value)))
         ? found
@@ -299,7 +344,7 @@ export const make = Effect.gen(function* () {
       // PATH would split the folder at the `;`, leaving two wrong entries behind.
       if (binDirectory.includes(";")) {
         return yield* fail(
-          `T3 Code cannot put ${binDirectory} on PATH because it has a ";". Run ${launcher} directly.`,
+          `RuCode cannot put ${binDirectory} on PATH because it has a ";". Run ${launcher} directly.`,
         );
       }
       const entries = pathEntries(yield* readUserPath, ";");
@@ -315,10 +360,14 @@ export const make = Effect.gen(function* () {
     const replaced = Option.getOrUndefined(yield* installedAt);
     if (replaced !== undefined) {
       const target = yield* fs.readLink(replaced).pipe(Effect.option);
-      if (Option.getOrUndefined(target) === launcher) return yield* state;
+      if (Option.getOrUndefined(target) === launcher) {
+        yield* linkRucode(path.dirname(replaced));
+        yield* fs.writeFileString(rucodeLinkMarker, "").pipe(Effect.ignore);
+        return yield* state;
+      }
     }
     const shadowedBy = yield* foreignFirstOnPath;
-    // Our own link into another T3 home runs first too; it is the one this install updates.
+    // Our own link into another RuCode home runs first too; it is the one this install updates.
     if (Option.isSome(shadowedBy) && shadowedBy.value !== replaced) {
       return yield* fail(
         `Another t3 at ${shadowedBy.value} runs first in a new terminal. Remove it, or run the launcher directly at ${launcher}.`,
@@ -341,26 +390,19 @@ export const make = Effect.gen(function* () {
           );
       if (!created) continue;
       // Our own link is swapped in place; anything else there makes symlink fail and stays.
-      const staging = `${link}.${yield* Random.nextIntBetween(0, 0xffffff)}.tmp`;
       const linked = yield* (
-        link === replaced
-          ? fs
-              .symlink(launcher, staging)
-              .pipe(
-                Effect.andThen(
-                  fs
-                    .rename(staging, link)
-                    .pipe(Effect.tapError(() => fs.remove(staging).pipe(Effect.ignore))),
-                ),
-              )
-          : fs.symlink(launcher, link)
+        link === replaced ? swapLink(launcher, link) : fs.symlink(launcher, link)
       ).pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
       );
       if (!linked) continue;
+      yield* linkRucode(directory);
+      yield* fs.writeFileString(rucodeLinkMarker, "").pipe(Effect.ignore);
       if (replaced !== undefined && replaced !== link) {
         yield* fs.remove(replaced).pipe(Effect.ignore);
+        const oldRucode = path.join(path.dirname(replaced), "rucode");
+        if (yield* isOurRucodeLink(oldRucode)) yield* fs.remove(oldRucode).pipe(Effect.ignore);
       }
       return yield* state;
     }
@@ -382,9 +424,11 @@ export const make = Effect.gen(function* () {
       return yield* state;
     }
     for (const directory of knownLocations(environment.homeDirectory, environment.platform)) {
-      const link = path.join(directory, "t3");
-      if (yield* isOurLink(link)) {
-        yield* fs.remove(link).pipe(Effect.mapError(() => fail(`Could not remove ${link}.`)));
+      for (const name of ["t3", "rucode"]) {
+        const link = path.join(directory, name);
+        if (yield* name === "rucode" ? isOurRucodeLink(link) : isOurLink(link)) {
+          yield* fs.remove(link).pipe(Effect.mapError(() => fail(`Could not remove ${link}.`)));
+        }
       }
     }
     return yield* state;
@@ -398,17 +442,17 @@ export const make = Effect.gen(function* () {
       return yield* fail("Install the t3 command first.");
     }
     const setup = startupLine(installed.value);
-    if (setup === undefined) return yield* fail("T3 Code cannot add t3 to this shell's PATH.");
+    if (setup === undefined) return yield* fail("RuCode cannot add t3 to this shell's PATH.");
     const shadowedBy = yield* foreignFirstOnPath;
     if (Option.isSome(shadowedBy)) {
       return yield* fail(
-        `Another t3 at ${shadowedBy.value} runs first; T3 Code leaves it in place.`,
+        `Another t3 at ${shadowedBy.value} runs first; RuCode leaves it in place.`,
       );
     }
     if (!(yield* folderOnPath(installed.value)) && !(yield* hasLine(setup))) {
       yield* fs.makeDirectory(path.dirname(setup.path), { recursive: true }).pipe(
         Effect.andThen(
-          fs.writeFileString(setup.path, `\n# Added by T3 Code\n${setup.line}\n`, { flag: "a" }),
+          fs.writeFileString(setup.path, `\n# Added by RuCode\n${setup.line}\n`, { flag: "a" }),
         ),
         Effect.mapError(() => fail(`Could not add t3 to ${setup.file}.`)),
       );
@@ -418,18 +462,34 @@ export const make = Effect.gen(function* () {
 
   const installOnFirstLaunch: DesktopCliCommand["Service"]["installOnFirstLaunch"] = Effect.gen(
     function* () {
-      if (!environment.isPackaged || (yield* exists(firstLaunchMarker))) return;
+      if (!environment.isPackaged) return;
+      if (yield* exists(firstLaunchMarker)) {
+        // Once, for a t3 installed before rucode existed; a rucode the user removed stays removed.
+        if (!windows && !(yield* exists(rucodeLinkMarker))) {
+          const linked = Option.getOrUndefined(yield* installedAt);
+          // The launcher may not be written yet on this launch; leave the marker for the next one.
+          let tried = true;
+          if (linked !== undefined) {
+            const target = yield* fs.readLink(linked).pipe(Effect.option);
+            if (Option.getOrUndefined(target) === launcher) {
+              tried = yield* linkRucode(path.dirname(linked));
+            }
+          }
+          if (tried) yield* fs.writeFileString(rucodeLinkMarker, "").pipe(Effect.ignore);
+        }
+        return;
+      }
       // Mark first so a failed or removed install is never retried behind the user's back.
       yield* fs.writeFileString(firstLaunchMarker, "");
       if (!freshInstall) {
         return yield* logInfo("left the t3 command to Settings on an existing install");
       }
-      // Another T3 home's app owns the existing link; only Install in Settings may take it over.
+      // Another RuCode home's app owns the existing link; only Install in Settings may take it over.
       const existing = Option.getOrUndefined(yield* installedAt);
       if (existing !== undefined) {
         const target = yield* fs.readLink(existing).pipe(Effect.option);
         if (Option.getOrUndefined(target) !== launcher) {
-          return yield* logInfo("left another T3 Code app's t3 command in place", {
+          return yield* logInfo("left another RuCode app's t3 command in place", {
             existing,
           });
         }

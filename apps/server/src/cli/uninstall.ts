@@ -76,7 +76,7 @@ const ownsLauncher = Effect.fn("cli.uninstall.owns_launcher")(function* (
     .realPath(versionsDir)
     .pipe(Effect.orElseSucceed(() => versionsDir));
   // The link's own text keeps a pruned (dangling) target; the real path sees through a
-  // symlinked T3 home.
+  // symlinked RuCode home.
   const targets =
     platform === "win32"
       ? [
@@ -204,7 +204,7 @@ const logOtherHomeService = (plan: UninstallPlan) =>
   plan.otherHomeService === undefined
     ? Effect.void
     : Console.log(
-        `The T3 Code service serves ${plan.otherHomeService}, so it was not removed. Pass \`${BootService.formatBootServiceBaseDirOption(plan.otherHomeService)}\` to remove it.`,
+        `The RuCode service serves ${plan.otherHomeService}, so it was not removed. Pass \`${BootService.formatBootServiceBaseDirOption(plan.otherHomeService)}\` to remove it.`,
       );
 
 const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
@@ -298,6 +298,6 @@ const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
     }
   }
   yield* Console.log("");
-  yield* Console.log("t3 is uninstalled. Thanks for trying T3 Code.");
+  yield* Console.log("t3 is uninstalled. Thanks for trying RuCode.");
   yield* logOtherHomeService(plan);
 });

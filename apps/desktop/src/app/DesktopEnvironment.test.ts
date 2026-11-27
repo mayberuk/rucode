@@ -13,9 +13,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  appPath: "/Applications/RuCode.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+  resourcesPath: "/Applications/RuCode.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -82,7 +82,7 @@ describe("DesktopEnvironment", () => {
         const environment = yield* makeEnvironment(packaged);
 
         assert.equal(environment.branding.stageLabel, "Dev");
-        assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
+        assert.equal(environment.appUserModelId, "io.github.mayberuk.rucode.dev");
         assert.equal(environment.baseDir, "/Users/alice/.t3-dev");
         assert.equal(environment.stateDir, "/Users/alice/.t3-dev/userdata");
       }),
@@ -123,7 +123,7 @@ describe("DesktopEnvironment", () => {
         });
 
         assert.equal(environment.baseDir, "/Users/alice/.t3");
-        assert.equal(environment.appUserModelId, "com.t3tools.t3code");
+        assert.equal(environment.appUserModelId, "io.github.mayberuk.rucode");
         assert.notEqual(environment.branding.stageLabel, "Dev");
       }),
     );
@@ -135,7 +135,7 @@ describe("DesktopEnvironment", () => {
         const environment = yield* makeEnvironment({ isPackaged: true });
 
         assert.equal(environment.branding.stageLabel, "Beta");
-        assert.equal(environment.appUserModelId, "com.t3tools.t3code");
+        assert.equal(environment.appUserModelId, "io.github.mayberuk.rucode");
         assert.equal(environment.baseDir, "/Users/alice/.t3");
         assert.equal(environment.stateDir, "/Users/alice/.t3/userdata");
       }),

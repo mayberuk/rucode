@@ -23,7 +23,6 @@ import {
   cliArchiveFileName,
   DESKTOP_APP_ARCHIVE_ARCH,
   DESKTOP_APP_ARTIFACT_NAME_TEMPLATE,
-  DESKTOP_APP_IDENTITIES,
   desktopAppArchiveFileName,
   DEV_DESKTOP_APP_ARTIFACT_NAME_TEMPLATE,
   devBuildVersion,
@@ -31,7 +30,6 @@ import {
   releaseTag,
 } from "@t3tools/shared/cliRelease";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
-import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { cliArchiveFileName as buildScriptCliArchiveFileName } from "./build-cli-archive.ts";
 
@@ -248,7 +246,7 @@ const makePackagedAppFixture = Effect.fn("test.makePackagedAppFixture")(function
   const stageDistDir = path.join(tempDir, "dist");
   const resourcesDir = path.join(
     stageDistDir,
-    input.resourcesPath ?? "mac-arm64/T3 Code.app/Contents/Resources",
+    input.resourcesPath ?? "mac-arm64/RuCode.app/Contents/Resources",
   );
   yield* fs.makeDirectory(resourcesDir, { recursive: true });
   yield* Effect.promise(() =>
@@ -604,15 +602,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
-      assert.strictEqual(config.appId, DESKTOP_APP_IDENTITIES.dev.appId);
-      assert.strictEqual(config.productName, DESKTOP_APP_IDENTITIES.dev.productName);
+      assert.strictEqual(config.appId, "io.github.mayberuk.rucode.dev");
+      assert.strictEqual(config.productName, "RuCode Dev");
       assert.strictEqual(config.artifactName, DEV_DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
       assert.strictEqual(config.publish, null);
-      assert.nestedPropertyVal(
-        config,
-        "dmg.title",
-        `${DESKTOP_APP_IDENTITIES.dev.productName} ${version} Installer`,
-      );
+      assert.nestedPropertyVal(config, "dmg.title", `RuCode Dev ${version} Installer`);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))),
   );
 
@@ -638,8 +632,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
-      assert.strictEqual(config.appId, "com.t3tools.t3code");
-      assert.strictEqual(config.productName, desktopPackageJson.productName);
+      assert.strictEqual(config.appId, "io.github.mayberuk.rucode");
+      assert.strictEqual(config.productName, "RuCode (Beta)");
       assert.strictEqual(config.artifactName, DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
       assert.deepStrictEqual(config.publish, [
         { provider: "github", owner: "acme", repo: "app", releaseType: "release" },
@@ -660,8 +654,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it.effect.each([
-    { version: "1.2.3", productName: desktopPackageJson.productName },
-    { version: "1.2.3-nightly.20260101.1", productName: "T3 Code (Nightly)" },
+    { version: "1.2.3", productName: "RuCode (Beta)" },
+    { version: "1.2.3-nightly.20260101.1", productName: "RuCode (Nightly)" },
   ])("uses the contract artifact template for $version", ({ version, productName }) =>
     Effect.gen(function* () {
       const config = yield* createBuildConfig(
@@ -677,7 +671,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       );
 
       assert.strictEqual(config.artifactName, DESKTOP_APP_ARTIFACT_NAME_TEMPLATE);
-      assert.strictEqual(config.appId, "com.t3tools.t3code");
+      assert.strictEqual(config.appId, "io.github.mayberuk.rucode");
       assert.strictEqual(config.productName, productName);
     }),
   );
@@ -1705,7 +1699,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const stageDistDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mac-payload-test-" });
-        yield* fs.makeDirectory(`${stageDistDir}/mac-arm64/T3 Code.app/Contents/Resources`, {
+        yield* fs.makeDirectory(`${stageDistDir}/mac-arm64/RuCode.app/Contents/Resources`, {
           recursive: true,
         });
         const error = yield* validateMacPackagedPayload({ stageDistDir }).pipe(Effect.flip);
@@ -1770,7 +1764,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
 
     assert.deepStrictEqual(configuration, {
-      appId: "com.t3tools.t3code",
+      appId: "io.github.mayberuk.rucode",
       teamId: "ABC1234567",
       rpDomains: ["example.clerk.accounts.dev"],
       provisioningProfilePath: "/tmp/t3code.provisionprofile",
@@ -1793,7 +1787,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "clerk.example.com",
       "example.clerk.accounts.dev",
     ]);
-    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code</string>");
+    assert.include(entitlements, "<string>ABC1234567.io.github.mayberuk.rucode</string>");
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
@@ -1804,7 +1798,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("grants in-app browser passkey entitlements only when the provisioning profile does", () => {
-    const configuration = { appId: "com.t3tools.t3code", teamId: "ABC1234567" };
+    const configuration = { appId: "io.github.mayberuk.rucode", teamId: "ABC1234567" };
     const profile = (entitlements: string, outside = "") =>
       `0\x82\x1f\x9a\x06\t*\x86H<?xml version="1.0"?><plist version="1.0"><dict>${outside}<key>Entitlements</key><dict>${entitlements}</dict></dict></plist>\x00\x01`;
     const teamWildcardGroups = `<key>keychain-access-groups</key>
@@ -1846,7 +1840,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         configuration,
       ),
       {
-        touchIdKeychainAccessGroup: "ABC1234567.com.t3tools.t3code.webauthn",
+        touchIdKeychainAccessGroup: "ABC1234567.io.github.mayberuk.rucode.webauthn",
         browserPasskeys: true,
       },
     );
@@ -1862,7 +1856,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
     assert.match(
       entitlements,
-      /<key>keychain-access-groups<\/key>\s*<array>\s*<string>ABC1234567\.com\.t3tools\.t3code\.webauthn<\/string>\s*<\/array>/u,
+      /<key>keychain-access-groups<\/key>\s*<array>\s*<string>ABC1234567\.io\.github\.mayberuk\.rucode\.webauthn<\/string>\s*<\/array>/u,
     );
     assert.match(
       entitlements,
@@ -2347,7 +2341,7 @@ it.effect("preserves packaged app directories from the dir target", () =>
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-dir-artifact-" });
     const stage = path.join(root, "stage");
     const output = path.join(root, "output");
-    const app = path.join("mac-arm64", "T3 Code.app", "Contents");
+    const app = path.join("mac-arm64", "RuCode.app", "Contents");
     yield* fs.makeDirectory(path.join(stage, app), { recursive: true });
     yield* fs.writeFileString(path.join(stage, app, "Info.plist"), "built-app");
     yield* fs.writeFileString(path.join(stage, "builder-debug.yml"), "debug");
@@ -2377,7 +2371,7 @@ it.effect.skipIf(!symlinksSupported)("preserves relative links when replacing di
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-dir-artifact-links-" });
     const stage = path.join(root, "stage");
     const output = path.join(root, "output");
-    const app = path.join("mac-arm64", "T3 Code.app", "Contents");
+    const app = path.join("mac-arm64", "RuCode.app", "Contents");
     yield* fs.makeDirectory(path.join(stage, app), { recursive: true });
     yield* fs.writeFileString(path.join(stage, app, "Info.plist"), "built-app");
     yield* fs.symlink("Info.plist", path.join(stage, app, "Current"));

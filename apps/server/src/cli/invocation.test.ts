@@ -57,7 +57,7 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
     }),
   );
 
-  it.effect("keeps the arguments, so root runs setup on the same T3 home", () =>
+  it.effect("keeps the arguments, so root runs setup on the same RuCode home", () =>
     Effect.gen(function* () {
       const args = ["--base-dir", "/srv/t3 home"];
       expect(
@@ -158,10 +158,10 @@ it.layer(NodeServices.layer)("host CLI commands", (it) => {
       yield* fs.writeFileString(shim, "@echo off\r\n");
       const hostCommand = (platform: NodeJS.Platform, env: Record<string, string>) =>
         resolveHostCliCommand("doctor", ["--base-dir", "C:\\Users\\Jane Doe\\.t3"]).pipe(
-          Effect.provideService(HostProcess.ExecutablePath, "C:\\Program Files\\T3 Code\\t3.exe"),
+          Effect.provideService(HostProcess.ExecutablePath, "C:\\Program Files\\RuCode\\t3.exe"),
           Effect.provideService(HostProcess.Arguments, [
-            "C:\\Program Files\\T3 Code\\t3.exe",
-            "C:\\Program Files\\T3 Code\\resources\\app.asar\\apps\\server\\dist\\bin.mjs",
+            "C:\\Program Files\\RuCode\\t3.exe",
+            "C:\\Program Files\\RuCode\\resources\\app.asar\\apps\\server\\dist\\bin.mjs",
           ]),
           Effect.provideService(HostProcess.IsExecutable, false),
           Effect.provideService(HostProcess.Platform, platform),

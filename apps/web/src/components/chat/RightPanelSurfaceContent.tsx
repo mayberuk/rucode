@@ -127,7 +127,7 @@ export function RightPanelSurfaceContent(props: {
         return (
           <PullRequestsUnavailableState
             title="Pull requests unavailable"
-            error="Update this environment's T3 Code server to browse pull requests."
+            error="Update this environment's RuCode server to browse pull requests."
           />
         );
       }
@@ -180,7 +180,7 @@ export function RightPanelSurfaceContent(props: {
         return (
           <PullRequestsUnavailableState
             title="Issues unavailable"
-            error="Update this environment's T3 Code server to browse issues."
+            error="Update this environment's RuCode server to browse issues."
           />
         );
       }
