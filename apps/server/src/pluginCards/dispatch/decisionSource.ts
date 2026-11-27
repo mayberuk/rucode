@@ -70,7 +70,8 @@ export interface DispatchDecisionSource extends PluginCardSource {
   ) => Effect.Effect<void>;
 }
 
-export const decisionCardId = (dir: string, decisionId: string) => `${CARD_KIND}:${dir}#${decisionId}`;
+export const decisionCardId = (dir: string, decisionId: string) =>
+  `${CARD_KIND}:${dir}#${decisionId}`;
 
 const parseKey = (key: string) => {
   const cut = key.lastIndexOf("#");

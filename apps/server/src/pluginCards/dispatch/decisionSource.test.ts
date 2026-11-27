@@ -345,7 +345,9 @@ it.effect("gives a chat only the decisions that map to it, placed when they were
       [[`dispatch.decision:${checkoutB}#theirs`, "terminal-only"]],
     );
 
-    const [live, concurrentLive] = yield* Effect.all([source.live, source.live], { concurrency: 2 });
+    const [live, concurrentLive] = yield* Effect.all([source.live, source.live], {
+      concurrency: 2,
+    });
     assert.deepStrictEqual(live.decisions, [
       {
         cardId: `dispatch.decision:${checkoutA}#mine-open`,
@@ -447,7 +449,10 @@ it.effect("marks a mapped chat with no Claude transcript terminal-only", () =>
       ["terminal-only"],
     );
     const live = yield* source.live;
-    assert.deepStrictEqual(live.decisions.map(({ threadId }) => threadId), [null]);
+    assert.deepStrictEqual(
+      live.decisions.map(({ threadId }) => threadId),
+      [null],
+    );
     assert.deepStrictEqual(live.waitingThreadIds, []);
   }),
 );
@@ -466,17 +471,26 @@ it.effect("shows a synced chat's decision terminal-only while a terminal holds i
     );
 
     assert.deepStrictEqual(yield* answerable, ["yes"]);
-    assert.deepStrictEqual((yield* source.live).decisions.map(({ threadId }) => threadId), [THREAD_A]);
+    assert.deepStrictEqual(
+      (yield* source.live).decisions.map(({ threadId }) => threadId),
+      [THREAD_A],
+    );
     held.set(THREAD_A, "terminal");
     assert.deepStrictEqual(yield* answerable, ["terminal-only"]);
     assert.strictEqual(yield* resolved, "terminal-only");
     const live = yield* source.live;
-    assert.deepStrictEqual(live.decisions.map(({ threadId }) => threadId), [null]);
+    assert.deepStrictEqual(
+      live.decisions.map(({ threadId }) => threadId),
+      [null],
+    );
     assert.deepStrictEqual(live.waitingThreadIds, [THREAD_A]);
     held.delete(THREAD_A);
     assert.deepStrictEqual(yield* answerable, ["yes"]);
     assert.strictEqual(yield* resolved, "yes");
-    assert.deepStrictEqual((yield* source.live).decisions.map(({ threadId }) => threadId), [THREAD_A]);
+    assert.deepStrictEqual(
+      (yield* source.live).decisions.map(({ threadId }) => threadId),
+      [THREAD_A],
+    );
   }),
 );
 
@@ -555,7 +569,10 @@ it.effect.each(["answered", "defaulted", "superseded"] as const)(
       assert.isTrue(watched.has(`${initiativesRoot}/.live`));
 
       const initial = yield* source.live;
-      assert.deepStrictEqual(initial.decisions.map(({ decisionId }) => decisionId), ["mine"]);
+      assert.deepStrictEqual(
+        initial.decisions.map(({ decisionId }) => decisionId),
+        ["mine"],
+      );
       assert.deepStrictEqual(initial.waitingThreadIds, [THREAD_A]);
       const changed = yield* Queue.unbounded<void>();
       yield* Stream.runForEach(source.changes, () => Queue.offer(changed, undefined)).pipe(
@@ -649,7 +666,10 @@ it.effect(
       const live = yield* source.live;
       assert.deepStrictEqual(
         live.decisions.map(({ decisionId, threadId }) => [decisionId, threadId]),
-        [["cli-initiative", null], ["cli-needs", null]],
+        [
+          ["cli-initiative", null],
+          ["cli-needs", null],
+        ],
       );
       assert.deepStrictEqual(live.waitingThreadIds, []);
     }),
@@ -677,7 +697,12 @@ it.effect("uses the mapped owner or the first chat with an owning command", () =
     const live = yield* source.live;
     assert.deepStrictEqual(
       live.decisions.map(({ decisionId, threadId }) => [decisionId, threadId]),
-      [["inspected", null], ["mapped", null], ["raised", THREAD_B], ["shared", null]],
+      [
+        ["inspected", null],
+        ["mapped", null],
+        ["raised", THREAD_B],
+        ["shared", null],
+      ],
     );
     assert.deepStrictEqual(live.waitingThreadIds, [THREAD_A, THREAD_B]);
   }),
