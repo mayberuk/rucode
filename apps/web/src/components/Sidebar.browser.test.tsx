@@ -479,6 +479,7 @@ describe("sidebar initiative groups", () => {
     stack: DisposableStack,
     options: {
       readonly sidebarLayout: ClientSettings["sidebarLayout"];
+      readonly needsYouFirst?: boolean;
       readonly threads?: ReadonlyArray<EnvironmentThreadShell>;
       readonly openDecisionThreadIds?: ReadonlyArray<string>;
       readonly live?: PluginLiveInitiative | null;
@@ -489,6 +490,7 @@ describe("sidebar initiative groups", () => {
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
       sidebarLayout: options.sidebarLayout,
+      sidebarNeedsYouFirst: options.needsYouFirst ?? DEFAULT_CLIENT_SETTINGS.sidebarNeedsYouFirst,
     });
     stack.defer(() => window.localStorage.removeItem("t3code:sidebar:initiative-collapsed"));
     stack.defer(() => useUiStateStore.setState({ projectExpandedById: {} }));
@@ -534,7 +536,8 @@ describe("sidebar initiative groups", () => {
 
   it("names the project, toggles members in place, says what a collapsed group needs and opens the board on its wave", async () => {
     using stack = new DisposableStack();
-    setup(stack, { sidebarLayout: "list", openDecisionThreadIds: ["part"] });
+    // With the section on, the part's open decision would move it out of the group.
+    setup(stack, { sidebarLayout: "list", needsYouFirst: false, openDecisionThreadIds: ["part"] });
     {
       await using first = await render(tree());
       const header = first.getByRole("button", { name: /^acme · Checkout retries/ });
@@ -821,6 +824,203 @@ describe("sidebar initiative groups", () => {
     await deliverLive(liveInitiative());
     await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Wave 2 of 3/));
     expect(waveRow.element().textContent).not.toContain("Open the board");
+  });
+
+  describe("Needs you section", () => {
+    const asking = { hasPendingUserInput: true };
+    const created = (day: number) => ({ createdAt: `2026-01-0${day}T00:00:00.000Z` });
+    // Inbox order is newest first: Newer, Question, Older.
+    const threads = [
+      shell("newer", "Newer chat", created(5)),
+      shell("question", "Question chat", { ...created(4), ...asking }),
+      shell("older", "Older chat", created(3)),
+      shell("orchestrator", "Orchestrator chat", created(2)),
+      shell("part", "Part one chat", created(2)),
+      shell("pinned", "Pinned chat", {
+        ...asking,
+        pinnedAt: "2026-01-01T00:00:00.000Z",
+        pinOrderKey: "a",
+      }),
+    ];
+    const titleOrder = (container: HTMLElement, titles: readonly string[]) =>
+      Array.from(container.querySelectorAll<HTMLElement>("[data-thread-item]"))
+        .map((row) => titles.find((title) => row.textContent?.includes(title)))
+        .filter((title) => title !== undefined);
+    const allTitles = threads.map((thread) => thread.title);
+    const header = (screen: Awaited<ReturnType<typeof render>>) =>
+      screen.getByTestId("sidebar-needs-you-shelf-toggle");
+
+    function setupSection(
+      stack: DisposableStack,
+      options: {
+        readonly sidebarLayout: ClientSettings["sidebarLayout"];
+        readonly needsYouFirst: boolean;
+        readonly routeThreadId?: string;
+        readonly openDecisionThreadIds?: ReadonlyArray<string>;
+      },
+    ) {
+      setup(stack, {
+        sidebarLayout: options.sidebarLayout,
+        needsYouFirst: options.needsYouFirst,
+        threads,
+        openDecisionThreadIds: options.openDecisionThreadIds ?? ["part"],
+      });
+      stack.defer(() => window.localStorage.removeItem("t3code:sidebar:needs-you-expanded"));
+      const routeThreadRef =
+        options.routeThreadId === undefined
+          ? null
+          : { environmentId, threadId: ThreadId.make(options.routeThreadId) };
+      vi.mocked(useThreadRouteTarget).mockReturnValue(
+        routeThreadRef === null ? null : { kind: "server", threadRef: routeThreadRef },
+      );
+      vi.mocked(useHandleNewThread).mockReturnValue({
+        activeDraftThread: null,
+        activeThread: null,
+        defaultProjectRef: { environmentId, projectId: groupedProject.id },
+        defaultProjectFallbackReady: true,
+        handleNewThread: vi.fn().mockResolvedValue(null),
+        routeDraftId: null,
+        routeThreadRef,
+      });
+    }
+
+    it("lists a thread waiting on the user once, under a header below the pins, and out of its initiative", async () => {
+      using stack = new DisposableStack();
+      setupSection(stack, { sidebarLayout: "list", needsYouFirst: true });
+      await using screen = await render(tree());
+      await expect.element(header(screen)).toBeInTheDocument();
+      expect(header(screen).element().textContent).toBe("Needs you2");
+      await expect.element(header(screen)).toHaveAttribute("aria-expanded", "true");
+      // The pinned thread is asking too, but stays pinned; the decision on a part pulls it out of its initiative.
+      expect(titleOrder(screen.container, allTitles)).toEqual([
+        "Pinned chat",
+        "Question chat",
+        "Part one chat",
+        "Orchestrator chat",
+        "Newer chat",
+        "Older chat",
+      ]);
+      const pinnedRow = screen.getByText("Pinned chat", { exact: true }).element();
+      const initiativeHeader = screen
+        .getByRole("button", { name: /^acme · Checkout retries/ })
+        .element();
+      expect(follows(pinnedRow, header(screen).element())).toBe(true);
+      expect(
+        follows(screen.getByText("Part one chat", { exact: true }).element(), initiativeHeader),
+      ).toBe(true);
+    });
+
+    it("takes the thread out of its project folder, and a closed folder still says it needs you", async () => {
+      using stack = new DisposableStack();
+      setupSection(stack, {
+        sidebarLayout: "projects",
+        needsYouFirst: true,
+        routeThreadId: "question",
+        openDecisionThreadIds: [],
+      });
+      await using screen = await render(tree());
+      const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
+      await expect.element(header(screen)).toBeInTheDocument();
+      expect(header(screen).element().textContent).toBe("Needs you1");
+      expect(screen.getByText("Question chat", { exact: true }).all()).toHaveLength(1);
+      const question = screen.getByText("Question chat", { exact: true }).element();
+      expect(follows(header(screen).element(), question)).toBe(true);
+      expect(follows(question, folder.element())).toBe(true);
+
+      folder.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+      // The open thread is drawn in the section, so the closed folder counts it instead of keeping it.
+      await expect.element(folder).toHaveAccessibleName("acme, Needs you");
+      await expect.element(screen.getByText("Newer chat", { exact: true })).not.toBeInTheDocument();
+      expect(screen.getByText("Question chat", { exact: true }).all()).toHaveLength(1);
+    });
+
+    it.each([
+      {
+        layout: "list" as const,
+        order: [
+          "Pinned chat",
+          "Orchestrator chat",
+          "Part one chat",
+          "Newer chat",
+          "Question chat",
+          "Older chat",
+        ],
+      },
+      {
+        layout: "projects" as const,
+        order: [
+          "Pinned chat",
+          "Orchestrator chat",
+          "Part one chat",
+          "Newer chat",
+          "Question chat",
+          "Older chat",
+        ],
+      },
+    ])("draws no section and keeps every thread in place when off: $layout", async (spec) => {
+      using stack = new DisposableStack();
+      setupSection(stack, { sidebarLayout: spec.layout, needsYouFirst: false });
+      await using screen = await render(tree());
+      await expect.element(screen.getByText("Older chat", { exact: true })).toBeInTheDocument();
+      expect(screen.getByTestId("sidebar-needs-you-header").query()).toBeNull();
+      expect(titleOrder(screen.container, allTitles)).toEqual(spec.order);
+    });
+
+    it("returns a thread to its place once it stops needing the user, and drops the empty section", async () => {
+      using stack = new DisposableStack();
+      setupSection(stack, {
+        sidebarLayout: "list",
+        needsYouFirst: true,
+        openDecisionThreadIds: [],
+      });
+      await using screen = await render(tree());
+      await expect.element(header(screen)).toBeInTheDocument();
+      expect(header(screen).element().textContent).toBe("Needs you1");
+
+      vi.mocked(useQuietThreadShells).mockReturnValue(
+        threads.map((thread) =>
+          thread.id === ThreadId.make("question")
+            ? { ...thread, hasPendingUserInput: false }
+            : thread,
+        ),
+      );
+      await screen.rerender(tree());
+      await expect.element(screen.getByTestId("sidebar-needs-you-header")).not.toBeInTheDocument();
+      await vi.waitFor(() =>
+        expect(titleOrder(screen.container, allTitles)).toEqual([
+          "Pinned chat",
+          "Orchestrator chat",
+          "Part one chat",
+          "Newer chat",
+          "Question chat",
+          "Older chat",
+        ]),
+      );
+    });
+
+    it("hides the section's rows when collapsed except the open thread, and remembers it", async () => {
+      using stack = new DisposableStack();
+      setupSection(stack, { sidebarLayout: "list", needsYouFirst: true, routeThreadId: "part" });
+      {
+        await using first = await render(tree());
+        await expect.element(header(first)).toBeInTheDocument();
+        header(first).element().focus();
+        await userEvent.keyboard("{Enter}");
+        await expect.element(header(first)).toHaveAttribute("aria-expanded", "false");
+        expect(header(first).element().textContent).toBe("Needs you2");
+        await expect
+          .element(first.getByText("Question chat", { exact: true }))
+          .not.toBeInTheDocument();
+        expect(first.getByText("Part one chat", { exact: true }).all()).toHaveLength(1);
+        expect(window.localStorage.getItem("t3code:sidebar:needs-you-expanded")).toBe("false");
+      }
+      await using screen = await render(tree());
+      await expect.element(header(screen)).toHaveAttribute("aria-expanded", "false");
+      await expect.element(screen.getByText("Part one chat", { exact: true })).toBeInTheDocument();
+      expect(screen.getByText("Question chat", { exact: true }).query()).toBeNull();
+    });
   });
 });
 

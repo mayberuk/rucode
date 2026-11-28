@@ -6,8 +6,8 @@ need a separate branch and working directory.
 ## Start a thread
 
 On web and desktop, **New thread** opens the project picker when you have more than one
-open project in the default or project-grouped sidebar. Archived projects don't count. **Shift-click** to start in
-the current project, or use a project's own new-thread action. A new thread carries
+open project in either sidebar layout. Archived projects don't count. **Shift-click** to start
+in the current project, or use a project's own new-thread action. A new thread carries
 your model and mode selections, unless the destination project has its own model default.
 Its branch and workspace mode come from your configured defaults. To continue in
 an existing worktree, use **New thread in this worktree** from the branch toolbar.
@@ -133,36 +133,33 @@ open.
 
 ### Fold working threads (beta)
 
+On web and desktop, the Working section is available in the List layout.
 Threads that are working or waiting on work they will resume from move into a collapsed
 **Working** section below the active list.
 That includes subagents, watched pull requests with checks still running, Claude monitors,
 and background commands or other monitors the agent says it is waiting on. A dev server or other process an agent leaves running does not keep a thread
-there. A thread returns to the top of the active list when it finishes, fails, or needs an approval or
+there. A thread leaves **Working** when it finishes, fails, or needs an approval or
 answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
 the pinned section.
 
-This is on by default. Turn it off with **Settings → General → Working section** on web and desktop,
+This is on by default. Turn it off with **Settings → General → Sidebar → Working section** on web and desktop,
 or **Settings → General → Working section** on iOS and Android. Each device keeps its own
 choice.
 
 While this is on, the active list is ordered by when each thread last came back to you, so you
 cannot drag or move threads within it. Your saved order returns when you turn it off.
 
-### Group threads by project
+### Sidebar layout
 
-Active threads sit in a folder for each project. This is the default until you choose a layout.
-The flat list stays available: turn off
-**Settings → Labs → Boring sidebar (group by project)** on web and desktop. Pinned projects come first. A project with no active
-threads has no folder unless it is pinned or you pick it in the project filter. An archived
-project's folder comes last and shows only while it has active threads. Click a folder to open or
-close it. A closed folder says in words what its threads need: **Needs you** when one is waiting
-on you, otherwise how many have failed or are working, and when none of those apply, how long ago
-the latest one was active. Initiatives sit inside their project's folder. Sessions a thread
-started nest under it behind a count button; the button shows an icon when one of them needs you,
-has failed or is working, and its tooltip names the state. Use the pen button on a folder, or right-click it, to start a thread in
-that project. Pinned threads stay above the folders, and Snoozed and Settled stay below them. In
-this mode you can drag a thread onto the composer to mention it, but not within the sidebar, and
-the Working section is off. Each device keeps its own choice.
+On web and desktop, choose **List** or **Projects** in **Settings → General → Sidebar → Layout**.
+**List** shows threads in a flat list. **Projects** is the default and groups threads into project
+folders. In **Projects**, turn on **Two-line rows** to see the branch, pull request, and agent below
+the thread title.
+
+**“Needs you” first** is on by default. It puts threads waiting on you in a section at the top,
+below pinned threads. While a thread is in that section, it appears only there.
+
+Initiatives appear as folders in both layouts. Select a folder’s wave text to open the Board.
 
 ## Settle finished work
 

@@ -187,6 +187,9 @@ import {
   groupSidebarFolders,
   nestSpawnedThreads,
   partitionInitiativeThreads,
+  isSidebarThreadNeedingYou,
+  selectNeedsYouThreads,
+  sidebarMarkerId,
   spawnedChildrenOf,
   visibleSpawnedChildren,
   withoutSpawnedThreads,
@@ -359,6 +362,7 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
 const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
+const NEEDS_YOU_EXPANDED_KEY = "t3code:sidebar:needs-you-expanded";
 const INITIATIVE_COLLAPSED_KEY = "t3code:sidebar:initiative-collapsed";
 const InitiativeCollapsedSchema = Schema.Record(Schema.String, Schema.Literal(true));
 const NO_COLLAPSED_INITIATIVES: Readonly<Record<string, true>> = {};
@@ -417,7 +421,9 @@ type SidebarRenderItem =
       readonly groupKey: string;
     }
   | { readonly kind: "initiative-end"; readonly groupKey: string }
-  | { readonly kind: "spawned-child"; readonly key: string };
+  | { readonly kind: "spawned-child"; readonly key: string }
+  | { readonly kind: "needs-you-header" }
+  | { readonly kind: "needs-you-row"; readonly key: string; readonly section: SidebarSection };
 
 function sidebarRenderItemId(item: SidebarRenderItem): string {
   switch (item.kind) {
@@ -428,7 +434,10 @@ function sidebarRenderItemId(item: SidebarRenderItem): string {
     case "initiative-end":
       return initiativeGroupEndId(item.groupKey);
     case "initiative-row":
+    case "needs-you-row":
       return item.key;
+    case "needs-you-header":
+      return sidebarMarkerId("needs-you-header");
     default:
       return sidebarListItemId(item);
   }
@@ -437,6 +446,14 @@ function sidebarRenderItemId(item: SidebarRenderItem): string {
 function isDragListItem(item: SidebarRenderItem): item is SidebarListItem {
   return item.kind === "thread" || item.kind === "marker";
 }
+
+const NO_NEEDS_YOU: {
+  readonly threads: readonly EnvironmentThreadShell[];
+  readonly keys: ReadonlySet<string>;
+} = {
+  threads: [],
+  keys: new Set(),
+};
 
 const NO_DRAGGED_ORDER: readonly string[] = [];
 const NO_DRAGGED_ORDERS: {
@@ -540,6 +557,12 @@ function useSidebarThreads(input: {
     false,
     Schema.Boolean,
   );
+  const needsYouFirst = useClientSettings((s) => s.sidebarNeedsYouFirst);
+  const [needsYouExpanded, setNeedsYouExpanded] = useLocalStorage(
+    NEEDS_YOU_EXPANDED_KEY,
+    true,
+    Schema.Boolean,
+  );
   const liveInitiativeGroups = useInitiativeSidebarGroups(connectedEnvironmentIds);
   const openDecisionThreadKeys = useOpenDecisionThreadKeys(connectedEnvironmentIds);
   const [collapsedInitiatives, setCollapsedInitiatives] = useLocalStorage(
@@ -581,30 +604,50 @@ function useSidebarThreads(input: {
   // An open spawned child shows under its anchor, so collapsed lists keep the anchor's row.
   const routeAnchorKey =
     routeRowThreadKey === null ? null : spawnedNesting.anchorKeyOf(routeRowThreadKey);
+  const sections = {
+    pinned: partition.pinnedThreads,
+    active: partition.activeThreads,
+    working: partition.workingThreads,
+    snoozed: partition.snoozedThreads,
+    settled: partition.settledThreads,
+  };
+  const decisionKeys = new Set(openDecisionThreadKeys);
+  const needsYou = needsYouFirst
+    ? selectNeedsYouThreads(sections, (thread) => isSidebarThreadNeedingYou(thread, decisionKeys))
+    : NO_NEEDS_YOU;
+  const notNeedingYou = (list: readonly EnvironmentThreadShell[]) =>
+    needsYou.keys.size === 0
+      ? list
+      : list.filter((thread) => !needsYou.keys.has(threadShellKey(thread)));
+  // The section draws the open thread, so the lists below treat it as hidden and count it.
+  const listRouteAnchorKey =
+    routeAnchorKey !== null && needsYou.keys.has(routeAnchorKey) ? null : routeAnchorKey;
+  const needsYouThreads = needsYouExpanded
+    ? needsYou.threads
+    : routeThreadOnly(needsYou.threads, routeAnchorKey);
 
-  const initiatives = partitionInitiativeThreads(
-    {
-      pinned: partition.pinnedThreads,
-      active: partition.activeThreads,
-      working: partition.workingThreads,
-      snoozed: partition.snoozedThreads,
-      settled: partition.settledThreads,
-    },
-    liveInitiativeGroups,
-    { routeThreadKey: routeAnchorKey, collapsedKeys: collapsedInitiatives },
-  );
+  const initiatives = partitionInitiativeThreads(sections, liveInitiativeGroups, {
+    routeThreadKey: listRouteAnchorKey,
+    collapsedKeys: collapsedInitiatives,
+  });
   const {
     pinned: pinnedThreads,
-    active: activeThreads,
-    working: workingThreads,
+    active: placedActiveThreads,
+    working: allWorkingThreads,
     snoozed: snoozedThreads,
-    settled: settledThreads,
+    settled: allSettledThreads,
   } = initiatives.remaining;
-  const decisionKeys = new Set(openDecisionThreadKeys);
+  const activeThreads = notNeedingYou(placedActiveThreads);
+  const workingThreads = notNeedingYou(allWorkingThreads);
+  const settledThreads = notNeedingYou(allSettledThreads);
   const initiativeGroups = initiatives.groups.map((entry) => {
     const collapsed = collapsedInitiatives[entry.group.key] === true;
     return {
       ...entry,
+      threads:
+        needsYou.keys.size === 0
+          ? entry.threads
+          : entry.threads.filter(({ thread }) => !needsYou.keys.has(threadShellKey(thread))),
       collapsed,
       status: collapsed
         ? resolveSidebarGroupStatus(
@@ -659,7 +702,7 @@ function useSidebarThreads(input: {
       ? null
       : groupSidebarFolders({
           groups: folderGroups,
-          threads: activeThreads,
+          threads: placedActiveThreads,
           initiatives: initiativeGroups,
           keepEmpty,
         });
@@ -680,7 +723,7 @@ function useSidebarThreads(input: {
               collapsed,
               initiatives: folder.initiatives,
               routeMember: null,
-              threads: folder.threads,
+              threads: notNeedingYou(folder.threads),
               status: null,
               idleThread: null,
             };
@@ -694,7 +737,7 @@ function useSidebarThreads(input: {
           const hiddenMembers: EnvironmentThreadShell[] = [];
           for (const entry of folder.initiatives) {
             for (const { thread, section } of entry.members) {
-              if (threadShellKey(thread) === routeAnchorKey) {
+              if (threadShellKey(thread) === listRouteAnchorKey) {
                 routeMember = { groupKey: entry.group.key, thread, section };
               } else {
                 hiddenMembers.push(thread);
@@ -703,12 +746,12 @@ function useSidebarThreads(input: {
           }
           // Own threads first: they are ordered by latest activity, so the first is the freshest.
           const hiddenThreads = [
-            ...folder.threads.filter((thread) => threadShellKey(thread) !== routeAnchorKey),
+            ...folder.threads.filter((thread) => threadShellKey(thread) !== listRouteAnchorKey),
             ...hiddenMembers,
           ];
           const routeAnchor =
             routeMember?.thread ??
-            folder.threads.find((thread) => threadShellKey(thread) === routeAnchorKey);
+            folder.threads.find((thread) => threadShellKey(thread) === listRouteAnchorKey);
           // Nested sessions sit in no list, but a closed folder still owes their state.
           const nestedChildren = spawnedChildrenOf(
             routeAnchor === undefined ? hiddenThreads : [...hiddenThreads, routeAnchor],
@@ -719,7 +762,7 @@ function useSidebarThreads(input: {
             collapsed,
             initiatives: [],
             routeMember,
-            threads: routeThreadOnly(folder.threads, routeAnchorKey),
+            threads: routeThreadOnly(folder.threads, listRouteAnchorKey),
             status: resolveSidebarGroupStatus([...hiddenThreads, ...nestedChildren], decisionKeys),
             idleThread: hiddenThreads[0] ?? null,
           };
@@ -748,6 +791,7 @@ function useSidebarThreads(input: {
         ]);
   const orderedThreads = withSpawnedChildren([
     ...pinnedThreads,
+    ...needsYouThreads,
     ...flatInitiativeGroups.flatMap((entry) => entry.threads.map(({ thread }) => thread)),
     ...(projectFolders === null
       ? activeThreads
@@ -792,6 +836,11 @@ function useSidebarThreads(input: {
     toggleSnoozedShelf: () => setSnoozedShelfExpanded((value) => !value),
     workingShelfExpanded,
     toggleWorkingShelf: () => setWorkingShelfExpanded((value) => !value),
+    needsYouCount: needsYou.threads.length,
+    needsYouThreads,
+    needsYouKeys: needsYou.keys,
+    needsYouExpanded,
+    toggleNeedsYou: () => setNeedsYouExpanded((value) => !value),
     projectFolders,
     initiativeGroups,
     flatInitiativeGroups,
@@ -1561,6 +1610,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     toggleSnoozedShelf,
     workingShelfExpanded,
     toggleWorkingShelf,
+    needsYouCount,
+    needsYouThreads,
+    needsYouKeys,
+    needsYouExpanded,
+    toggleNeedsYou,
     projectFolders,
     initiativeGroups,
     flatInitiativeGroups,
@@ -2211,6 +2265,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (
       !hasProjectFolders &&
       pinnedThreads.length +
+        needsYouCount +
         initiativeThreadCount +
         activeThreads.length +
         workingThreads.length +
@@ -2237,6 +2292,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       );
       items.push({ kind: "initiative-end", groupKey: entry.group.key });
     };
+    if (needsYouCount > 0) {
+      items.push({ kind: "needs-you-header" });
+      items.push(
+        ...withSpawned(
+          needsYouThreads.map((thread) => {
+            const key = threadShellKey(thread);
+            return {
+              kind: "needs-you-row" as const,
+              key,
+              section: sectionByThreadKey.get(key) ?? "active",
+            };
+          }),
+        ),
+      );
+    }
     // Before the divider, so a drag's "Active" boundary still sits right above the inbox.
     for (const entry of flatInitiativeGroups) pushInitiative(entry);
     items.push({ kind: "marker", marker: "pinned-divider" });
@@ -2276,7 +2346,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // Preserve the list while streamed updates leave order unchanged to retain row memoization.
   const sidebarListItemsKey = sidebarListItemsFresh
     .map((item) =>
-      item.kind === "thread" || item.kind === "initiative-row"
+      item.kind === "thread" || item.kind === "initiative-row" || item.kind === "needs-you-row"
         ? item.section + ":" + item.key
         : item.kind === "marker"
           ? item.marker
@@ -3608,6 +3678,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           !hasProjectFolders &&
           visibleDraftSessionCount === 0 &&
           pinnedThreads.length +
+            needsYouCount +
             initiativeThreadCount +
             activeThreads.length +
             workingThreads.length +
@@ -3710,6 +3781,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             contextDrag={isContextDrag}
                             sortableDisabled={
                               initiativeKey !== undefined ||
+                              needsYouKeys.has(threadKey) ||
                               renamingThreadKey === threadKey ||
                               !draggableThreadKeys.has(threadKey) ||
                               optimisticDrop !== null
@@ -3933,6 +4005,30 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           item.kind === "initiative-row" ||
                           item.kind === "spawned-child"
                         ) {
+                          continue;
+                        }
+                        if (item.kind === "needs-you-header") {
+                          items.push(
+                            <SidebarSectionHeader
+                              key="needs-you-header"
+                              marker="needs-you-header"
+                              label={gt("Needs you")}
+                              count={needsYouCount}
+                              toggle={{ expanded: needsYouExpanded, onToggle: toggleNeedsYou }}
+                            />,
+                          );
+                          continue;
+                        }
+                        if (item.kind === "needs-you-row") {
+                          items.push(
+                            ...renderThreadRowWithChildren(
+                              threadByKey.get(item.key)!,
+                              item.section,
+                              undefined,
+                              undefined,
+                              "shelf:needs-you",
+                            ),
+                          );
                           continue;
                         }
                         if (item.kind === "thread") {

@@ -8,9 +8,13 @@ import { openCommandPalette } from "../commandPaletteBus";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { LAST_USED_PROJECT_STORAGE_KEY } from "../hooks/useHandleNewThread";
 import { removeLocalStorageItem } from "../hooks/useLocalStorage";
+import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
+import { ensureLocalApi } from "../localApi";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Project, Thread } from "../types";
 import { CommandPalette } from "./CommandPalette";
+import Sidebar from "./Sidebar";
+import { SidebarProvider } from "./ui/sidebar";
 
 const entities = vi.hoisted(() => ({
   projects: [] as ReadonlyArray<Project>,
@@ -45,6 +49,7 @@ vi.mock("../hooks/useHandleNewThread", async (original) => {
 vi.mock("../state/entities", async (original) => ({
   ...(await original<typeof import("../state/entities")>()),
   useProjects: () => entities.projects,
+  useQuietThreadShells: () => entities.threads,
   useVisibleThreadShells: () => entities.threads,
   useDelegatedUnderParent: () => entities.delegatedUnderParent,
 }));
@@ -178,6 +183,82 @@ describe("CommandPalette open intents", () => {
     const input = page.getByPlaceholder("Search commands, projects, and threads...");
     await expect.element(input).toHaveFocus();
     await expect.element(input).toHaveValue("acme");
+  });
+
+  it("switches sidebar layouts and reverses the Needs you first action", async () => {
+    const project = makeProject("acme-app");
+    const thread = makeThreadFixture({
+      environmentId: project.environmentId,
+      projectId: project.id,
+      title: "Checkout retries",
+    });
+    setup({ projects: [project], threads: [thread] });
+    using settings = new DisposableStack();
+    const previousSettings = getClientSettings();
+    settings.defer(() => __setClientSettingsForTests(previousSettings));
+    __setClientSettingsForTests({
+      ...previousSettings,
+      sidebarLayout: "projects",
+      sidebarNeedsYouFirst: true,
+    });
+    await using screen = await render(
+      <CommandPalette>
+        <SidebarProvider>
+          <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+        </SidebarProvider>
+      </CommandPalette>,
+    );
+    using _persist = vi
+      .spyOn(ensureLocalApi().persistence, "setClientSettings")
+      .mockResolvedValue();
+
+    const projectFolder = screen.getByTestId("sidebar-project-folder");
+    const list = page.getByRole("option", { name: /^Sidebar layout: List/ });
+    const projects = page.getByRole("option", { name: /^Sidebar layout: Projects/ });
+    const hide = page.getByRole("option", { name: 'Hide "Needs you" first', exact: true });
+    const show = page.getByRole("option", { name: 'Show "Needs you" first', exact: true });
+    await expect.element(projectFolder.getByText("acme-app", { exact: true })).toBeVisible();
+    openCommandPalette({ query: "sidebar" });
+    await expect.element(list).toBeVisible();
+    await expect.element(list.getByText("Current")).not.toBeInTheDocument();
+    await expect.element(projects.getByText("Current")).toBeVisible();
+    await expect.element(hide).toBeVisible();
+    await expect.element(show).not.toBeInTheDocument();
+
+    await list.click();
+    expect(getClientSettings()).toMatchObject({
+      sidebarLayout: "list",
+      sidebarNeedsYouFirst: true,
+    });
+    await expect.element(projectFolder).not.toBeInTheDocument();
+    await expect.element(screen.getByText("Checkout retries", { exact: true })).toBeVisible();
+
+    openCommandPalette({ query: "sidebar" });
+    await expect.element(list.getByText("Current")).toBeVisible();
+    await expect.element(projects.getByText("Current")).not.toBeInTheDocument();
+    await hide.click();
+    expect(getClientSettings()).toMatchObject({
+      sidebarLayout: "list",
+      sidebarNeedsYouFirst: false,
+    });
+
+    openCommandPalette({ query: "sidebar" });
+    await expect.element(hide).not.toBeInTheDocument();
+    await show.click();
+    expect(getClientSettings()).toMatchObject({
+      sidebarLayout: "list",
+      sidebarNeedsYouFirst: true,
+    });
+
+    openCommandPalette({ query: "sidebar" });
+    await expect.element(hide).toBeVisible();
+    await expect.element(show).not.toBeInTheDocument();
+    await projects.click();
+    expect(getClientSettings()).toMatchObject({
+      sidebarLayout: "projects",
+      sidebarNeedsYouFirst: true,
+    });
+    await expect.element(projectFolder.getByText("acme-app", { exact: true })).toBeVisible();
   });
 
   it("opens a searched project's latest listed thread, not a newer subagent, delegated task, or parked thread", async () => {
