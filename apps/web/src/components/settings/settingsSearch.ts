@@ -466,18 +466,24 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
-    id: "boring-sidebar",
-    title: "Boring sidebar (group by project)",
-    to: "/settings/labs",
-    searchTerms: ["beta folders project tree classic sidebar"],
+    id: "sidebar-layout",
+    title: msg("Sidebar layout"),
+    to: "/settings/general",
+    searchTerms: ["list projects folders group tree flat sidebar threads"],
   },
   {
-    id: "boring-sidebar-multiline",
-    title: "Two-line folder rows",
-    to: "/settings/labs",
-    // Shown inside the boring sidebar row only while it is on, so search lands on the parent.
-    targetId: "boring-sidebar",
-    searchTerms: ["beta boring sidebar folder rows multiline branch pull request details"],
+    id: "sidebar-two-line-rows",
+    title: msg("Two-line rows"),
+    to: "/settings/general",
+    // Shown only while the layout is Projects, so search lands on the layout row.
+    targetId: "sidebar-layout",
+    searchTerms: ["folder rows multiline branch pull request agent details sidebar"],
+  },
+  {
+    id: "needs-you-first",
+    title: msg("“Needs you” first"),
+    to: "/settings/general",
+    searchTerms: ["waiting approval answer input section top sidebar attention"],
   },
   {
     id: "tool-call-visibility",

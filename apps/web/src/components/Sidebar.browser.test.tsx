@@ -4,6 +4,7 @@ import * as shelfHooks from "../state/olderSettledShelf";
 import { createWorkspaceFocusController, workspaceAreaProps } from "../lib/workspaceFocus";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
+  type ClientSettings,
   DEFAULT_CLIENT_SETTINGS,
   EnvironmentId,
   type LocalApi,
@@ -102,7 +103,7 @@ describe("sidebar header new thread", () => {
     stack.defer(() => __setClientSettingsForTests(previousSettings));
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
-      boringSidebarEnabled: scenario.mode === "boring",
+      sidebarLayout: scenario.mode === "boring" ? "projects" : "list",
     });
     const projects = [project("active"), project("idle")].slice(0, scenario.count);
     const currentProjectRef = {
@@ -412,7 +413,7 @@ describe("sidebar settled pagination", () => {
 
 describe("sidebar initiative groups", () => {
   const environmentId = EnvironmentId.make("local");
-  const groupedProject = project("acme");
+  const groupedProject = { ...project("acme"), title: "acme/app" };
   const shell = (id: string, title: string, overrides: Partial<EnvironmentThreadShell> = {}) =>
     makeThreadFixture({
       environmentId,
@@ -441,10 +442,10 @@ describe("sidebar initiative groups", () => {
     }),
   ];
   const group = {
-    key: `${environmentId}:checkout-retries`,
+    key: `${environmentId}:billing-revamp`,
     environmentId,
-    slug: "checkout-retries",
-    label: "Checkout retries",
+    slug: "billing-revamp",
+    label: "Billing revamp",
     threadIds: [ThreadId.make("orchestrator"), ThreadId.make("part"), ThreadId.make("pinned")],
     endLabel: "Wave 2 of 3 · 1 of 2 parts settled",
   };
@@ -473,11 +474,22 @@ describe("sidebar initiative groups", () => {
   );
   const follows = (earlier: Element, later: Element) =>
     (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  const inDocumentOrder = (elements: ReadonlyArray<Element>) =>
+    elements.every((element, index) => index === 0 || follows(elements[index - 1]!, element));
+  const folderToggle = (screen: Awaited<ReturnType<typeof render>>) =>
+    screen.getByRole("button", { name: /^Billing revamp/ });
+  const boardLink = (screen: Awaited<ReturnType<typeof render>>) =>
+    screen.getByTestId("sidebar-initiative-board-link");
+  const expectBoardOpened = async (screen: Awaited<ReturnType<typeof render>>) => {
+    await vi.waitFor(() => expect(screen.router!.state.location.pathname).toBe("/board"));
+    expect(screen.router!.state.location.search).toEqual({ environmentId, slug: "billing-revamp" });
+  };
 
   function setup(
     stack: DisposableStack,
     options: {
-      readonly boringSidebarEnabled: boolean;
+      readonly sidebarLayout: ClientSettings["sidebarLayout"];
+      readonly needsYouFirst?: boolean;
       readonly threads?: ReadonlyArray<EnvironmentThreadShell>;
       readonly openDecisionThreadIds?: ReadonlyArray<string>;
       readonly live?: PluginLiveInitiative | null;
@@ -487,7 +499,8 @@ describe("sidebar initiative groups", () => {
     stack.defer(() => __setClientSettingsForTests(previousSettings));
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
-      boringSidebarEnabled: options.boringSidebarEnabled,
+      sidebarLayout: options.sidebarLayout,
+      sidebarNeedsYouFirst: options.needsYouFirst ?? DEFAULT_CLIENT_SETTINGS.sidebarNeedsYouFirst,
     });
     stack.defer(() => window.localStorage.removeItem("t3code:sidebar:initiative-collapsed"));
     stack.defer(() => useUiStateStore.setState({ projectExpandedById: {} }));
@@ -531,123 +544,95 @@ describe("sidebar initiative groups", () => {
     };
   }
 
-  it("names the project, toggles members in place, says what a collapsed group needs and opens the board on its wave", async () => {
+  const noWaves = liveInitiative({
+    wave: { current: 0, total: 0, partsSettled: 0, partsTotal: 0 },
+    parts: [],
+  });
+  const onDay = (day: number) => ({ createdAt: `2026-01-0${day}T00:00:00.000Z` });
+  const rowKind = (element: Element) =>
+    element.closest("[data-testid^='sidebar-row-']")?.getAttribute("data-testid");
+
+  it("draws a List initiative as one folder row at its freshest member's place, opening in place to two-line rows", async () => {
     using stack = new DisposableStack();
-    setup(stack, { boringSidebarEnabled: false, openDecisionThreadIds: ["part"] });
+    setup(stack, {
+      sidebarLayout: "list",
+      needsYouFirst: false,
+      threads: [
+        shell("newer", "Newer chat", onDay(5)),
+        shell("part", "Part one chat", onDay(4)),
+        shell("older", "Older chat", onDay(3)),
+        shell("orchestrator", "Orchestrator chat", onDay(2)),
+        shell("pinned", "Pinned chat", {
+          pinnedAt: "2026-01-01T00:00:00.000Z",
+          pinOrderKey: "a",
+        }),
+      ],
+    });
     {
       await using first = await render(tree());
-      const header = first.getByRole("button", { name: /^acme · Checkout retries/ });
+      const toggle = folderToggle(first);
       const row = (title: string) => first.getByText(title, { exact: true }).first();
-      await expect.element(header).toHaveAttribute("aria-expanded", "true");
-      // Favicon, project, separator, label, then the count of grouped chats; the pinned one stays out.
-      // The favicon falls back to initials, so match from the project name on.
-      expect(header.element().textContent).toMatch(/acme·Checkout retries2$/);
-      await expect.element(row("Orchestrator chat")).toBeInTheDocument();
-      await expect.element(row("Part one chat")).toBeInTheDocument();
-      const wave = first.getByTestId("sidebar-initiative-wave");
-      expect(first.getByText(/Show \d+ more/).query()).toBeNull();
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect.element(toggle).toHaveAccessibleName("Billing revamp");
+      expect(first.getByTestId("sidebar-initiative-folder").all()).toHaveLength(1);
+      // The part is fresher than Older chat, so the folder stands where the part would have.
       expect(
-        [
-          row("Pinned chat"),
-          header,
-          row("Orchestrator chat"),
-          row("Part one chat"),
-          wave,
-          row("Inbox chat"),
-        ]
-          .map((locator) => locator.element())
-          .every((element, index, all) => index === 0 || follows(all[index - 1]!, element)),
+        inDocumentOrder(
+          [
+            row("Pinned chat"),
+            row("Newer chat"),
+            toggle,
+            row("Orchestrator chat"),
+            row("Part one chat"),
+            row("Older chat"),
+          ].map((locator) => locator.element()),
+        ),
       ).toBe(true);
+      await vi.waitFor(() => expect(boardLink(first).element().textContent).toBe("Wave 2 of 3"));
+      expect(rowKind(row("Orchestrator chat").element())).toBe("sidebar-row-card");
+      expect(rowKind(row("Part one chat").element())).toBe("sidebar-row-card");
+      expect(first.getByTestId("sidebar-initiative-wave").query()).toBeNull();
 
       // The shift guard drops pointer presses on rows that just appeared; keys pass.
-      header.element().focus();
+      toggle.element().focus();
       await userEvent.keyboard("{Enter}");
-      await expect.element(header).toHaveAttribute("aria-expanded", "false");
-      expect(first.router!.state.location.pathname).toBe("/");
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
       await expect
         .element(first.getByText("Orchestrator chat", { exact: true }))
         .not.toBeInTheDocument();
       await expect
         .element(first.getByText("Part one chat", { exact: true }))
         .not.toBeInTheDocument();
-      await expect.element(wave).toBeInTheDocument();
-      // The hidden part chat has an open decision, so the header says so in words.
-      expect(header.element().textContent).toMatch(/acme·Checkout retriesNeeds you$/);
-      await expect
-        .element(first.getByRole("button", { name: "acme · Checkout retries, Needs you" }))
-        .toBeInTheDocument();
+      expect(boardLink(first).element().textContent).toBe("Wave 2 of 3");
       expect(
         JSON.parse(window.localStorage.getItem("t3code:sidebar:initiative-collapsed")!),
-      ).toEqual({
-        [group.key]: true,
-      });
+      ).toEqual({ [group.key]: true });
     }
     await using screen = await render(tree());
-    const reloaded = screen.getByRole("button", { name: /^acme · Checkout retries/ });
+    const reloaded = folderToggle(screen);
     await expect.element(reloaded).toHaveAttribute("aria-expanded", "false");
     reloaded.element().focus();
     await userEvent.keyboard("{Enter}");
     await expect.element(reloaded).toHaveAttribute("aria-expanded", "true");
-    expect(reloaded.element().textContent).toMatch(/acme·Checkout retries2$/);
-    const part = screen.getByText("Part one chat", { exact: true }).first();
-    await expect.element(part).toBeInTheDocument();
-    expect(screen.router!.state.location.pathname).toBe("/");
-
-    part.element().closest<HTMLElement>("[data-sidebar-row]")!.focus();
-    await userEvent.keyboard("{ArrowDown}");
-    const waveRow = screen.getByTestId("sidebar-initiative-wave");
-    await expect.element(waveRow).toHaveFocus();
-    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Wave 2 of 3/));
-    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/1 of 2 merged/));
     await expect
-      .element(waveRow)
-      .toHaveAccessibleName("Wave 2 of 3: 1 of 2 parts merged. Open the board");
-
-    await userEvent.keyboard("{Enter}");
-    await vi.waitFor(() => expect(screen.router!.state.location.pathname).toBe("/board"));
-    expect(screen.router!.state.location.search).toEqual({ environmentId, slug: group.slug });
+      .element(screen.getByText("Part one chat", { exact: true }).first())
+      .toBeInTheDocument();
+    expect(screen.router!.state.location.pathname).toBe("/");
   });
 
-  const longLabel = "Checkout retries and every follow-up migration we planned for the quarter";
+  const longLabel = "Billing revamp and every follow-up migration we planned for the quarter";
   it.each([
-    {
-      name: "a project and label that fit",
-      project: "acme",
-      label: "Checkout retries",
-      labelTruncated: false,
-      projectTruncated: false,
-    },
-    {
-      name: "a label that fits only when the project gives way",
-      project: "acme-app",
-      label: "Checkout retries",
-      labelTruncated: false,
-      projectTruncated: true,
-    },
-    {
-      name: "a label too long for the row",
-      project: "acme-app",
-      label: longLabel,
-      labelTruncated: true,
-      projectTruncated: true,
-    },
-    {
-      name: "a long project and a long label",
-      project: "acme-application-monorepo-with-a-very-long-name",
-      label: longLabel,
-      labelTruncated: true,
-      projectTruncated: true,
-    },
+    { name: "a label that fits", label: "Billing revamp", truncated: false },
+    { name: "a label too long for the row", label: longLabel, truncated: true },
   ])(
-    "lets the flat header's label use the free width and keeps the count inside: $name",
-    async ({ project: projectName, label, labelTruncated, projectTruncated }) => {
+    "keeps the List folder's wave text between the label and the chevron with $name",
+    async ({ label, truncated }) => {
       using stack = new DisposableStack();
       const style = document.createElement("style");
       style.textContent = appCss;
       document.head.append(style);
       stack.defer(() => style.remove());
-      setup(stack, { boringSidebarEnabled: false });
-      vi.mocked(useProjects).mockReturnValue([{ ...groupedProject, title: projectName }]);
+      setup(stack, { sidebarLayout: "list" });
       stack.use(
         vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([{ ...group, label }]),
       );
@@ -658,32 +643,26 @@ describe("sidebar initiative groups", () => {
           </div>
         </SidebarProvider>,
       );
-      const header = screen.getByRole("button", { name: new RegExp(`^${projectName} · `) });
-      await expect.element(header).toBeInTheDocument();
-      const button = header.element();
-      const spans = Array.from(button.querySelectorAll("span"));
-      const labelText = spans.find((span) => span.textContent === label)!;
-      const projectText = spans.find((span) => span.textContent === projectName)!;
-      const count = spans.find((span) => span.textContent === "2")!;
-
-      expect(count.getBoundingClientRect().right).toBeLessThanOrEqual(
-        button.getBoundingClientRect().right,
-      );
-      const gapToCount =
-        count.getBoundingClientRect().left - labelText.getBoundingClientRect().right;
-      expect(gapToCount).toBeGreaterThanOrEqual(0);
-      // Out of room, the label ends one gap, the hidden rule's minimum width and one gap before the count.
-      if (labelTruncated || projectTruncated) expect(gapToCount).toBeLessThanOrEqual(26);
-      expect(labelText.scrollWidth > labelText.clientWidth).toBe(labelTruncated);
-      expect(projectText.scrollWidth > projectText.clientWidth).toBe(projectTruncated);
-      expect(projectText.clientWidth).toBeGreaterThan(0);
+      const toggle = screen.getByRole("button", { name: label, exact: true });
+      await expect.element(toggle).toBeInTheDocument();
+      const link = boardLink(screen).element();
+      await vi.waitFor(() => expect(link.textContent).toBe("Wave 2 of 3"));
+      const labelText = Array.from(toggle.element().querySelectorAll("span")).find(
+        (span) => span.textContent === label,
+      )!;
+      const chevron = toggle.element().querySelector("svg.lucide-chevron-down")!;
+      const linkBox = link.getBoundingClientRect();
+      expect(linkBox.left).toBeGreaterThanOrEqual(labelText.getBoundingClientRect().right);
+      expect(linkBox.right).toBeLessThanOrEqual(chevron.getBoundingClientRect().left);
+      expect(labelText.scrollWidth > labelText.clientWidth).toBe(truncated);
+      expect(labelText.clientWidth).toBeGreaterThan(0);
     },
   );
 
-  it("counts a spawned session of a hidden member in the collapsed initiative's status", async () => {
+  it("says in words what a closed initiative folder's hidden members and their sessions need", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: false,
+      sidebarLayout: "projects",
       threads: [
         ...baseThreads,
         shell("part-child", "Part session", {
@@ -697,19 +676,20 @@ describe("sidebar initiative groups", () => {
       ],
     });
     await using screen = await render(tree());
-    const header = screen.getByRole("button", { name: /^acme · Checkout retries/ });
-    header.element().focus();
+    const toggle = folderToggle(screen);
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle.element().textContent).toBe("Billing revamp");
+    toggle.element().focus();
     await userEvent.keyboard("{Enter}");
-    await expect.element(header).toHaveAttribute("aria-expanded", "false");
-    await expect
-      .element(screen.getByRole("button", { name: "acme · Checkout retries, 1 failed" }))
-      .toBeInTheDocument();
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect.element(toggle).toHaveAccessibleName("Billing revamp, 1 failed");
+    expect(toggle.element().textContent).toBe("Billing revamp1 failed");
   });
 
-  it("puts an initiative inside its project folder, before the folder's own threads, and counts its members in the closed folder", async () => {
+  it("puts the initiative folder inside its project folder, before the folder's own threads, with its wave line under it", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: true,
+      sidebarLayout: "projects",
       threads: [
         shell("inbox", "Inbox chat"),
         shell("busy", "Busy chat", running),
@@ -719,54 +699,63 @@ describe("sidebar initiative groups", () => {
     });
     await using screen = await render(tree());
     const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
-    const header = screen.getByRole("button", { name: /^acme · Checkout retries/ });
-    await expect.element(header).toBeInTheDocument();
-    // Inside its folder the header names only the initiative.
-    expect(header.element().textContent).toBe("Checkout retries2");
+    const toggle = folderToggle(screen);
+    await expect.element(toggle).toBeInTheDocument();
+    // An open folder names only the initiative: no member count.
+    expect(toggle.element().textContent).toBe("Billing revamp");
+    await vi.waitFor(() =>
+      expect(boardLink(screen).element().textContent).toBe("Wave 2 of 3 · 1 of 2 merged"),
+    );
+    await expect
+      .element(boardLink(screen))
+      .toHaveAccessibleName("Wave 2 of 3: 1 of 2 parts merged. Open the board");
     const row = (title: string) => screen.getByText(title, { exact: true }).first();
     expect(
-      [
-        folder,
-        header,
-        row("Orchestrator chat"),
-        row("Part one chat"),
-        screen.getByTestId("sidebar-initiative-wave"),
-        row("Inbox chat"),
-      ]
-        .map((locator) => locator.element())
-        .every((element, index, all) => index === 0 || follows(all[index - 1]!, element)),
+      inDocumentOrder(
+        [
+          folder,
+          toggle,
+          boardLink(screen),
+          row("Orchestrator chat"),
+          row("Part one chat"),
+          row("Inbox chat"),
+        ].map((locator) => locator.element()),
+      ),
     ).toBe(true);
+    expect(rowKind(row("Part one chat").element())).toBe("sidebar-row-folder");
+    expect(screen.getByTestId("sidebar-initiative-wave").query()).toBeNull();
 
     // Arrow keys walk folder -> initiative -> its members, and back up one level at a time.
     folder.element().focus();
     await userEvent.keyboard("{ArrowRight}");
-    await expect.element(header).toHaveFocus();
+    await expect.element(toggle).toHaveFocus();
     await userEvent.keyboard("{ArrowRight}");
     await expect.element(screen.getByRole("button", { name: /^Orchestrator chat/ })).toHaveFocus();
     await userEvent.keyboard("{ArrowLeft}");
-    await expect.element(header).toHaveFocus();
+    await expect.element(toggle).toHaveFocus();
     await userEvent.keyboard("{ArrowLeft}");
-    await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    // The wave line stays under a closed initiative.
+    expect(boardLink(screen).element().textContent).toBe("Wave 2 of 3 · 1 of 2 merged");
     await userEvent.keyboard("{ArrowLeft}");
     await expect.element(folder).toHaveFocus();
-    header.element().focus();
+    toggle.element().focus();
     await userEvent.keyboard("{ArrowRight}");
-    await expect.element(header).toHaveAttribute("aria-expanded", "true");
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
 
     folder.element().focus();
     await userEvent.keyboard("{Enter}");
     await expect.element(folder).toHaveAttribute("aria-expanded", "false");
     // Both running threads are hidden: the folder's own and the initiative's.
-    await expect.element(folder).toHaveAccessibleName("acme, 2 working");
-    await vi.waitFor(() => expect(folder.element().textContent).toMatch(/acme2 working$/));
-    await expect.element(header).not.toBeInTheDocument();
+    await expect.element(folder).toHaveAccessibleName("acme/app, 2 working");
+    await expect.element(toggle).not.toBeInTheDocument();
     await expect.element(row("Inbox chat")).toBeInTheDocument();
   });
 
   it("shows the freshest hidden thread's age on a closed folder with nothing to report", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: true,
+      sidebarLayout: "projects",
       threads: [
         shell("inbox", "Inbox chat"),
         shell("older", "Older chat", { latestUserMessageAt: "2026-01-01T06:00:00.000Z" }),
@@ -782,44 +771,262 @@ describe("sidebar initiative groups", () => {
     folder.element().focus();
     await userEvent.keyboard("{Enter}");
     await expect.element(folder).toHaveAttribute("aria-expanded", "false");
-    await expect.element(folder).toHaveAccessibleName("acme, 12h");
+    await expect.element(folder).toHaveAccessibleName("acme/app, 12h");
   });
 
   it.each([
-    {
-      name: "no waves",
-      live: liveInitiative({
-        wave: { current: 0, total: 0, partsSettled: 0, partsTotal: 0 },
-        parts: [],
-      }),
-      text: "No waves yet",
-    },
-    { name: "no live state", live: null, text: "Open the board" },
-  ])("keeps the wave row linking to the board with $name", async ({ live, text }) => {
+    { from: "the wave line", layout: "projects" as const, via: "link" as const },
+    { from: "the hover action", layout: "projects" as const, via: "action" as const },
+    { from: "the context menu", layout: "projects" as const, via: "menu" as const },
+    { from: "the wave text", layout: "list" as const, via: "link" as const },
+    { from: "the context menu", layout: "list" as const, via: "menu" as const },
+  ])("opens the board on the initiative from $from in $layout", async ({ layout, via }) => {
     using stack = new DisposableStack();
-    setup(stack, { boringSidebarEnabled: false, live });
+    setup(stack, { sidebarLayout: layout });
+    const show = vi.fn().mockResolvedValue("open-board");
+    stack.use(
+      vi.mocked(readLocalApi).mockReturnValue({ contextMenu: { show } } as unknown as LocalApi),
+    );
     await using screen = await render(tree());
-    const waveRow = screen.getByTestId("sidebar-initiative-wave");
-    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(new RegExp(`^${text}`)));
-    expect(waveRow.element().textContent).not.toMatch(/Wave \d/);
+    await expect.element(folderToggle(screen)).toBeInTheDocument();
+    if (via === "menu") {
+      folderToggle(screen).element().focus();
+      await userEvent.keyboard("{Shift>}{F10}{/Shift}");
+      await vi.waitFor(() => expect(show).toHaveBeenCalledTimes(1));
+      expect(show.mock.lastCall?.[0]).toEqual([{ id: "open-board", label: "Open board" }]);
+    } else {
+      const target =
+        via === "link"
+          ? boardLink(screen)
+          : screen.getByRole("link", { name: "Open board for Billing revamp", exact: true });
+      target.element().focus();
+      await userEvent.keyboard("{Enter}");
+    }
+    await expectBoardOpened(screen);
+  });
+
+  it.each([
+    { layout: "list" as const, live: noWaves, text: "No waves yet" },
+    { layout: "projects" as const, live: noWaves, text: "No waves yet" },
+    { layout: "list" as const, live: null, text: "Open the board" },
+    { layout: "projects" as const, live: null, text: "Open the board" },
+  ])("shows $text in $layout and still links to the board", async ({ layout, live, text }) => {
+    using stack = new DisposableStack();
+    setup(stack, { sidebarLayout: layout, live });
+    await using screen = await render(tree());
+    await vi.waitFor(() => expect(boardLink(screen).element().textContent).toBe(text));
     await expect
       .element(screen.getByText("Orchestrator chat", { exact: true }).first())
       .toBeInTheDocument();
-    waveRow.element().focus();
+    boardLink(screen).element().focus();
     await userEvent.keyboard("{Enter}");
-    await vi.waitFor(() => expect(screen.router!.state.location.pathname).toBe("/board"));
-    expect(screen.router!.state.location.search).toEqual({ environmentId, slug: group.slug });
+    await expectBoardOpened(screen);
   });
 
-  it("replaces the loading wave row text once the live initiative arrives", async () => {
+  it("swaps the loading text for the wave once progress arrives, and falls back when it is lost", async () => {
     using stack = new DisposableStack();
-    const { deliverLive } = setup(stack, { boringSidebarEnabled: false, live: null });
+    const { deliverLive } = setup(stack, { sidebarLayout: "list", live: null });
     await using screen = await render(tree());
-    const waveRow = screen.getByTestId("sidebar-initiative-wave");
-    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Open the board/));
+    await vi.waitFor(() => expect(boardLink(screen).element().textContent).toBe("Open the board"));
     await deliverLive(liveInitiative());
-    await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Wave 2 of 3/));
-    expect(waveRow.element().textContent).not.toContain("Open the board");
+    await vi.waitFor(() => expect(boardLink(screen).element().textContent).toBe("Wave 2 of 3"));
+    await deliverLive(null);
+    await vi.waitFor(() => expect(boardLink(screen).element().textContent).toBe("Open the board"));
+  });
+
+  describe("Needs you section", () => {
+    const asking = { hasPendingUserInput: true };
+    const created = (day: number) => ({ createdAt: `2026-01-0${day}T00:00:00.000Z` });
+    // Inbox order is newest first: Newer, Question, Older.
+    const threads = [
+      shell("newer", "Newer chat", created(5)),
+      shell("question", "Question chat", { ...created(4), ...asking }),
+      shell("older", "Older chat", created(3)),
+      shell("orchestrator", "Orchestrator chat", created(2)),
+      shell("part", "Part one chat", created(2)),
+      shell("pinned", "Pinned chat", {
+        ...asking,
+        pinnedAt: "2026-01-01T00:00:00.000Z",
+        pinOrderKey: "a",
+      }),
+    ];
+    const titleOrder = (container: HTMLElement, titles: readonly string[]) =>
+      Array.from(container.querySelectorAll<HTMLElement>("[data-thread-item]"))
+        .map((row) => titles.find((title) => row.textContent?.includes(title)))
+        .filter((title) => title !== undefined);
+    const allTitles = threads.map((thread) => thread.title);
+    const header = (screen: Awaited<ReturnType<typeof render>>) =>
+      screen.getByTestId("sidebar-needs-you-shelf-toggle");
+
+    function setupSection(
+      stack: DisposableStack,
+      options: {
+        readonly sidebarLayout: ClientSettings["sidebarLayout"];
+        readonly needsYouFirst: boolean;
+        readonly routeThreadId?: string;
+        readonly openDecisionThreadIds?: ReadonlyArray<string>;
+      },
+    ) {
+      setup(stack, {
+        sidebarLayout: options.sidebarLayout,
+        needsYouFirst: options.needsYouFirst,
+        threads,
+        openDecisionThreadIds: options.openDecisionThreadIds ?? ["part"],
+      });
+      stack.defer(() => window.localStorage.removeItem("t3code:sidebar:needs-you-expanded"));
+      const routeThreadRef =
+        options.routeThreadId === undefined
+          ? null
+          : { environmentId, threadId: ThreadId.make(options.routeThreadId) };
+      vi.mocked(useThreadRouteTarget).mockReturnValue(
+        routeThreadRef === null ? null : { kind: "server", threadRef: routeThreadRef },
+      );
+      vi.mocked(useHandleNewThread).mockReturnValue({
+        activeDraftThread: null,
+        activeThread: null,
+        defaultProjectRef: { environmentId, projectId: groupedProject.id },
+        defaultProjectFallbackReady: true,
+        handleNewThread: vi.fn().mockResolvedValue(null),
+        routeDraftId: null,
+        routeThreadRef,
+      });
+    }
+
+    it("lists a thread waiting on the user once, under a header below the pins, and out of its initiative", async () => {
+      using stack = new DisposableStack();
+      setupSection(stack, { sidebarLayout: "list", needsYouFirst: true });
+      await using screen = await render(tree());
+      await expect.element(header(screen)).toBeInTheDocument();
+      expect(header(screen).element().textContent).toBe("Needs you2");
+      await expect.element(header(screen)).toHaveAttribute("aria-expanded", "true");
+      // The pinned thread is asking too, but stays pinned; the decision on a part pulls it out of its initiative.
+      expect(titleOrder(screen.container, allTitles)).toEqual([
+        "Pinned chat",
+        "Question chat",
+        "Part one chat",
+        "Newer chat",
+        "Older chat",
+        "Orchestrator chat",
+      ]);
+      const pinnedRow = screen.getByText("Pinned chat", { exact: true }).element();
+      const initiativeHeader = folderToggle(screen).element();
+      expect(follows(pinnedRow, header(screen).element())).toBe(true);
+      expect(
+        follows(screen.getByText("Part one chat", { exact: true }).element(), initiativeHeader),
+      ).toBe(true);
+    });
+
+    it("takes the thread out of its project folder, and a closed folder still says it needs you", async () => {
+      using stack = new DisposableStack();
+      setupSection(stack, {
+        sidebarLayout: "projects",
+        needsYouFirst: true,
+        routeThreadId: "question",
+        openDecisionThreadIds: [],
+      });
+      await using screen = await render(tree());
+      const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
+      await expect.element(header(screen)).toBeInTheDocument();
+      expect(header(screen).element().textContent).toBe("Needs you1");
+      expect(screen.getByText("Question chat", { exact: true }).all()).toHaveLength(1);
+      const question = screen.getByText("Question chat", { exact: true }).element();
+      expect(follows(header(screen).element(), question)).toBe(true);
+      expect(follows(question, folder.element())).toBe(true);
+
+      folder.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+      // The open thread is drawn in the section, so the closed folder counts it instead of keeping it.
+      await expect.element(folder).toHaveAccessibleName("acme/app, Needs you");
+      await expect.element(screen.getByText("Newer chat", { exact: true })).not.toBeInTheDocument();
+      expect(screen.getByText("Question chat", { exact: true }).all()).toHaveLength(1);
+    });
+
+    it.each([
+      {
+        layout: "list" as const,
+        order: [
+          "Pinned chat",
+          "Newer chat",
+          "Question chat",
+          "Older chat",
+          "Orchestrator chat",
+          "Part one chat",
+        ],
+      },
+      {
+        layout: "projects" as const,
+        order: [
+          "Pinned chat",
+          "Orchestrator chat",
+          "Part one chat",
+          "Newer chat",
+          "Question chat",
+          "Older chat",
+        ],
+      },
+    ])("draws no section and keeps every thread in place when off: $layout", async (spec) => {
+      using stack = new DisposableStack();
+      setupSection(stack, { sidebarLayout: spec.layout, needsYouFirst: false });
+      await using screen = await render(tree());
+      await expect.element(screen.getByText("Older chat", { exact: true })).toBeInTheDocument();
+      expect(screen.getByTestId("sidebar-needs-you-header").query()).toBeNull();
+      expect(titleOrder(screen.container, allTitles)).toEqual(spec.order);
+    });
+
+    it("returns a thread to its place once it stops needing the user, and drops the empty section", async () => {
+      using stack = new DisposableStack();
+      setupSection(stack, {
+        sidebarLayout: "list",
+        needsYouFirst: true,
+        openDecisionThreadIds: [],
+      });
+      await using screen = await render(tree());
+      await expect.element(header(screen)).toBeInTheDocument();
+      expect(header(screen).element().textContent).toBe("Needs you1");
+
+      vi.mocked(useQuietThreadShells).mockReturnValue(
+        threads.map((thread) =>
+          thread.id === ThreadId.make("question")
+            ? { ...thread, hasPendingUserInput: false }
+            : thread,
+        ),
+      );
+      await screen.rerender(tree());
+      await expect.element(screen.getByTestId("sidebar-needs-you-header")).not.toBeInTheDocument();
+      await vi.waitFor(() =>
+        expect(titleOrder(screen.container, allTitles)).toEqual([
+          "Pinned chat",
+          "Newer chat",
+          "Question chat",
+          "Older chat",
+          "Orchestrator chat",
+          "Part one chat",
+        ]),
+      );
+    });
+
+    it("hides the section's rows when collapsed except the open thread, and remembers it", async () => {
+      using stack = new DisposableStack();
+      setupSection(stack, { sidebarLayout: "list", needsYouFirst: true, routeThreadId: "part" });
+      {
+        await using first = await render(tree());
+        await expect.element(header(first)).toBeInTheDocument();
+        header(first).element().focus();
+        await userEvent.keyboard("{Enter}");
+        await expect.element(header(first)).toHaveAttribute("aria-expanded", "false");
+        expect(header(first).element().textContent).toBe("Needs you2");
+        await expect
+          .element(first.getByText("Question chat", { exact: true }))
+          .not.toBeInTheDocument();
+        expect(first.getByText("Part one chat", { exact: true }).all()).toHaveLength(1);
+        expect(window.localStorage.getItem("t3code:sidebar:needs-you-expanded")).toBe("false");
+      }
+      await using screen = await render(tree());
+      await expect.element(header(screen)).toHaveAttribute("aria-expanded", "false");
+      await expect.element(screen.getByText("Part one chat", { exact: true })).toBeInTheDocument();
+      expect(screen.getByText("Question chat", { exact: true }).query()).toBeNull();
+    });
   });
 });
 
@@ -877,7 +1084,7 @@ describe("sidebar spawned sessions", () => {
   function setup(
     stack: DisposableStack,
     options: {
-      readonly boringSidebarEnabled: boolean;
+      readonly sidebarLayout: ClientSettings["sidebarLayout"];
       readonly threads: ReadonlyArray<EnvironmentThreadShell>;
       readonly routeThreadId?: string;
     },
@@ -886,7 +1093,7 @@ describe("sidebar spawned sessions", () => {
     stack.defer(() => __setClientSettingsForTests(previousSettings));
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
-      boringSidebarEnabled: options.boringSidebarEnabled,
+      sidebarLayout: options.sidebarLayout,
     });
     stack.defer(() => window.localStorage.removeItem("t3code:sidebar:spawned-expanded"));
     stack.defer(() => useUiStateStore.setState({ projectExpandedById: {} }));
@@ -916,7 +1123,7 @@ describe("sidebar spawned sessions", () => {
   it("keeps sessions under their parent behind a count, opens them in place and navigates into them", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: false,
+      sidebarLayout: "list",
       threads: [parent, firstChild, runningSecondChild, other],
     });
     {
@@ -1019,7 +1226,7 @@ describe("sidebar spawned sessions", () => {
     },
   ])("states the strongest session state in words and an icon: $name", async (spec) => {
     using stack = new DisposableStack();
-    setup(stack, { boringSidebarEnabled: false, threads: [parent, ...spec.children, other] });
+    setup(stack, { sidebarLayout: "list", threads: [parent, ...spec.children, other] });
     await using screen = await render(tree());
     const toggle = screen.getByTestId("sidebar-spawned-toggle");
     await expect
@@ -1037,7 +1244,7 @@ describe("sidebar spawned sessions", () => {
     "reads a closed folder's nested session that is $name as the folder's status",
     async ({ child, label }) => {
       using stack = new DisposableStack();
-      setup(stack, { boringSidebarEnabled: true, threads: [parent, child, other] });
+      setup(stack, { sidebarLayout: "projects", threads: [parent, child, other] });
       await using screen = await render(tree());
       const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
       await expect.element(folder).toHaveAttribute("aria-expanded", "true");
@@ -1050,7 +1257,7 @@ describe("sidebar spawned sessions", () => {
 
   it("follows the snapshot: nothing while loading, hidden without the parent, nested with it, gone with the children", async () => {
     using stack = new DisposableStack();
-    setup(stack, { boringSidebarEnabled: false, threads: [] });
+    setup(stack, { sidebarLayout: "list", threads: [] });
     await using screen = await render(tree());
     const toggles = () =>
       screen.container.querySelectorAll('[data-testid="sidebar-spawned-toggle"]');
@@ -1094,7 +1301,7 @@ describe("sidebar spawned sessions", () => {
   it("gives no folder to a project whose only thread is nested, and keeps an open child with its parent in a closed folder", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: true,
+      sidebarLayout: "projects",
       threads: [parent, firstChild, secondChild, other],
       routeThreadId: "second-child",
     });

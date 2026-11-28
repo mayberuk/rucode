@@ -3,14 +3,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { type ReactNode, useLayoutEffect } from "react";
 import { cn } from "~/lib/utils";
-import {
-  animateSidebarLayoutChanges,
-  sidebarMarkerId,
-  type SidebarGroupStatus,
-} from "../Sidebar.logic";
-import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { SidebarGroupStatusText, useSidebarGroupStatusLabel } from "./SidebarGroupStatusText";
+import { animateSidebarLayoutChanges, sidebarMarkerId } from "../Sidebar.logic";
 import { SIDEBAR_SORTABLE_DRAG_DISABLED } from "./SidebarThreadRow";
 
 export function SortableSidebarMarker(props: {
@@ -116,7 +109,7 @@ export function SidebarDragBoundary(props: {
 }
 
 export function SidebarSectionHeader(props: {
-  marker: "working-header" | "snoozed-header" | "settled-header";
+  marker: "needs-you-header" | "working-header" | "snoozed-header" | "settled-header";
   label: string;
   /** A muted trailing count. */
   count: number;
@@ -125,12 +118,7 @@ export function SidebarSectionHeader(props: {
   isDropTarget?: boolean;
   toggle: { expanded: boolean; onToggle: () => void };
 }) {
-  const shelf =
-    props.marker === "working-header"
-      ? "working"
-      : props.marker === "snoozed-header"
-        ? "snoozed"
-        : "settled";
+  const shelf = props.marker.slice(0, -"-header".length);
   return (
     <SortableSidebarMarker
       sortableId={sidebarMarkerId(props.marker)}
@@ -155,79 +143,6 @@ export function initiativeGroupHeaderId(groupKey: string): string {
   return `sidebar-initiative-header:${groupKey}`;
 }
 
-export function initiativeGroupEndId(groupKey: string): string {
-  return `sidebar-initiative-end:${groupKey}`;
-}
-
 export function initiativeGroupRowId(groupKey: string): string {
   return `initiative:${groupKey}`;
-}
-
-export function InitiativeGroupHeader(props: {
-  groupKey: string;
-  label: string;
-  count: number;
-  expanded: boolean;
-  /** The group's project; the header shows it only outside its project folder. */
-  project: { readonly favicon: ProjectFaviconProject | null; readonly displayName: string } | null;
-  showProject: boolean;
-  /** The tree row of the project folder this header sits in. */
-  folderRow?: string | undefined;
-  /** Set while collapsed. */
-  status: SidebarGroupStatus | null;
-  onToggle: (groupKey: string) => void;
-}) {
-  const statusLabel = useSidebarGroupStatusLabel(
-    props.status?.kind === "idle" ? null : props.status,
-    null,
-  );
-  const title =
-    props.project === null ? props.label : `${props.project.displayName} · ${props.label}`;
-  return (
-    <SortableSidebarMarker
-      sortableId={initiativeGroupHeaderId(props.groupKey)}
-      data-testid="sidebar-initiative-header"
-      className="relative mx-0.5 h-8"
-    >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <CollapsibleSectionHeader
-              data-sidebar-row={initiativeGroupRowId(props.groupKey)}
-              data-sidebar-parent={props.folderRow}
-              aria-label={statusLabel === null ? title : `${title}, ${statusLabel}`}
-              onClick={() => props.onToggle(props.groupKey)}
-              expanded={props.expanded}
-              accessory={
-                props.status !== null && statusLabel !== null ? (
-                  <SidebarGroupStatusText status={props.status} label={statusLabel} />
-                ) : (
-                  <span className="font-normal tabular-nums">{props.count}</span>
-                )
-              }
-            />
-          }
-        >
-          {props.showProject && props.project !== null ? (
-            <span className="flex min-w-0 items-center gap-1.5">
-              {props.project.favicon === null ? null : (
-                <ProjectFavicon project={props.project.favicon} className="size-4 shrink-0" />
-              )}
-              {/* The huge shrink makes the project name give way before the label does. */}
-              <span className="min-w-8 shrink-[1000] truncate font-normal text-secondary-label">
-                {props.project.displayName}
-              </span>
-              <span aria-hidden className="shrink-0 font-normal text-secondary-label">
-                ·
-              </span>
-              <span className="min-w-0 truncate">{props.label}</span>
-            </span>
-          ) : (
-            props.label
-          )}
-        </TooltipTrigger>
-        <TooltipPopup>{title}</TooltipPopup>
-      </Tooltip>
-    </SortableSidebarMarker>
-  );
 }

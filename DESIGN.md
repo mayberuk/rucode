@@ -416,6 +416,7 @@ Global `outline-ring/50` with `outline-offset: -2px` (outlines stay inside contr
 
 ### Do:
 
+- **Do** keep T3 Code's anatomy and add RuCode only where T3 Code has no concept. Row shape, density, status words, hover actions, pinned on top and Settled at the bottom stay as upstream draws them; a RuCode feature (initiatives, spawned sessions, "Needs you") is expressed with a piece T3 Code already has, such as a section header shaped like Settled or a folder shaped like a project folder. Restyling a core T3 Code surface diverges from the product people chose and conflicts on every upstream sync.
 - **Do** start every mock from `rucode-app.css` plus `theme-t3-chat-dark.css` or `theme-t3-chat-light.css`, with `<html class="dark" data-theme-id="t3-chat">` (or no class), and use only the app's Tailwind classes and semantic variables.
 - **Do** build with the primitives in `components/ui` and the `ComposerBanner` slot pattern; pick `variant` / `size`, never restyle.
 - **Do** express new features as rows: 32px controls, 36px nav rows, 28px menu rows, two-line 60px list rows, 14px titles over 12px meta.

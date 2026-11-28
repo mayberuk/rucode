@@ -226,6 +226,7 @@ export type SidebarListMarker =
   | "active-placeholder"
   | "settled-placeholder"
   | "pinned-divider"
+  | "needs-you-header"
   | "working-header"
   | "snoozed-header"
   | "settled-header";
@@ -240,6 +241,39 @@ export type SidebarListItem =
 
 export function sidebarListItemId(item: SidebarListItem): string {
   return item.kind === "thread" ? item.key : sidebarMarkerId(item.marker);
+}
+
+type SidebarKeyedItem =
+  | {
+      readonly kind: "thread" | "initiative-row" | "needs-you-row";
+      readonly key: string;
+      readonly section: SidebarSection;
+    }
+  | { readonly kind: "marker"; readonly marker: SidebarListMarker }
+  | { readonly kind: "initiative-header"; readonly groupKey: string }
+  | { readonly kind: "spawned-child"; readonly key: string }
+  | { readonly kind: "needs-you-header" };
+
+/** The kind is part of the key: one thread can render as a standalone row and as an initiative member. */
+export function sidebarListItemsKey(items: readonly SidebarKeyedItem[]): string {
+  return items
+    .map((item) => {
+      switch (item.kind) {
+        case "thread":
+        case "initiative-row":
+        case "needs-you-row":
+          return `${item.kind}:${item.section}:${item.key}`;
+        case "marker":
+          return `marker:${item.marker}`;
+        case "initiative-header":
+          return `${item.kind}:${item.groupKey}`;
+        case "spawned-child":
+          return `${item.kind}:${item.key}`;
+        case "needs-you-header":
+          return item.kind;
+      }
+    })
+    .join("\n");
 }
 
 function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number): SidebarSection {
@@ -1163,6 +1197,28 @@ export type SidebarGroupStatus =
   | { readonly kind: "working"; readonly count: number }
   | { readonly kind: "idle" };
 
+/** A thread waiting on the person here: an approval, a question, a guest, a usage limit or a decision. */
+export function isSidebarThreadNeedingYou(
+  thread: ThreadStatusInput &
+    SidebarThreadStatusInput &
+    Pick<SidebarThreadSummary, "environmentId" | "id">,
+  openDecisionThreadKeys: ReadonlySet<string>,
+): boolean {
+  const openDecision = openDecisionThreadKeys.has(
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+  );
+  switch (resolveSidebarRowStatus(thread, { openDecision })) {
+    case "approval":
+    case "input":
+    case "request":
+    case "limited":
+    case "decision":
+      return true;
+    default:
+      return false;
+  }
+}
+
 /** The one state a collapsed group reports: needs-you, then failed, then working, else idle. */
 export function resolveSidebarGroupStatus(
   threads: ReadonlyArray<
@@ -1176,17 +1232,14 @@ export function resolveSidebarGroupStatus(
   let failed = 0;
   let working = 0;
   for (const thread of threads) {
+    if (isSidebarThreadNeedingYou(thread, openDecisionThreadKeys)) {
+      needsYou++;
+      continue;
+    }
     const openDecision = openDecisionThreadKeys.has(
       scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
     );
     switch (resolveSidebarRowStatus(thread, { openDecision })) {
-      case "approval":
-      case "input":
-      case "request":
-      case "limited":
-      case "decision":
-        needsYou++;
-        break;
       case "failed":
         failed++;
         break;
@@ -1404,6 +1457,73 @@ export function partitionInitiativeThreads<
     result.push({ group, members, threads, hiddenCount: members.length - threads.length });
   }
   return { groups: result, remaining };
+}
+
+/** Pinned and snoozed threads are never taken: they stay where the user put them. */
+export function selectNeedsYouThreads<
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "id">,
+>(
+  sections: SidebarSectionLists<TThread>,
+  isNeedsYou: (thread: TThread) => boolean,
+): { readonly threads: readonly TThread[]; readonly keys: ReadonlySet<string> } {
+  const threads: TThread[] = [];
+  const keys = new Set<string>();
+  for (const list of [sections.active, sections.working, sections.settled]) {
+    for (const thread of list) {
+      const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      if (keys.has(key) || !isNeedsYou(thread)) continue;
+      keys.add(key);
+      threads.push(thread);
+    }
+  }
+  return { threads, keys };
+}
+
+export type ListInboxEntry<TThread, TGroup> =
+  | { readonly kind: "thread"; readonly thread: TThread }
+  | { readonly kind: "initiative"; readonly group: TGroup };
+
+/**
+ * An initiative takes the slot of its freshest member in the inbox as it stood before
+ * members were pulled out. `remaining` is the inbox after, so the rows around a folder are
+ * exactly the rows upstream would draw.
+ */
+export function placeListInitiatives<
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "id">,
+  TGroup extends { readonly members: ReadonlyArray<{ readonly thread: TThread }> },
+>(input: {
+  readonly inboxOrder: readonly TThread[];
+  readonly remaining: readonly TThread[];
+  readonly groups: readonly TGroup[];
+  readonly hiddenKeys: ReadonlySet<string>;
+}): ReadonlyArray<ListInboxEntry<TThread, TGroup>> {
+  const keyOf = (thread: TThread) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+  const remainingKeys = new Set(input.remaining.map(keyOf));
+  const groupOfMember = new Map<string, TGroup>();
+  for (const group of input.groups) {
+    for (const member of group.members) {
+      const key = keyOf(member.thread);
+      if (!groupOfMember.has(key)) groupOfMember.set(key, group);
+    }
+  }
+  const emitted = new Set<TGroup>();
+  const entries: Array<ListInboxEntry<TThread, TGroup>> = [];
+  for (const thread of input.inboxOrder) {
+    const key = keyOf(thread);
+    if (remainingKeys.has(key) && !input.hiddenKeys.has(key)) {
+      entries.push({ kind: "thread", thread });
+    }
+    const group = groupOfMember.get(key);
+    if (group !== undefined && !emitted.has(group)) {
+      emitted.add(group);
+      entries.push({ kind: "initiative", group });
+    }
+  }
+  for (const group of input.groups) {
+    if (!emitted.has(group)) entries.push({ kind: "initiative", group });
+  }
+  return entries;
 }
 
 /**

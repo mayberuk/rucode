@@ -22,6 +22,7 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   type QuitConfirmationMode,
+  SidebarLayout,
   SidebarProjectSortOrder,
   ScreenReaderAnnouncements,
   ToolCallVisibility,
@@ -143,6 +144,12 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
   manual: msg("Manual"),
 };
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
+
+const SIDEBAR_LAYOUT_LABELS: Record<SidebarLayout, string> = {
+  list: msg("List"),
+  projects: msg("Projects"),
+};
+const isSidebarLayout = Schema.is(SidebarLayout);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: msg("System default"),
@@ -487,6 +494,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.inAppNotificationsEnabled !== DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled
       ? ["In-app notifications"]
       : []),
+    ...(settings.sidebarLayout !== DEFAULT_UNIFIED_SETTINGS.sidebarLayout ? ["Layout"] : []),
+    ...(settings.sidebarNeedsYouFirst !== DEFAULT_UNIFIED_SETTINGS.sidebarNeedsYouFirst
+      ? ["Needs you first"]
+      : []),
     ...(settings.sidebarProjectGroupingMode !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
       ? ["Project Grouping"]
       : []),
@@ -677,6 +688,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
       panelAnimationDurationMs: DEFAULT_UNIFIED_SETTINGS.panelAnimationDurationMs,
+      sidebarLayout: DEFAULT_UNIFIED_SETTINGS.sidebarLayout,
+      sidebarNeedsYouFirst: DEFAULT_UNIFIED_SETTINGS.sidebarNeedsYouFirst,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
@@ -865,6 +878,96 @@ export function GeneralSettingsPanel() {
 
       <SettingsSection id="sidebar" title={gt("Sidebar")}>
         <SettingsRow
+          {...setting("sidebar-layout")}
+          description={
+            <T>
+              List shows every thread by recent activity. Projects groups threads into project
+              folders. Pinned stays on top and Settled at the bottom in both.
+            </T>
+          }
+          resetAction={
+            settings.sidebarLayout !== DEFAULT_UNIFIED_SETTINGS.sidebarLayout ? (
+              <SettingResetButton
+                label="sidebar layout"
+                onClick={() =>
+                  updateSettings({ sidebarLayout: DEFAULT_UNIFIED_SETTINGS.sidebarLayout })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.sidebarLayout}
+              onValueChange={(value) => {
+                if (isSidebarLayout(value)) {
+                  updateSettings({ sidebarLayout: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label={gt("Layout")}>
+                <SelectValue>{m(SIDEBAR_LAYOUT_LABELS[settings.sidebarLayout])}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {SidebarLayout.literals.map((layout) => (
+                  <SelectItem hideIndicator key={layout} value={layout}>
+                    {m(SIDEBAR_LAYOUT_LABELS[layout])}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        {settings.sidebarLayout === "projects" ? (
+          <SettingsRow
+            {...setting("sidebar-two-line-rows")}
+            description={
+              <T>
+                Show folder threads on two lines: the title, then the branch, pull request, and
+                agent.
+              </T>
+            }
+            control={
+              <Switch
+                checked={settings.boringSidebarMultilineRows}
+                onCheckedChange={(checked) =>
+                  updateSettings({ boringSidebarMultilineRows: Boolean(checked) })
+                }
+                aria-label={gt("Two-line rows")}
+              />
+            }
+          />
+        ) : null}
+        <SettingsRow
+          {...setting("needs-you-first")}
+          description={
+            <T>
+              Show threads waiting on your answer or approval in their own section at the top. Each
+              thread shows once, so it leaves its place below while it waits.
+            </T>
+          }
+          resetAction={
+            settings.sidebarNeedsYouFirst !== DEFAULT_UNIFIED_SETTINGS.sidebarNeedsYouFirst ? (
+              <SettingResetButton
+                label="needs you first"
+                onClick={() =>
+                  updateSettings({
+                    sidebarNeedsYouFirst: DEFAULT_UNIFIED_SETTINGS.sidebarNeedsYouFirst,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.sidebarNeedsYouFirst}
+              onCheckedChange={(checked) =>
+                updateSettings({ sidebarNeedsYouFirst: Boolean(checked) })
+              }
+              aria-label={gt("“Needs you” first")}
+            />
+          }
+        />
+        <SettingsRow
           {...setting("project-grouping")}
           description={<T>Combine matching repositories across environments.</T>}
           resetAction={
@@ -944,7 +1047,7 @@ export function GeneralSettingsPanel() {
           description={
             <T>
               Fold working and monitoring threads into a Working section. They return to the top of
-              the inbox when they need you. The boring sidebar in Labs has no Working section.
+              the inbox when they need you. The Projects layout has no Working section.
             </T>
           }
           resetAction={

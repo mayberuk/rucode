@@ -135,11 +135,53 @@ describe("ClientSettings terminal close confirmation", () => {
   });
 });
 
-describe("ClientSettings boring sidebar", () => {
-  it("groups by project for settings without a saved preference and keeps a saved false", () => {
-    expect(decodeClientSettings({}).boringSidebarEnabled).toBe(true);
-    expect(decodeClientSettings({ boringSidebarEnabled: false }).boringSidebarEnabled).toBe(false);
-    expect(decodeClientSettings({ boringSidebarEnabled: true }).boringSidebarEnabled).toBe(true);
+describe("ClientSettings sidebar layout", () => {
+  const decodeStoredClientSettingsJson = Schema.decodeSync(
+    Schema.fromJsonString(ClientSettingsSchema),
+  );
+
+  it("defaults to the Projects layout with Needs you first", () => {
+    const settings = decodeClientSettings({});
+    expect(settings.sidebarLayout).toBe("projects");
+    expect(settings.sidebarNeedsYouFirst).toBe(true);
+  });
+
+  it("moves a stored boringSidebarEnabled: false to the new defaults and drops the key", () => {
+    const stored = { boringSidebarEnabled: false, boringSidebarMultilineRows: true };
+    for (const settings of [
+      decodeClientSettings(stored),
+      decodeStoredClientSettingsJson(JSON.stringify(stored)),
+    ]) {
+      expect(settings.sidebarLayout).toBe("projects");
+      expect(settings.sidebarNeedsYouFirst).toBe(true);
+      expect(settings.boringSidebarMultilineRows).toBe(true);
+      expect("boringSidebarEnabled" in settings).toBe(false);
+      expect("boringSidebarEnabled" in encodeClientSettings(settings)).toBe(false);
+    }
+  });
+
+  it("keeps saved choices", () => {
+    const saved = { sidebarLayout: "list", sidebarNeedsYouFirst: false };
+    for (const settings of [
+      decodeClientSettings(saved),
+      decodeStoredClientSettingsJson(JSON.stringify(saved)),
+    ]) {
+      expect(settings.sidebarLayout).toBe("list");
+      expect(settings.sidebarNeedsYouFirst).toBe(false);
+    }
+    const roundTripped = decodeClientSettings(encodeClientSettings(decodeClientSettings(saved)));
+    expect(roundTripped.sidebarLayout).toBe("list");
+    expect(roundTripped.sidebarNeedsYouFirst).toBe(false);
+  });
+
+  it("rejects an unknown layout and accepts both keys in a patch", () => {
+    expect(() => decodeClientSettings({ sidebarLayout: "grid" })).toThrow();
+    expect(
+      decodeClientSettingsPatch({ sidebarLayout: "list", sidebarNeedsYouFirst: false }),
+    ).toEqual({
+      sidebarLayout: "list",
+      sidebarNeedsYouFirst: false,
+    });
   });
 });
 
