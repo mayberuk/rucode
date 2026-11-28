@@ -61,7 +61,8 @@ const clientSettings: ClientSettings = {
   },
   sidebarProjectSortOrder: "manual",
   sidebarThreadSortOrder: "created_at",
-  boringSidebarEnabled: false,
+  sidebarLayout: "list",
+  sidebarNeedsYouFirst: false,
   boringSidebarMultilineRows: false,
   threadDetailsUsageEnabled: false,
   threadDetailsItems: {},
@@ -73,6 +74,7 @@ const clientSettings: ClientSettings = {
   wordWrap: true,
 };
 
+const encodeClientSettings = Schema.encodeEffect(ClientSettingsSchema);
 const decodeClientSettingsJson = Schema.decodeEffect(Schema.fromJsonString(ClientSettingsSchema));
 function layer(baseDir: string) {
   const layerEnvironment = DesktopEnvironment.layer({
@@ -262,6 +264,45 @@ describe("DesktopClientSettings", () => {
         }
       }),
     ),
+  );
+
+  it.effect(
+    "moves a stored boringSidebarEnabled to the new sidebar defaults and drops it on write",
+    () =>
+      withClientSettings(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const settings = yield* DesktopClientSettings.DesktopClientSettings;
+          const encoded = yield* encodeClientSettings(clientSettings);
+          const stored = {
+            ...Object.fromEntries(
+              Object.entries(encoded).filter(
+                ([key]) => key !== "sidebarLayout" && key !== "sidebarNeedsYouFirst",
+              ),
+            ),
+            boringSidebarEnabled: false,
+          };
+          yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+          yield* fileSystem.writeFileString(environment.clientSettingsPath, JSON.stringify(stored));
+
+          const persisted = yield* settings.get;
+          assert.isTrue(Option.isSome(persisted));
+          if (Option.isNone(persisted)) return;
+          assert.equal(persisted.value.sidebarLayout, "projects");
+          assert.equal(persisted.value.sidebarNeedsYouFirst, true);
+          assert.equal(persisted.value.timestampFormat, "24-hour");
+          assert.equal(persisted.value.sidebarThreadSortOrder, "created_at");
+
+          yield* settings.set(persisted.value);
+          const rewritten: Record<string, unknown> = JSON.parse(
+            yield* fileSystem.readFileString(environment.clientSettingsPath),
+          );
+          assert.isFalse("boringSidebarEnabled" in rewritten);
+          assert.equal(rewritten.sidebarLayout, "projects");
+          assert.equal(rewritten.timestampFormat, "24-hour");
+        }),
+      ),
   );
 
   it.effect.each([

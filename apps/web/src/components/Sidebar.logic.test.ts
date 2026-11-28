@@ -24,6 +24,7 @@ import {
   shouldRecedeSidebarThread,
   sortInboxThreadsByReturn,
   resolveSidebarDropTarget,
+  sidebarMarkerId,
   planSidebarThreadDrop,
   resolveSidebarReorderableThreadKeys,
   sortPinnedThreadsForSidebar,
@@ -42,6 +43,10 @@ import {
   withoutSpawnedThreads,
   partitionInitiativeThreads,
   resolveSidebarGroupStatus,
+  isSidebarThreadNeedingYou,
+  selectNeedsYouThreads,
+  placeListInitiatives,
+  type ListInboxEntry,
   resolveInboxShelf,
   sidebarFolderExpansionKeys,
   skipFixedSortableItems,
@@ -1231,6 +1236,25 @@ describe("Working shelf (beta)", () => {
       marker("settled-header"),
       row("s1", "settled"),
     ];
+
+    it("does not read the Needs you header as a section change", () => {
+      const withHeader: readonly SidebarListItem[] = [
+        marker("pinned-header"),
+        row("p1", "pinned"),
+        marker("needs-you-header"),
+        marker("pinned-divider"),
+        row("a1", "active"),
+        row("a2", "active"),
+      ];
+      expect(
+        resolveSidebarDropTarget(withHeader, "p1", sidebarMarkerId("needs-you-header")),
+      ).toEqual({ section: "pinned", pinnedOrder: ["p1"], activeOrder: ["a1", "a2"] });
+      expect(resolveSidebarDropTarget(withHeader, "a1", "a2")).toEqual({
+        section: "active",
+        pinnedOrder: ["p1"],
+        activeOrder: ["a2", "a1"],
+      });
+    });
 
     it("never drops into the Working shelf, and keeps it out of the inbox order", () => {
       expect(resolveSidebarDropTarget(items, "a1", "w1")).toBeNull();
@@ -2468,6 +2492,286 @@ describe("resolveSidebarGroupStatus", () => {
     expect(resolveSidebarGroupStatus([idle(), waiting, openedFailure], noDecisions)).toEqual({
       kind: "idle",
     });
+  });
+
+  describe("isSidebarThreadNeedingYou", () => {
+    it.each([
+      ["approval", () => statusThread({ hasPendingApprovals: true })],
+      ["input", () => statusThread({ hasPendingUserInput: true })],
+      ["guest request", () => statusThread({ pendingGuestMessageCount: 1 })],
+      ["usage limit", limited],
+    ])("is true for a thread waiting on %s", (_, needy) => {
+      expect(isSidebarThreadNeedingYou(needy(), noDecisions)).toBe(true);
+    });
+
+    it.each([
+      ["idle", idle],
+      ["working", working],
+      ["preparing", preparing],
+      ["failed", failed],
+    ])("is false for a %s thread", (_, quiet) => {
+      expect(isSidebarThreadNeedingYou(quiet(), noDecisions)).toBe(false);
+    });
+
+    it("is true for an open decision only under the thread's own key", () => {
+      const decided = working();
+      expect(
+        isSidebarThreadNeedingYou(
+          decided,
+          new Set([scopedThreadKey(scopeThreadRef(decided.environmentId, decided.id))]),
+        ),
+      ).toBe(true);
+      expect(isSidebarThreadNeedingYou(decided, new Set([lineageKey("not-in-group")]))).toBe(false);
+    });
+  });
+
+  describe("with a selected needs-you thread drawn in the Needs you section", () => {
+    it("still reports needs-you for the folder's full list, and not for what is left", () => {
+      const needy = statusThread({ hasPendingApprovals: true });
+      const quiet = idle();
+      const busy = working();
+      const sections = {
+        pinned: [],
+        active: [needy, quiet],
+        working: [busy],
+        snoozed: [],
+        settled: [],
+      };
+      const { threads } = selectNeedsYouThreads(sections, (thread) =>
+        isSidebarThreadNeedingYou(thread, noDecisions),
+      );
+
+      expect(threads).toEqual([needy]);
+      expect(resolveSidebarGroupStatus([needy, quiet, busy], noDecisions)).toEqual({
+        kind: "needs-you",
+        count: 1,
+      });
+      expect(resolveSidebarGroupStatus([quiet, busy], noDecisions)).toEqual({
+        kind: "working",
+        count: 1,
+      });
+    });
+  });
+});
+
+describe("selectNeedsYouThreads", () => {
+  const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+  const thread = (id: string, environmentId = localEnvironmentId) => ({
+    environmentId,
+    id: ThreadId.make(id),
+  });
+  const keyOf = (id: string, environmentId = localEnvironmentId) =>
+    scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(id)));
+  const lists = (input: Partial<Record<SidebarSection, ReturnType<typeof thread>[]>>) => ({
+    pinned: input.pinned ?? [],
+    active: input.active ?? [],
+    working: input.working ?? [],
+    snoozed: input.snoozed ?? [],
+    settled: input.settled ?? [],
+  });
+  const always = () => true;
+
+  it("takes active, then working, then settled, each in its own order", () => {
+    const result = selectNeedsYouThreads(
+      lists({
+        settled: [thread("s1"), thread("s2")],
+        working: [thread("w1"), thread("w2")],
+        active: [thread("a1"), thread("a2")],
+      }),
+      always,
+    );
+
+    expect(result.threads.map((entry) => entry.id)).toEqual(["a1", "a2", "w1", "w2", "s1", "s2"]);
+    expect([...result.keys]).toEqual(["a1", "a2", "w1", "w2", "s1", "s2"].map((id) => keyOf(id)));
+  });
+
+  it("takes only the threads the predicate accepts", () => {
+    const result = selectNeedsYouThreads(
+      lists({ active: [thread("a1"), thread("a2")], settled: [thread("s1")] }),
+      (entry) => entry.id === "a2" || entry.id === "s1",
+    );
+
+    expect(result.threads.map((entry) => entry.id)).toEqual(["a2", "s1"]);
+    expect(result.keys).toEqual(new Set([keyOf("a2"), keyOf("s1")]));
+  });
+
+  it("selects a thread once when it is listed in two sections", () => {
+    const shared = thread("shared");
+    const result = selectNeedsYouThreads(
+      lists({ active: [shared], working: [shared], settled: [shared] }),
+      always,
+    );
+
+    expect(result.threads).toEqual([shared]);
+    expect(result.keys).toEqual(new Set([keyOf("shared")]));
+  });
+
+  it("tells apart the same thread id in two environments", () => {
+    const result = selectNeedsYouThreads(
+      lists({
+        active: [thread("same")],
+        working: [thread("same", remoteEnvironmentId)],
+      }),
+      always,
+    );
+
+    expect(result.threads.map((entry) => entry.environmentId)).toEqual([
+      localEnvironmentId,
+      remoteEnvironmentId,
+    ]);
+    expect(result.keys).toEqual(new Set([keyOf("same"), keyOf("same", remoteEnvironmentId)]));
+  });
+
+  it("never takes a pinned or snoozed thread, even one the predicate accepts", () => {
+    const result = selectNeedsYouThreads(
+      lists({ pinned: [thread("pinned")], snoozed: [thread("snoozed")], active: [thread("a1")] }),
+      always,
+    );
+
+    expect(result.threads.map((entry) => entry.id)).toEqual(["a1"]);
+    expect(result.keys).toEqual(new Set([keyOf("a1")]));
+  });
+
+  it("selects nothing from empty lists", () => {
+    const result = selectNeedsYouThreads(lists({}), always);
+
+    expect(result.threads).toEqual([]);
+    expect(result.keys.size).toBe(0);
+  });
+});
+
+describe("placeListInitiatives", () => {
+  const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+  const thread = (id: string, environmentId = localEnvironmentId) => ({
+    environmentId,
+    id: ThreadId.make(id),
+  });
+  const keyOf = (id: string, environmentId = localEnvironmentId) =>
+    scopedThreadKey(scopeThreadRef(environmentId, ThreadId.make(id)));
+  const initiative = (name: string, members: ReturnType<typeof thread>[]) => ({
+    name,
+    members: members.map((member) => ({ thread: member })),
+  });
+  const describeEntries = (
+    entries: ReadonlyArray<ListInboxEntry<{ id: string }, { name: string }>>,
+  ) => entries.map((entry) => (entry.kind === "thread" ? entry.thread.id : entry.group.name));
+  const noHidden: ReadonlySet<string> = new Set();
+
+  it("puts a folder where its freshest inbox member stood, between the right neighbours", () => {
+    const first = thread("first");
+    const mid = thread("mid");
+    const last = thread("last");
+    const partA = thread("part-a");
+    const partB = thread("part-b");
+    const billing = initiative("Billing revamp", [partA, partB]);
+
+    const entries = placeListInitiatives({
+      inboxOrder: [first, mid, partA, last, partB],
+      remaining: [first, mid, last],
+      groups: [billing],
+      hiddenKeys: noHidden,
+    });
+
+    expect(describeEntries(entries)).toEqual(["first", "mid", "Billing revamp", "last"]);
+    expect(entries[2]).toEqual({ kind: "initiative", group: billing });
+  });
+
+  it("places each folder at its own freshest member, whatever the order of the groups", () => {
+    const early = thread("early");
+    const late = thread("late");
+    const plain = thread("plain");
+    const lateGroup = initiative("checkout-retries", [late]);
+    const earlyGroup = initiative("Billing revamp", [early]);
+
+    const entries = placeListInitiatives({
+      inboxOrder: [early, plain, late],
+      remaining: [plain],
+      groups: [lateGroup, earlyGroup],
+      hiddenKeys: noHidden,
+    });
+
+    expect(describeEntries(entries)).toEqual(["Billing revamp", "plain", "checkout-retries"]);
+  });
+
+  it("puts a folder with no inbox member after the last inbox row, in group order", () => {
+    const one = thread("one");
+    const two = thread("two");
+    const settledOnly = thread("settled-only");
+    const otherSettled = thread("other-settled");
+
+    const entries = placeListInitiatives({
+      inboxOrder: [one, two],
+      remaining: [one, two],
+      groups: [
+        initiative("Billing revamp", [settledOnly]),
+        initiative("checkout-retries", [otherSettled]),
+      ],
+      hiddenKeys: noHidden,
+    });
+
+    expect(describeEntries(entries)).toEqual(["one", "two", "Billing revamp", "checkout-retries"]);
+  });
+
+  it("never emits a hidden thread as a row", () => {
+    const needy = thread("needy");
+    const quiet = thread("quiet");
+
+    const entries = placeListInitiatives({
+      inboxOrder: [needy, quiet],
+      remaining: [needy, quiet],
+      groups: [],
+      hiddenKeys: new Set([keyOf("needy")]),
+    });
+
+    expect(describeEntries(entries)).toEqual(["quiet"]);
+  });
+
+  it("still places a folder at a hidden member's slot", () => {
+    const needy = thread("needy");
+    const before = thread("before");
+    const after = thread("after");
+
+    const entries = placeListInitiatives({
+      inboxOrder: [before, needy, after],
+      remaining: [before, after],
+      groups: [initiative("Billing revamp", [needy])],
+      hiddenKeys: new Set([keyOf("needy")]),
+    });
+
+    expect(describeEntries(entries)).toEqual(["before", "Billing revamp", "after"]);
+  });
+
+  it("reads a member by environment as well as id", () => {
+    const local = thread("same");
+    const remote = thread("same", remoteEnvironmentId);
+
+    const entries = placeListInitiatives({
+      inboxOrder: [local, remote],
+      remaining: [local],
+      groups: [initiative("Billing revamp", [remote])],
+      hiddenKeys: noHidden,
+    });
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["thread", "initiative"]);
+  });
+
+  it("returns exactly the inbox order when there is no folder and nothing hidden", () => {
+    const rows = [thread("c"), thread("a"), thread("b")];
+
+    const entries = placeListInitiatives({
+      inboxOrder: rows,
+      remaining: rows,
+      groups: [],
+      hiddenKeys: noHidden,
+    });
+
+    expect(entries).toEqual(rows.map((row) => ({ kind: "thread", thread: row })));
+  });
+
+  it("returns nothing for an empty inbox with no folder", () => {
+    expect(
+      placeListInitiatives({ inboxOrder: [], remaining: [], groups: [], hiddenKeys: noHidden }),
+    ).toEqual([]);
   });
 });
 

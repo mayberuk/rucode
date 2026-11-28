@@ -4,6 +4,7 @@ import * as shelfHooks from "../state/olderSettledShelf";
 import { createWorkspaceFocusController, workspaceAreaProps } from "../lib/workspaceFocus";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
+  type ClientSettings,
   DEFAULT_CLIENT_SETTINGS,
   EnvironmentId,
   type LocalApi,
@@ -102,7 +103,7 @@ describe("sidebar header new thread", () => {
     stack.defer(() => __setClientSettingsForTests(previousSettings));
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
-      boringSidebarEnabled: scenario.mode === "boring",
+      sidebarLayout: scenario.mode === "boring" ? "projects" : "list",
     });
     const projects = [project("active"), project("idle")].slice(0, scenario.count);
     const currentProjectRef = {
@@ -477,7 +478,7 @@ describe("sidebar initiative groups", () => {
   function setup(
     stack: DisposableStack,
     options: {
-      readonly boringSidebarEnabled: boolean;
+      readonly sidebarLayout: ClientSettings["sidebarLayout"];
       readonly threads?: ReadonlyArray<EnvironmentThreadShell>;
       readonly openDecisionThreadIds?: ReadonlyArray<string>;
       readonly live?: PluginLiveInitiative | null;
@@ -487,7 +488,7 @@ describe("sidebar initiative groups", () => {
     stack.defer(() => __setClientSettingsForTests(previousSettings));
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
-      boringSidebarEnabled: options.boringSidebarEnabled,
+      sidebarLayout: options.sidebarLayout,
     });
     stack.defer(() => window.localStorage.removeItem("t3code:sidebar:initiative-collapsed"));
     stack.defer(() => useUiStateStore.setState({ projectExpandedById: {} }));
@@ -533,7 +534,7 @@ describe("sidebar initiative groups", () => {
 
   it("names the project, toggles members in place, says what a collapsed group needs and opens the board on its wave", async () => {
     using stack = new DisposableStack();
-    setup(stack, { boringSidebarEnabled: false, openDecisionThreadIds: ["part"] });
+    setup(stack, { sidebarLayout: "list", openDecisionThreadIds: ["part"] });
     {
       await using first = await render(tree());
       const header = first.getByRole("button", { name: /^acme · Checkout retries/ });
@@ -646,7 +647,7 @@ describe("sidebar initiative groups", () => {
       style.textContent = appCss;
       document.head.append(style);
       stack.defer(() => style.remove());
-      setup(stack, { boringSidebarEnabled: false });
+      setup(stack, { sidebarLayout: "list" });
       vi.mocked(useProjects).mockReturnValue([{ ...groupedProject, title: projectName }]);
       stack.use(
         vi.spyOn(liveAtoms, "useInitiativeSidebarGroups").mockReturnValue([{ ...group, label }]),
@@ -683,7 +684,7 @@ describe("sidebar initiative groups", () => {
   it("counts a spawned session of a hidden member in the collapsed initiative's status", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: false,
+      sidebarLayout: "list",
       threads: [
         ...baseThreads,
         shell("part-child", "Part session", {
@@ -709,7 +710,7 @@ describe("sidebar initiative groups", () => {
   it("puts an initiative inside its project folder, before the folder's own threads, and counts its members in the closed folder", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: true,
+      sidebarLayout: "projects",
       threads: [
         shell("inbox", "Inbox chat"),
         shell("busy", "Busy chat", running),
@@ -766,7 +767,7 @@ describe("sidebar initiative groups", () => {
   it("shows the freshest hidden thread's age on a closed folder with nothing to report", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: true,
+      sidebarLayout: "projects",
       threads: [
         shell("inbox", "Inbox chat"),
         shell("older", "Older chat", { latestUserMessageAt: "2026-01-01T06:00:00.000Z" }),
@@ -797,7 +798,7 @@ describe("sidebar initiative groups", () => {
     { name: "no live state", live: null, text: "Open the board" },
   ])("keeps the wave row linking to the board with $name", async ({ live, text }) => {
     using stack = new DisposableStack();
-    setup(stack, { boringSidebarEnabled: false, live });
+    setup(stack, { sidebarLayout: "list", live });
     await using screen = await render(tree());
     const waveRow = screen.getByTestId("sidebar-initiative-wave");
     await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(new RegExp(`^${text}`)));
@@ -813,7 +814,7 @@ describe("sidebar initiative groups", () => {
 
   it("replaces the loading wave row text once the live initiative arrives", async () => {
     using stack = new DisposableStack();
-    const { deliverLive } = setup(stack, { boringSidebarEnabled: false, live: null });
+    const { deliverLive } = setup(stack, { sidebarLayout: "list", live: null });
     await using screen = await render(tree());
     const waveRow = screen.getByTestId("sidebar-initiative-wave");
     await vi.waitFor(() => expect(waveRow.element().textContent).toMatch(/^Open the board/));
@@ -877,7 +878,7 @@ describe("sidebar spawned sessions", () => {
   function setup(
     stack: DisposableStack,
     options: {
-      readonly boringSidebarEnabled: boolean;
+      readonly sidebarLayout: ClientSettings["sidebarLayout"];
       readonly threads: ReadonlyArray<EnvironmentThreadShell>;
       readonly routeThreadId?: string;
     },
@@ -886,7 +887,7 @@ describe("sidebar spawned sessions", () => {
     stack.defer(() => __setClientSettingsForTests(previousSettings));
     __setClientSettingsForTests({
       ...DEFAULT_CLIENT_SETTINGS,
-      boringSidebarEnabled: options.boringSidebarEnabled,
+      sidebarLayout: options.sidebarLayout,
     });
     stack.defer(() => window.localStorage.removeItem("t3code:sidebar:spawned-expanded"));
     stack.defer(() => useUiStateStore.setState({ projectExpandedById: {} }));
@@ -916,7 +917,7 @@ describe("sidebar spawned sessions", () => {
   it("keeps sessions under their parent behind a count, opens them in place and navigates into them", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: false,
+      sidebarLayout: "list",
       threads: [parent, firstChild, runningSecondChild, other],
     });
     {
@@ -1019,7 +1020,7 @@ describe("sidebar spawned sessions", () => {
     },
   ])("states the strongest session state in words and an icon: $name", async (spec) => {
     using stack = new DisposableStack();
-    setup(stack, { boringSidebarEnabled: false, threads: [parent, ...spec.children, other] });
+    setup(stack, { sidebarLayout: "list", threads: [parent, ...spec.children, other] });
     await using screen = await render(tree());
     const toggle = screen.getByTestId("sidebar-spawned-toggle");
     await expect
@@ -1037,7 +1038,7 @@ describe("sidebar spawned sessions", () => {
     "reads a closed folder's nested session that is $name as the folder's status",
     async ({ child, label }) => {
       using stack = new DisposableStack();
-      setup(stack, { boringSidebarEnabled: true, threads: [parent, child, other] });
+      setup(stack, { sidebarLayout: "projects", threads: [parent, child, other] });
       await using screen = await render(tree());
       const folder = screen.getByTestId("sidebar-project-folder").getByRole("button").first();
       await expect.element(folder).toHaveAttribute("aria-expanded", "true");
@@ -1050,7 +1051,7 @@ describe("sidebar spawned sessions", () => {
 
   it("follows the snapshot: nothing while loading, hidden without the parent, nested with it, gone with the children", async () => {
     using stack = new DisposableStack();
-    setup(stack, { boringSidebarEnabled: false, threads: [] });
+    setup(stack, { sidebarLayout: "list", threads: [] });
     await using screen = await render(tree());
     const toggles = () =>
       screen.container.querySelectorAll('[data-testid="sidebar-spawned-toggle"]');
@@ -1094,7 +1095,7 @@ describe("sidebar spawned sessions", () => {
   it("gives no folder to a project whose only thread is nested, and keeps an open child with its parent in a closed folder", async () => {
     using stack = new DisposableStack();
     setup(stack, {
-      boringSidebarEnabled: true,
+      sidebarLayout: "projects",
       threads: [parent, firstChild, secondChild, other],
       routeThreadId: "second-child",
     });

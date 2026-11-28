@@ -41,7 +41,7 @@ describe("new thread commands", () => {
   ] as const)("$mode sidebar, $count projects, $command: picker=$picker", (scenario) => {
     using _settings = vi.spyOn(settings, "getClientSettings").mockReturnValue({
       ...DEFAULT_CLIENT_SETTINGS,
-      boringSidebarEnabled: scenario.mode === "boring",
+      sidebarLayout: scenario.mode === "boring" ? "projects" : "list",
     });
     using _projects = vi
       .spyOn(entities, "readProjects")
