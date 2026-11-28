@@ -218,6 +218,7 @@ import {
   shouldCreateNewThreadInCurrentProject,
   shouldNavigateAfterThreadPark,
   sidebarListItemId,
+  sidebarListItemsKey as sidebarListItemsKeyOf,
   sidebarThreadKeyAtY,
   sortInboxThreadsByReturn,
   sortPinnedThreadsForSidebar,
@@ -2382,15 +2383,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     return items;
   })();
   // Preserve the list while streamed updates leave order unchanged to retain row memoization.
-  const sidebarListItemsKey = sidebarListItemsFresh
-    .map((item) =>
-      item.kind === "thread" || item.kind === "initiative-row" || item.kind === "needs-you-row"
-        ? item.section + ":" + item.key
-        : item.kind === "marker"
-          ? item.marker
-          : sidebarRenderItemId(item),
-    )
-    .join("\n");
+  const sidebarListItemsKey = sidebarListItemsKeyOf(sidebarListItemsFresh);
   const [sidebarListItemsState, setSidebarListItems] = useState(sidebarListItemsFresh);
   const [sidebarListItemsKeyState, setSidebarListItemsKeyState] = useState(sidebarListItemsKey);
   let sidebarListItems = sidebarListItemsState;

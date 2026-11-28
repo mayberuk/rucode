@@ -46,6 +46,7 @@ import {
   isSidebarThreadNeedingYou,
   selectNeedsYouThreads,
   placeListInitiatives,
+  sidebarListItemsKey,
   type ListInboxEntry,
   resolveInboxShelf,
   sidebarFolderExpansionKeys,
@@ -2772,6 +2773,32 @@ describe("placeListInitiatives", () => {
     expect(
       placeListInitiatives({ inboxOrder: [], remaining: [], groups: [], hiddenKeys: noHidden }),
     ).toEqual([]);
+  });
+});
+
+describe("sidebarListItemsKey", () => {
+  const standalone = (key: string) => ({
+    kind: "thread" as const,
+    key,
+    section: "active" as const,
+  });
+  const member = (key: string) => ({
+    kind: "initiative-row" as const,
+    key,
+    section: "active" as const,
+    groupKey: "group-a",
+  });
+
+  it("differs when the same thread moves between a standalone row and an initiative row", () => {
+    const standaloneB = [member("a"), standalone("b")];
+    const memberB = [member("a"), member("b")];
+    expect(sidebarListItemsKey(standaloneB)).not.toBe(sidebarListItemsKey(memberB));
+  });
+
+  it("matches for identical lists", () => {
+    expect(sidebarListItemsKey([member("a"), standalone("b")])).toBe(
+      sidebarListItemsKey([member("a"), standalone("b")]),
+    );
   });
 });
 

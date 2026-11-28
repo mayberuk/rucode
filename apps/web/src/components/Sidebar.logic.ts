@@ -243,6 +243,39 @@ export function sidebarListItemId(item: SidebarListItem): string {
   return item.kind === "thread" ? item.key : sidebarMarkerId(item.marker);
 }
 
+type SidebarKeyedItem =
+  | {
+      readonly kind: "thread" | "initiative-row" | "needs-you-row";
+      readonly key: string;
+      readonly section: SidebarSection;
+    }
+  | { readonly kind: "marker"; readonly marker: SidebarListMarker }
+  | { readonly kind: "initiative-header"; readonly groupKey: string }
+  | { readonly kind: "spawned-child"; readonly key: string }
+  | { readonly kind: "needs-you-header" };
+
+/** The kind is part of the key: one thread can render as a standalone row and as an initiative member. */
+export function sidebarListItemsKey(items: readonly SidebarKeyedItem[]): string {
+  return items
+    .map((item) => {
+      switch (item.kind) {
+        case "thread":
+        case "initiative-row":
+        case "needs-you-row":
+          return `${item.kind}:${item.section}:${item.key}`;
+        case "marker":
+          return `marker:${item.marker}`;
+        case "initiative-header":
+          return `${item.kind}:${item.groupKey}`;
+        case "spawned-child":
+          return `${item.kind}:${item.key}`;
+        case "needs-you-header":
+          return item.kind;
+      }
+    })
+    .join("\n");
+}
+
 function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number): SidebarSection {
   let section: SidebarSection = "pinned";
   for (let i = 0; i < index && i < items.length; i += 1) {
